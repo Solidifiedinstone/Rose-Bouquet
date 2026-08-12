@@ -34,6 +34,9 @@ CHANNEL_ID = re.compile(r"(?:channel/|@)([A-Za-z0-9_\-]+)")
 #: up after a week away, few enough that twenty subscriptions is not a stall.
 UPLOADS_PER_CHANNEL = 12
 
+#: Shared with the downloader — see `ytmusic.PLAYER_CLIENTS`.
+PLAYER_CLIENTS = ["tv", "android", "ios", "web"]
+
 
 @dataclass
 class Video:
@@ -89,8 +92,12 @@ def _options(extra: Optional[dict] = None) -> dict:
         "extract_flat": "in_playlist",
         "skip_download": True,
         "ignoreerrors": True,
-        # No cookies, no login, no client identity beyond a normal request.
-        "extractor_args": {"youtubetab": {"skip": ["authcheck"]}},
+        # No cookies and no login — but the default web client now refuses
+        # anonymous requests, so the TV and mobile clients are asked first.
+        "extractor_args": {
+            "youtubetab": {"skip": ["authcheck"]},
+            "youtube": {"player_client": PLAYER_CLIENTS},
+        },
     }
     options.update(extra or {})
     return options

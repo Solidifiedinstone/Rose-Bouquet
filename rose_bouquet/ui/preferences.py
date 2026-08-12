@@ -127,6 +127,9 @@ class Preferences:
     download_format: str = "mp3"
     #: Rescan on startup. Off for anyone with a very large library on a spinner.
     scan_on_start: bool = True
+    #: Read cookies from a local browser profile when YouTube demands a login.
+    #: Off by default — an app should not touch a cookie jar unasked.
+    use_browser_cookies: bool = False
     #: Add downloads to the library as soon as they finish.
     add_downloads_to_library: bool = True
 
@@ -189,6 +192,14 @@ class Preferences:
             return Path(self.folders[0]).expanduser()
         return data_dir() / "downloads"
 
+    def cookies(self):
+        """The browser cookie source, or None when the setting is off."""
+        if not self.use_browser_cookies:
+            return None
+        from rose_bouquet.core.ytmusic import browser_cookies
+
+        return browser_cookies()
+
     def shape(self) -> Shape:
         try:
             return Shape(self.visualizer_shape)
@@ -244,6 +255,7 @@ class Preferences:
             "download_dir": self.download_dir,
             "download_format": self.download_format,
             "scan_on_start": self.scan_on_start,
+            "use_browser_cookies": self.use_browser_cookies,
             "add_downloads_to_library": self.add_downloads_to_library,
             "visualizer": self.visualizer,
             "visualizer_shape": self.visualizer_shape,
@@ -274,7 +286,7 @@ class Preferences:
                 setattr(prefs, name, value)
 
         for name in ("scan_on_start", "add_downloads_to_library", "visualizer",
-                     "visualizer_blur", "remote_control"):
+                     "visualizer_blur", "remote_control", "use_browser_cookies"):
             if name in data:
                 setattr(prefs, name, bool(data[name]))
 

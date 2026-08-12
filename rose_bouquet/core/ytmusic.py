@@ -34,6 +34,55 @@ logger = logging.getLogger(__name__)
 #: The fastest a download will report progress, in seconds.
 PROGRESS_INTERVAL = 0.4
 
+#: Which YouTube player clients to try, in order.
+#:
+#: The default web client now answers anonymous requests with "Sign in to
+#: confirm you're not a bot", which fails every download on a machine that is
+#: not logged in. The TV and mobile clients still serve them, so they are tried
+#: first. This is the sort of thing YouTube changes without notice, which is
+#: why it is a list and why browser cookies remain available as a fallback.
+PLAYER_CLIENTS = ["tv", "android", "ios", "web"]
+
+#: The message YouTube returns when it wants a login. Recognised so the app can
+#: say something useful instead of showing a wall of yt-dlp output.
+BOT_CHECK = "not a bot"
+
+
+def browser_cookies() -> Optional[tuple]:
+    """A yt-dlp `cookiesfrombrowser` tuple for a browser profile on this machine.
+
+    Only used when it has been turned on in settings. Reading a cookie jar is
+    not something an app should do behind your back, even locally.
+    """
+    from configparser import ConfigParser
+
+    waterfox = Path.home() / ".waterfox"
+    firefox = Path.home() / ".mozilla" / "firefox"
+
+    for root in (waterfox, firefox):
+        profiles = root / "profiles.ini"
+        if not profiles.exists():
+            continue
+
+        parser = ConfigParser()
+        try:
+            parser.read(profiles)
+        except Exception:                         # noqa: BLE001 — a broken ini is not fatal
+            continue
+
+        for section in parser.sections():
+            if not section.lower().startswith("profile"):
+                continue
+            path = parser[section].get("Path", "")
+            if not path:
+                continue
+            folder = (root / path) if parser[section].get("IsRelative", "1") == "1" else Path(path)
+            if (folder / "cookies.sqlite").exists():
+                # yt-dlp reads Waterfox with the Firefox reader, given the path.
+                return ("firefox", str(folder), None, None)
+
+    return None
+
 
 #: Where downloads go unless the user says otherwise.
 def downloads_dir() -> Path:
@@ -252,6 +301,7 @@ def download(
     folder: Optional[Path] = None,
     *,
     progress: Optional[Callable[[float, str], None]] = None,
+    cookies: Optional[tuple] = None,
 ) -> DownloadResult:
     """Fetch one track as audio, tagged, into the downloads folder.
 
@@ -299,6 +349,7 @@ def download(
 
     options = {
         "format": "bestaudio/best",
+        "extractor_args": {"youtube": {"player_client": PLAYER_CLIENTS}},
         "outtmpl": str(folder / f"{stem}.%(ext)s"),
         "quiet": True,
         "no_warnings": True,
@@ -317,13 +368,24 @@ def download(
         "postprocessor_args": {"embedthumbnail+ffmpeg_o": ["-c:v", "mjpeg"]},
     }
 
+    if cookies:
+        options["cookiesfrombrowser"] = cookies
+
     url = f"https://music.youtube.com/watch?v={request.video_id}"
 
     try:
         with yt_dlp.YoutubeDL(options) as downloader:
             downloader.extract_info(url, download=True)
     except Exception as exc:                      # noqa: BLE001 — yt-dlp raises widely
-        return DownloadResult(error=str(exc), request=request)
+        message = str(exc)
+        if BOT_CHECK in message and not cookies:
+            # Every client was refused. Browser cookies are the way through,
+            # and saying so beats showing the raw extractor error.
+            message = (
+                "YouTube asked for a sign-in to prove the request is not a bot. "
+                "Turn on 'Use cookies from my browser' in Settings → Downloads."
+            )
+        return DownloadResult(error=message, request=request)
 
     final = folder / f"{stem}.{request.fmt}"
     if not final.exists():

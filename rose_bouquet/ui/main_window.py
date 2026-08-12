@@ -629,11 +629,13 @@ class MainWindow(QMainWindow):
         downloads.note(key, label, 0.0, "queued", request)
 
         folder = self.preferences.downloads_path()
+        cookies = self.preferences.cookies()
 
         def work(report) -> ytmusic.DownloadResult:
             return ytmusic.download(
                 request, folder,
                 progress=lambda fraction, state: report((fraction, state)),
+                cookies=cookies,
             )
 
         tasks.run(

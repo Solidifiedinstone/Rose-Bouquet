@@ -326,6 +326,15 @@ class SettingsDialog(QDialog):
         self.download_format.currentIndexChanged.connect(self._on_downloads_changed)
         form.addRow("Format", self.download_format)
 
+        self.use_cookies = QCheckBox("Use cookies from my browser when YouTube asks for a login")
+        self.use_cookies.setChecked(self.preferences.use_browser_cookies)
+        self.use_cookies.setToolTip(
+            "Reads the cookie jar of a local Firefox or Waterfox profile. "
+            "Nothing is sent anywhere; it is passed to yt-dlp on this machine."
+        )
+        self.use_cookies.toggled.connect(self._on_downloads_changed)
+        form.addRow("", self.use_cookies)
+
         self.add_to_library = QCheckBox("Add finished downloads to the library")
         self.add_to_library.setChecked(self.preferences.add_downloads_to_library)
         self.add_to_library.toggled.connect(self._on_downloads_changed)
@@ -367,6 +376,7 @@ class SettingsDialog(QDialog):
         self.preferences.download_dir = self.download_dir.text().strip()
         self.preferences.download_format = self.download_format.currentData()
         self.preferences.add_downloads_to_library = self.add_to_library.isChecked()
+        self.preferences.use_browser_cookies = self.use_cookies.isChecked()
         self.preferences.save()
 
     def _on_credentials_changed(self) -> None:
