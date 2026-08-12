@@ -132,6 +132,11 @@ class MusicServer:
 
     _server: Optional[ThreadingHTTPServer] = None
     _thread: Optional[threading.Thread] = None
+    #: id → track, built on demand. Every stream request looks a track up by
+    #: id, and hashing the whole library each time made that cost grow with the
+    #: library instead of staying flat.
+    _index: Optional[dict] = None
+    _index_size: int = -1
 
     # ── Lifecycle ─────────────────────────────────────────────────
 
@@ -193,10 +198,13 @@ class MusicServer:
         return self.library.all()
 
     def track_by_id(self, track_id: str) -> Optional[Any]:
-        for track in self.library.tracks.values():
-            if _track_id(track) == track_id:
-                return track
-        return None
+        # Rebuilt when the library changes size — which covers scans, downloads
+        # and deletions, and costs one comparison the rest of the time.
+        if self._index is None or self._index_size != len(self.library.tracks):
+            self._index = {_track_id(t): t for t in self.library.tracks.values()}
+            self._index_size = len(self.library.tracks)
+
+        return self._index.get(track_id)
 
     def albums(self) -> list[tuple[str, str, list]]:
         return [(artist, album, tracks)
@@ -309,7 +317,12 @@ def _make_handler(server: MusicServer):
 
                 tracks = list(server.tracks())
                 random.shuffle(tracks)
-                size = int(_one(params, "size", "20") or 20)
+                # A negative size would slice from the end — "all but the last
+                # five" — which is not what any client meant to ask for.
+                try:
+                    size = max(1, min(500, int(_one(params, "size", "20") or 20)))
+                except ValueError:
+                    size = 20
                 return self._subsonic_response(
                     {"randomSongs": {"song": [_song(t) for t in tracks[:size]]}}, params)
 

@@ -228,6 +228,10 @@ def rank(
     affinities = affinity(tastes, now)
     plays = heard(tastes)
     likes = liked_artists(tastes)
+    # Gathered once. `tastes.dislikes()` walks every signal, so asking it per
+    # candidate turned ranking a thousand candidates against a few thousand
+    # signals into millions of comparisons.
+    disliked = {s.id for s in tastes.signals if s.kind == "dislike"}
 
     seen: set[str] = set()
     scored: list[Scored] = []
@@ -235,7 +239,7 @@ def rank(
     for candidate in candidates:
         if not candidate.id or candidate.id in seen:
             continue
-        if tastes.dislikes(candidate.id):
+        if candidate.id in disliked:
             continue
         seen.add(candidate.id)
         scored.append(score(
@@ -247,18 +251,24 @@ def rank(
     if len(scored) <= limit:
         return scored
 
-    familiar = [s for s in scored if s.terms.get("affinity") or s.terms.get("following")]
-    unfamiliar = [s for s in scored if s not in familiar]
+    familiar = []
+    unfamiliar = []
+    for item in scored:
+        known = item.terms.get("affinity") or item.terms.get("following")
+        (familiar if known else unfamiliar).append(item)
 
     room = max(0, int(limit * explore))
     chosen = familiar[:limit - room] + unfamiliar[:room]
 
-    # Anything left over is filled from whatever scored highest, so a profile
-    # with no unfamiliar candidates still returns a full feed.
+    # Membership by id rather than by object: `Scored` is a dataclass, so `in`
+    # compares its candidate and its terms dict field by field, which turns
+    # topping up the list into a quadratic crawl.
+    taken = {item.candidate.id for item in chosen}
     if len(chosen) < limit:
         for item in scored:
-            if item not in chosen:
+            if item.candidate.id not in taken:
                 chosen.append(item)
+                taken.add(item.candidate.id)
             if len(chosen) >= limit:
                 break
 
