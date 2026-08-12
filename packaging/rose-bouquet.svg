@@ -1,0 +1,113 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!--
+    Rose Bouquet application icon.
+
+    A page of writing with the R.O.S.E. rose laid on top of it, following the
+    silhouette of Joan G. Stark's ASCII "rose (3/99)" that every project in the
+    family uses: a side-on bud of wrapped petals over a stem that bends right.
+
+    The page is drawn face-on and slightly tilted, so at 16px it still reads as
+    "a sheet of paper" rather than a plain rectangle. Ruled lines use the pink
+    accent at low opacity: enough to say "a list, written on", not enough to
+    compete with the bloom sitting over them.
+
+    The tile is GameLab's exact black gradient, and the bloom is the same white
+    as every other Rose icon, so the family stays recognisable at a glance in a
+    dock; the page is what distinguishes this one. The stem keeps the project
+    green (#3FA860).
+  -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1d3326"/>
+      <stop offset="100%" stop-color="#07110b"/>
+    </linearGradient>
+    <linearGradient id="page" x1="0" y1="0" x2="0.6" y2="1">
+      <stop offset="0%" stop-color="#fdfcfe"/>
+      <stop offset="100%" stop-color="#ddd8e4"/>
+    </linearGradient>
+    <linearGradient id="outer" x1="0.1" y1="0" x2="0.9" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#cfc9da"/>
+    </linearGradient>
+    <linearGradient id="mid" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#fbf9fc"/>
+      <stop offset="100%" stop-color="#bcb5cb"/>
+    </linearGradient>
+    <linearGradient id="core" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f4f1f7"/>
+      <stop offset="100%" stop-color="#a79fba"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="8" y="8" width="240" height="240" rx="54" fill="url(#tile)"/>
+  <rect x="8" y="8" width="240" height="240" rx="54" fill="none"
+        stroke="#2c4a36" stroke-width="2"/>
+
+  <!-- ── The page ──────────────────────────────────────────────── -->
+  <g transform="rotate(-5 128 128)">
+    <rect x="58" y="44" width="140" height="172" rx="14" fill="url(#page)"/>
+    <!-- Ruled lines, shorter at the end like a paragraph that stops. -->
+    <g stroke="#e0607e" stroke-width="7" stroke-linecap="round" opacity="0.5">
+      <path d="M80 82 H176"/>
+      <path d="M80 108 H176"/>
+      <path d="M80 134 H176"/>
+      <path d="M80 160 H150"/>
+      <path d="M80 186 H120"/>
+    </g>
+  </g>
+
+  <!-- ── The rose, laid over the page ──────────────────────────── -->
+  <g transform="translate(122 116) scale(0.62) translate(-128 -100)">
+    <!-- Stem, bending right as in the ASCII art -->
+    <path d="M128 140 C132 164, 144 182, 158 198 C164 205, 167 212, 167 219"
+          stroke="#3FA860" stroke-width="11" stroke-linecap="round" fill="none"/>
+
+    <!-- Leaf, left of the stem -->
+    <path d="M139 176 C117 180, 99 173, 90 156 C113 148, 132 156, 139 176 Z"
+          fill="#3FA860"/>
+    <!-- Leaf, right of the stem -->
+    <path d="M152 196 C173 198, 190 189, 197 172 C175 166, 157 177, 152 196 Z"
+          fill="#349050"/>
+    <!-- Sepals under the bloom -->
+    <path d="M112 130 C118 146, 130 152, 144 148 C140 134, 126 126, 112 130 Z"
+          fill="#3FA860"/>
+
+    <!-- Outermost petal cup -->
+    <path d="M128 38
+             C148 30, 172 42, 180 60
+             C198 68, 196 94, 186 108
+             C190 128, 170 146, 150 144
+             C138 156, 114 154, 104 141
+             C 84 140,  70 120,  74 102
+             C 62  86,  72  62,  90  54
+             C 98  38, 116  32, 128  38 Z"
+          fill="url(#outer)"/>
+
+    <!-- Left outer petal, folding across the front -->
+    <path d="M68 96 C68 122, 88 142, 116 146 C104 130, 98 112, 100 94
+             C102 74, 116 60, 134 58 C98 54, 68 70, 68 96 Z"
+          fill="url(#mid)"/>
+
+    <!-- Right outer petal, wrapping the other way -->
+    <path d="M188 96 C188 70, 166 50, 138 50 C154 62, 162 78, 160 96
+             C158 116, 146 130, 128 134 C164 140, 188 122, 188 96 Z"
+          fill="url(#mid)"/>
+
+    <!-- Inner cone the petals wrap around -->
+    <path d="M128 66 C146 66, 158 80, 158 98 C158 118, 144 132, 126 132
+             C110 132, 98 118, 98 100 C98 80, 110 66, 128 66 Z"
+          fill="url(#core)"/>
+
+    <!-- The tight centre: two short wraps, not a full spiral -->
+    <path d="M112 104 C112 88, 126 78, 140 84"
+          stroke="#7d7392" stroke-width="6" fill="none" stroke-linecap="round"/>
+    <path d="M144 100 C144 114, 130 122, 118 116"
+          stroke="#7d7392" stroke-width="6" fill="none" stroke-linecap="round"/>
+
+    <!-- Petal separations, keeping the layers readable -->
+    <path d="M100 94 C102 74, 116 60, 134 58"
+          stroke="#9d95b0" stroke-width="4" fill="none" stroke-linecap="round"/>
+    <path d="M160 96 C158 116, 146 130, 128 134"
+          stroke="#9d95b0" stroke-width="4" fill="none" stroke-linecap="round"/>
+  </g>
+</svg>

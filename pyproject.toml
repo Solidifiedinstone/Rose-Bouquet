@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rose-bouquet"
+version = "0.1.0"
+description = "Music player, YouTube Music downloader and LAN music server — themed the way you like"
+requires-python = ">=3.12"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+dependencies = [
+    "PySide6>=6.7.0",
+    "mutagen>=1.47",
+]
+
+[project.optional-dependencies]
+# Everything works without these; they add YouTube Music and Spotify import.
+online = [
+    "yt-dlp>=2024.1.0",
+    "ytmusicapi>=1.5",
+    "requests>=2.31",
+]
+
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5.0",
+]
+
+[project.scripts]
+rose-bouquet = "rose_bouquet.main:main"
+
+[tool.setuptools.packages.find]
+include = ["rose_bouquet*"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+# Deliberately not the full default set. These catch real mistakes —
+# undefined names, unused imports, shadowed builtins, import order — without
+# enforcing stylistic rewrites that would churn the codebase for no benefit.
+select = ["E", "F", "I", "B", "SIM", "PIE", "RUF"]
+ignore = [
+    "E501",     # line length is handled by the formatter, not the linter
+    "B008",     # function calls in defaults are used deliberately for Qt
+    "SIM105",   # contextlib.suppress is not clearer than try/except here
+    "RUF012",   # mutable class attrs are fine for Qt widget definitions
+    "SIM108",   # a ternary is not clearer than if/else for these branches
+    "RUF001",   # fullwidth glyphs are used deliberately as UI icons
+    "RUF002",   # en dashes in prose docstrings are deliberate
+    "RUF003",   # ...and in prose comments
+    "RUF005",   # explicit concatenation reads better than unpacking here
+    "RUF100",   # noqa codes are kept for stricter rulesets than this one
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["F401", "F811", "B011"]

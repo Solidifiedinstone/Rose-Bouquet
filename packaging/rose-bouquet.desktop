@@ -1,0 +1,27 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Rose Bouquet
+GenericName=Music Player
+Comment=Music player, YouTube browser and LAN music server — no account, local algorithm
+Exec=rose-bouquet
+Icon=rose-bouquet
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=music;player;youtube;audio;mp3;playlist;visualizer;subsonic;server;
+StartupNotify=true
+StartupWMClass=rose-bouquet
+
+Actions=ForYou;Library;Serve;
+
+[Desktop Action ForYou]
+Name=For you
+Exec=rose-bouquet --section feed
+
+[Desktop Action Library]
+Name=Library
+Exec=rose-bouquet --section library
+
+[Desktop Action Serve]
+Name=Start serving
+Exec=rose-bouquet --serve
