@@ -27,6 +27,7 @@ import csv
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from io import StringIO
 from typing import Callable, Optional
@@ -46,6 +47,13 @@ TOKEN_URL = "https://accounts.spotify.com/api/token"
 API_URL = "https://api.spotify.com/v1/playlists/{id}/tracks"
 
 TIMEOUT = 20
+
+#: How many lookups run at once. Enough to overlap the waiting, few enough that
+#: YouTube Music does not start refusing.
+MATCH_WORKERS = 6
+
+#: Report progress every this many tracks rather than on every one.
+PROGRESS_EVERY = 5
 
 
 @dataclass
@@ -408,6 +416,7 @@ def match_all(
     finder: Callable[[str, str], Optional[object]],
     *,
     progress: Optional[Callable[[int, int, SpotifyTrack], None]] = None,
+    workers: int = MATCH_WORKERS,
 ) -> ImportReport:
     """Find each track with `finder`, keeping the ones that came up empty.
 
@@ -416,17 +425,33 @@ def match_all(
     makes this testable without a network.
     """
     report = ImportReport()
+    tracks = list(tracks)
+    if not tracks:
+        return report
 
-    for index, track in enumerate(tracks):
-        if progress is not None:
-            progress(index, len(tracks), track)
-
+    def look_up(index_and_track):
+        index, track = index_and_track
         try:
-            found = finder(track.title, track.artist)
+            return index, track, finder(track.title, track.artist)
         except Exception as exc:                  # noqa: BLE001
             logger.debug("match failed for %s: %s", track, exc)
-            found = None
+            return index, track, None
 
+    # Each lookup is a network round trip that spends its time waiting, so they
+    # overlap. A 400-track playlist took a round trip per track in a row —
+    # long enough that the import looked like it had hung.
+    results: list[tuple[int, SpotifyTrack, Optional[object]]] = []
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        for done, outcome in enumerate(pool.map(look_up, enumerate(tracks))):
+            results.append(outcome)
+            # Reported every few tracks rather than every one: the interface
+            # cannot show 400 updates and does not need to.
+            if progress is not None and (done % PROGRESS_EVERY == 0 or done == len(tracks) - 1):
+                progress(done + 1, len(tracks), outcome[1])
+
+    # Sorted back into playlist order — the pool returns them as they finish.
+    results.sort(key=lambda row: row[0])
+    for _index, track, found in results:
         if found is None:
             report.missed.append(track)
         else:

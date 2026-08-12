@@ -22,6 +22,7 @@ nothing here circumvents DRM or paywalled content.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -29,6 +30,10 @@ from typing import Any, Callable, Optional
 from rose_bouquet.core.library import Track, data_dir
 
 logger = logging.getLogger(__name__)
+
+#: The fastest a download will report progress, in seconds.
+PROGRESS_INTERVAL = 0.4
+
 
 #: Where downloads go unless the user says otherwise.
 def downloads_dir() -> Path:
@@ -263,15 +268,34 @@ def download(
 
     stem = _safe_stem(request.artist, request.title) or request.video_id
 
+    # yt-dlp calls the hook for every chunk it reads — several times a second,
+    # per download. Passing all of that to the interface is what made a playlist
+    # import lock the window up, so it is rate-limited here at the source.
+    last_report = [0.0, ""]
+
     def hook(status: dict) -> None:
         if progress is None:
             return
-        if status.get("status") == "downloading":
-            total = status.get("total_bytes") or status.get("total_bytes_estimate") or 0
-            done = status.get("downloaded_bytes") or 0
-            progress((done / total) if total else 0.0, "downloading")
-        elif status.get("status") == "finished":
+
+        state = status.get("status")
+        if state == "finished":
             progress(1.0, "converting")
+            return
+        if state != "downloading":
+            return
+
+        total = status.get("total_bytes") or status.get("total_bytes_estimate") or 0
+        done = status.get("downloaded_bytes") or 0
+        fraction = (done / total) if total else 0.0
+
+        now = time.monotonic()
+        moved = abs(fraction - last_report[0]) >= 0.02
+        waited = now - (last_report[1] or 0) >= PROGRESS_INTERVAL if last_report[1] else True
+
+        if moved or waited:
+            last_report[0] = fraction
+            last_report[1] = now
+            progress(fraction, "downloading")
 
     options = {
         "format": "bestaudio/best",

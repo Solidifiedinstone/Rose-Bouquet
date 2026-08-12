@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -556,18 +556,44 @@ class YouTubeView(ScrollingView):
 
 
 class DownloadsView(ScrollingView):
-    """What is downloading, what finished, and what failed."""
+    """What is downloading, what finished, and what failed.
+
+    Rows are built once and updated in place. The first version rebuilt every
+    row on every progress tick, which is fine for one download and lethal for a
+    playlist import: three concurrent downloads reporting progress several times
+    a second, each rebuild throwing away and recreating hundreds of widgets. The
+    window stopped responding long before the downloads finished.
+
+    Updates are also coalesced onto a timer, so a burst of progress from several
+    downloads costs one repaint rather than one each.
+    """
 
     retry_requested = Signal(object)
 
+    #: Repaint at most this often. Faster than the eye needs, slower than
+    #: yt-dlp reports.
+    FLUSH_MS = 200
+
     def __init__(self, appearance: Appearance, parent: Optional[QWidget] = None) -> None:
         super().__init__(appearance, parent)
-        #: id → (label, fraction, state, payload)
+        #: key → (label, fraction, state, payload)
         self.entries: dict[str, tuple[str, float, str, object]] = {}
+        #: key → the widgets to update, so nothing is rebuilt needlessly
+        self.rows: dict[str, dict] = {}
+        self._dirty: set[str] = set()
+
+        self._flush_timer = QTimer(self)
+        self._flush_timer.setSingleShot(True)
+        self._flush_timer.setInterval(self.FLUSH_MS)
+        self._flush_timer.timeout.connect(self._flush)
 
         title = QLabel("Downloads")
         title.setObjectName("Heading")
         self.header_layout.addWidget(title)
+
+        self.summary = QLabel()
+        self.summary.setObjectName("Subtle")
+        self.header_layout.addWidget(self.summary)
         self.header_layout.addStretch(1)
 
         clear = QPushButton("Clear finished")
@@ -575,20 +601,79 @@ class DownloadsView(ScrollingView):
         clear.clicked.connect(self.clear_finished)
         self.header_layout.addWidget(clear)
 
+    # ── Updating ──────────────────────────────────────────────────
+
     def note(self, key: str, label: str, fraction: float, state: str, payload=None) -> None:
+        """Record progress. Cheap enough to call as often as you like."""
         self.entries[key] = (label, fraction, state, payload)
-        self.refresh()
+        self._dirty.add(key)
+        if not self._flush_timer.isActive():
+            self._flush_timer.start()
 
     def clear_finished(self) -> None:
-        self.entries = {
-            key: value for key, value in self.entries.items() if value[2] not in ("done",)
-        }
+        for key, (_label, _fraction, state, _payload) in list(self.entries.items()):
+            if state == "done":
+                del self.entries[key]
         self.refresh()
+
+    def _flush(self) -> None:
+        """Apply whatever changed since the last repaint."""
+        if set(self.rows) != set(self.entries):
+            # The set of downloads changed, so the list is rebuilt. This happens
+            # once per new download, not once per progress tick.
+            self.refresh()
+            return
+
+        for key in self._dirty:
+            self._update_row(key)
+        self._dirty.clear()
+        self._update_summary()
+
+    def _update_summary(self) -> None:
+        states = [state for _l, _f, state, _p in self.entries.values()]
+        running = sum(1 for s in states if s in ("queued", "downloading", "converting"))
+        done = sum(1 for s in states if s == "done")
+        failed = sum(1 for s in states if s == "failed")
+
+        parts = []
+        if running:
+            parts.append(f"{running} in progress")
+        if done:
+            parts.append(f"{done} done")
+        if failed:
+            parts.append(f"{failed} failed")
+        self.summary.setText(" · ".join(parts))
+
+    def _update_row(self, key: str) -> None:
+        row = self.rows.get(key)
+        entry = self.entries.get(key)
+        if row is None or entry is None:
+            return
+
+        label, fraction, state, payload = entry
+        row["name"].setText(label)
+        row["status"].setText(state)
+        row["status"].setStyleSheet(
+            f"color: {self.appearance.theme.error if state == 'failed' else self.appearance.theme.text_dim};"
+        )
+
+        bar = row["bar"]
+        finished = state in ("done", "failed")
+        bar.setVisible(not finished)
+        if not finished:
+            bar.setValue(int(fraction * 100))
+
+        row["retry"].setVisible(state == "failed" and payload is not None)
+
+    # ── Drawing ───────────────────────────────────────────────────
 
     def refresh(self, *_args) -> None:
         self.clear(self.body_layout)
+        self.rows = {}
+        self._dirty.clear()
 
         if not self.entries:
+            self.summary.clear()
             self.body_layout.addWidget(self.empty_label(
                 "Nothing downloading.\n\nFind something in YouTube Music and press "
                 "Download, or import a Spotify playlist."
@@ -596,47 +681,49 @@ class DownloadsView(ScrollingView):
             self.body_layout.addStretch(1)
             return
 
-        for key, (label, fraction, state, payload) in self.entries.items():
-            self.body_layout.addWidget(self._row(key, label, fraction, state, payload))
+        for key in self.entries:
+            widget, parts = self._build_row(key)
+            self.rows[key] = parts
+            self.body_layout.addWidget(widget)
+            self._update_row(key)
+
+        self._update_summary()
         self.body_layout.addStretch(1)
 
-    def _row(self, key: str, label: str, fraction: float, state: str, payload) -> QWidget:
+    def _build_row(self, key: str) -> tuple[QWidget, dict]:
         row = QWidget()
         layout = QVBoxLayout(row)
         layout.setContentsMargins(12, 6, 12, 6)
         layout.setSpacing(4)
 
         top = QHBoxLayout()
-        name = QLabel(label)
-        name.setStyleSheet(f"color: {self.appearance.theme.text}; background: transparent;")
+        name = QLabel()
+        name.setStyleSheet(f"color: {self.appearance.theme.text};")
         top.addWidget(name, 1)
 
-        status = QLabel({
-            "queued": "queued", "downloading": "downloading",
-            "converting": "converting", "done": "done", "failed": "failed",
-        }.get(state, state))
-        status.setStyleSheet(
-            f"color: {self.appearance.theme.error if state == 'failed' else self.appearance.theme.text_dim};"
-            f" background: transparent;"
-        )
+        status = QLabel()
+        status.setObjectName("Subtle")
         top.addWidget(status)
 
-        if state == "failed" and payload is not None:
-            again = QPushButton("Retry")
-            again.setObjectName("Quiet")
-            again.clicked.connect(lambda: self.retry_requested.emit(payload))
-            top.addWidget(again)
+        retry = QPushButton("Retry")
+        retry.setObjectName("Quiet")
+        def retry_this(_checked: bool = False, key: str = key) -> None:
+            # The entry may have been cleared between the click and the slot.
+            entry = self.entries.get(key)
+            if entry is not None and entry[3] is not None:
+                self.retry_requested.emit(entry[3])
 
+        retry.clicked.connect(retry_this)
+        retry.setVisible(False)
+        top.addWidget(retry)
         layout.addLayout(top)
 
-        if state not in ("done", "failed"):
-            bar = QProgressBar()
-            bar.setTextVisible(False)
-            bar.setFixedHeight(4)
-            bar.setValue(int(fraction * 100))
-            layout.addWidget(bar)
+        bar = QProgressBar()
+        bar.setTextVisible(False)
+        bar.setFixedHeight(4)
+        layout.addWidget(bar)
 
-        return row
+        return row, {"name": name, "status": status, "bar": bar, "retry": retry}
 
 
 # ── Spotify import ────────────────────────────────────────────────

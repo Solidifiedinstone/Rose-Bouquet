@@ -100,6 +100,13 @@ class MainWindow(QMainWindow):
             now_playing=self._now_playing,
         )
 
+        #: Library writes are coalesced: an import finishing four hundred
+        #: downloads should write the library once, not four hundred times.
+        self._library_save = QTimer(self)
+        self._library_save.setSingleShot(True)
+        self._library_save.setInterval(2000)
+        self._library_save.timeout.connect(self.library.save)
+
         self.setWindowTitle(APP_NAME)
         self.resize(*self.preferences.window_size)
 
@@ -653,8 +660,11 @@ class MainWindow(QMainWindow):
             track = ytmusic.track_from_download(outcome)
             if track is not None:
                 self.library.add(track)
-                self.library.save()
-                self.refresh()
+                self._library_save.start()
+                # Only redraw if the library is what is on screen; during an
+                # import the downloads view is, and it repaints itself.
+                if self.stack.currentWidget() in (self.views["library"], self.views["albums"]):
+                    self.refresh()
 
         self.notify(f"Downloaded {label}", "success")
 
