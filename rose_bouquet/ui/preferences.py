@@ -148,6 +148,10 @@ class Preferences:
 
     transient: dict[str, Any] = field(default_factory=dict)
 
+    #: True when there was no preferences file to read — i.e. this is the first
+    #: launch. Not saved; it is a fact about this run, not a setting.
+    first_run: bool = False
+
     # ── Derived ───────────────────────────────────────────────────
 
     def appearance(self) -> Appearance:
@@ -302,7 +306,7 @@ class Preferences:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
-            return cls()
+            return cls(first_run=True)
         except (OSError, ValueError) as exc:
             logger.warning("could not read %s, using defaults: %s", path, exc)
             return cls()

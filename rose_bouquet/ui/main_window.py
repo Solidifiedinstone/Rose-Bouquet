@@ -40,6 +40,7 @@ from rose_bouquet.core.tastes import Channel, Tastes
 from rose_bouquet.ui import tasks
 from rose_bouquet.ui.branding import APP_NAME
 from rose_bouquet.ui.feed_views import FeedView, SubscriptionsView
+from rose_bouquet.ui.first_run import FirstRunDialog
 from rose_bouquet.ui.playback import Playback
 from rose_bouquet.ui.preferences import Preferences
 from rose_bouquet.ui.settings import SettingsDialog
@@ -111,7 +112,11 @@ class MainWindow(QMainWindow):
         self.playback.set_volume(self.preferences.volume)
         self._restore_session()
 
-        if self.preferences.scan_on_start:
+        if self.preferences.first_run:
+            # Ask before the empty library is on screen — an empty list with no
+            # explanation is the worst possible first impression.
+            QTimer.singleShot(150, self.ask_for_music_folder)
+        elif self.preferences.scan_on_start:
             QTimer.singleShot(400, self.rescan)
         if self.server.config.enabled:
             QTimer.singleShot(200, lambda: self.toggle_server(True))
@@ -556,6 +561,25 @@ class MainWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
 
     # ── Library ───────────────────────────────────────────────────
+
+    def ask_for_music_folder(self) -> None:
+        """First launch: confirm where the music is, then scan it."""
+        dialog = FirstRunDialog(self.appearance, self)
+
+        if dialog.exec() != FirstRunDialog.DialogCode.Accepted:
+            # Dismissing is a real answer, and it is remembered: saving the
+            # preferences file is what stops this being asked again.
+            self.preferences.save()
+            self.notify("You can add a music folder any time in Settings", "info")
+            return
+
+        folder = str(dialog.folder)
+        self.preferences.folders = [folder]
+        self.preferences.scan_on_start = dialog.scan_on_start
+        self.preferences.save()
+
+        self.library.folders = [folder]
+        self.rescan()
 
     def rescan(self) -> None:
         self.notify("Scanning for music…", "info")

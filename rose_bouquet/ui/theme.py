@@ -565,6 +565,17 @@ def stylesheet(theme: Theme, style: Optional[Style] = None) -> str:
         background-color: {theme.background};
     }}
 
+    /* Labels sit on whatever is behind them.
+
+       The QWidget rule above gives every widget the window background, and a
+       QLabel is a QWidget — so without this a label inside a panel paints a
+       window-coloured box over that panel. It shows up as a rectangle of the
+       wrong shade behind text, which is exactly the kind of bug that survives
+       a long time because each instance looks like a one-off. */
+    QLabel {{
+        background: transparent;
+    }}
+
     /* ── Panels ─────────────────────────────────────────────── */
 
     #Sidebar {{

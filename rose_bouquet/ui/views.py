@@ -41,6 +41,11 @@ class ScrollingView(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
+        #: For widgets that must outlive a refresh. `body_layout` is cleared on
+        #: every redraw, and anything the user types into must not be in there —
+        #: a text field that is deleted and re-added loses its contents and its
+        #: focus, and if it was built once in __init__ it simply disappears.
+        self.outer = outer
 
         self.header = QWidget()
         self.header_layout = QHBoxLayout(self.header)
@@ -653,9 +658,31 @@ class ImportView(ScrollingView):
         self.header_layout.addWidget(title)
         self.header_layout.addStretch(1)
 
+        self.outer.insertWidget(1, self._form())
+        self.refresh()
+
+    def _form(self) -> QWidget:
+        """The part you type into — built once and never rebuilt."""
+        form = QWidget()
+        layout = QVBoxLayout(form)
+        layout.setContentsMargins(18, 4, 18, 10)
+        layout.setSpacing(8)
+
+        explain = QLabel(
+            "Spotify does not let anything take the audio, so an import brings "
+            "the track list across and finds each song on YouTube Music. Most "
+            "match. The ones that do not are listed below rather than quietly "
+            "dropped — that list is the whole point."
+        )
+        explain.setObjectName("Subtle")
+        explain.setWordWrap(True)
+        layout.addWidget(explain)
+
         self.link = QLineEdit()
-        self.link.setPlaceholderText("https://open.spotify.com/playlist/…")
+        self.link.setPlaceholderText("Paste a playlist link — https://open.spotify.com/playlist/…")
+        self.link.setClearButtonEnabled(True)
         self.link.returnPressed.connect(lambda: self._go(download=False))
+        layout.addWidget(self.link)
 
         self.paste = QPlainTextEdit()
         self.paste.setPlaceholderText(
@@ -664,9 +691,24 @@ class ImportView(ScrollingView):
             "Artist - Title\n\n"
             "An Exportify CSV works too."
         )
-        self.paste.setMaximumHeight(150)
+        self.paste.setMaximumHeight(130)
+        layout.addWidget(self.paste)
 
-        self.refresh()
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+
+        self.match_button = QPushButton("Match only")
+        self.match_button.setToolTip("Find them on YouTube Music without downloading")
+        self.match_button.clicked.connect(lambda: self._go(download=False))
+        buttons.addWidget(self.match_button)
+
+        self.fetch_button = QPushButton("Match and download")
+        self.fetch_button.setObjectName("Primary")
+        self.fetch_button.clicked.connect(lambda: self._go(download=True))
+        buttons.addWidget(self.fetch_button)
+
+        layout.addLayout(buttons)
+        return form
 
     def _go(self, *, download: bool) -> None:
         if self.busy:
@@ -696,38 +738,10 @@ class ImportView(ScrollingView):
         self.clear(self.body_layout)
         self.progress_label = None
 
-        explain = QLabel(
-            "Spotify does not let anything take the audio, so an import brings "
-            "the track list across and finds each song on YouTube Music. Most "
-            "match. The ones that do not are listed below rather than quietly "
-            "dropped — that list is the whole point."
-        )
-        explain.setObjectName("Subtle")
-        explain.setWordWrap(True)
-        self.body_layout.addWidget(explain)
-
-        self.body_layout.addWidget(SectionHeading("Playlist link", self.appearance))
-        self.body_layout.addWidget(self.link)
-        self.body_layout.addWidget(self.paste)
-
-        buttons = QWidget()
-        row = QHBoxLayout(buttons)
-        row.setContentsMargins(0, 6, 0, 0)
-        row.addStretch(1)
-
-        match_only = QPushButton("Match only")
-        match_only.setToolTip("Find them on YouTube Music without downloading")
-        match_only.setEnabled(not self.busy)
-        match_only.clicked.connect(lambda: self._go(download=False))
-        row.addWidget(match_only)
-
-        fetch = QPushButton("Match and download")
-        fetch.setObjectName("Primary")
-        fetch.setEnabled(not self.busy)
-        fetch.clicked.connect(lambda: self._go(download=True))
-        row.addWidget(fetch)
-
-        self.body_layout.addWidget(buttons)
+        # The form is persistent chrome; only the results are redrawn.
+        for button in (getattr(self, "match_button", None), getattr(self, "fetch_button", None)):
+            if button is not None:
+                button.setEnabled(not self.busy)
 
         if self.busy:
             self.progress_label = QLabel(self.progress_text or "Working…")
