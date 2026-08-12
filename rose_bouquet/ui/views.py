@@ -66,10 +66,19 @@ class ScrollingView(QWidget):
 
     @staticmethod
     def clear(layout) -> None:
+        """Empty a layout and let the widgets go.
+
+        `deleteLater` alone leaves them alive — and parented — until the event
+        loop next runs, so a burst of rebuilds can pile up thousands of live
+        widgets before any are freed. Unparenting first drops them out of the
+        tree immediately, and the deferred delete then only has to free them.
+        """
         while layout.count():
             item = layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
 
     def empty_label(self, text: str) -> QLabel:
         label = QLabel(text)
@@ -108,7 +117,13 @@ class LibraryView(ScrollingView):
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search your library…")
         self.search.setClearButtonEnabled(True)
-        self.search.textChanged.connect(lambda _text: self.refresh())
+        # Typing "midwest emo" rebuilt the list eleven times, ten of them for
+        # results nobody read. Rebuilds now wait for a pause in the typing.
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(160)
+        self._search_timer.timeout.connect(lambda: self.refresh(self.playing_path))
+        self.search.textChanged.connect(lambda _text: self._search_timer.start())
         self.header_layout.addWidget(self.search, 1)
 
         self.count = QLabel()
@@ -732,6 +747,7 @@ class ImportView(ScrollingView):
     """Import a Spotify playlist, and say plainly what did not come across."""
 
     import_requested = Signal(str, str, bool)    # link, pasted text, download?
+    resume_requested = Signal(object)            # ImportJob
     status = Signal(str, str)
 
     def __init__(self, appearance: Appearance, parent: Optional[QWidget] = None) -> None:
@@ -739,6 +755,8 @@ class ImportView(ScrollingView):
         self.report: Optional[spotify.ImportReport] = None
         self.busy = False
         self.progress_text = ""
+        #: Imports found on disk with work left, offered for resuming.
+        self.unfinished: list = []
 
         title = QLabel("Import from Spotify")
         title.setObjectName("Heading")
@@ -746,6 +764,11 @@ class ImportView(ScrollingView):
         self.header_layout.addStretch(1)
 
         self.outer.insertWidget(1, self._form())
+        self.refresh()
+
+    def show_unfinished(self, jobs: list) -> None:
+        """Offer to pick up an import that was cut short."""
+        self.unfinished = jobs
         self.refresh()
 
     def _form(self) -> QWidget:
@@ -835,10 +858,33 @@ class ImportView(ScrollingView):
             self.progress_label.setObjectName("Subtle")
             self.body_layout.addWidget(self.progress_label)
 
+        for job in self.unfinished:
+            self.body_layout.addWidget(self._unfinished_row(job))
+
         if self.report is not None:
             self._render_report(self.report)
 
         self.body_layout.addStretch(1)
+
+    def _unfinished_row(self, job) -> QWidget:
+        """One interrupted import, with a button to carry on."""
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 8, 0, 0)
+        layout.setSpacing(10)
+
+        label = QLabel(f"“{job.title}” — {job.summary}")
+        label.setStyleSheet(f"color: {self.appearance.theme.warning};")
+        label.setWordWrap(True)
+        layout.addWidget(label, 1)
+
+        resume = QPushButton("Carry on")
+        resume.setObjectName("Primary")
+        resume.setToolTip("Download what this import still owes, skipping anything you already have")
+        resume.clicked.connect(lambda _c=False, job=job: self.resume_requested.emit(job))
+        layout.addWidget(resume)
+
+        return row
 
     def _render_report(self, report: spotify.ImportReport) -> None:
         self.body_layout.addWidget(SectionHeading(

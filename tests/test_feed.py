@@ -316,3 +316,127 @@ def test_seeds_are_taken_from_likes_and_repeats(tastes):
     assert "liked" in chosen
     assert "repeated" in chosen
     assert "once" not in chosen
+
+
+# ── Resumable imports ─────────────────────────────────────────────
+
+from rose_bouquet.core import imports  # noqa: E402
+
+
+class FakeTrack:
+    def __init__(self, title, artist=""):
+        self.title = title
+        self.artist = artist
+
+
+def test_an_import_records_every_track_once():
+    job = imports.ImportJob(title="Mix")
+    tracks = [FakeTrack("A", "One"), FakeTrack("B", "Two")]
+
+    assert job.add_tracks(tracks) == 2
+    # Importing the same playlist again must not duplicate rows.
+    assert job.add_tracks(tracks) == 0
+    assert job.total == 2
+
+
+def test_a_part_read_playlist_tops_up_the_same_record():
+    """Read 100, come back for the rest — the point of the whole file."""
+    job = imports.ImportJob(title="Long")
+    job.add_tracks([FakeTrack(f"Song {i}") for i in range(100)])
+    job.partial = True
+
+    added = job.add_tracks([FakeTrack(f"Song {i}") for i in range(250)])
+
+    assert added == 150
+    assert job.total == 250
+
+
+def test_pending_is_what_is_matched_but_not_downloaded():
+    job = imports.ImportJob(title="Mix")
+    job.add_tracks([FakeTrack("A"), FakeTrack("B"), FakeTrack("C")])
+
+    job.note_match(job.entries[0], "vid-a")
+    job.note_match(job.entries[1], "")            # nothing found
+    job.note_match(job.entries[2], "vid-c")
+    job.note_done("vid-c", "/music/c.mp3")
+
+    assert [e.title for e in job.pending()] == ["A"]
+    assert [e.title for e in job.missing()] == ["B"]
+    assert job.count(imports.DONE) == 1
+
+
+def test_a_failed_download_is_recorded_and_not_lost():
+    job = imports.ImportJob(title="Mix")
+    job.add_tracks([FakeTrack("A")])
+    job.note_match(job.entries[0], "vid-a")
+
+    job.note_failed("vid-a", "YouTube said no")
+
+    assert job.count(imports.FAILED) == 1
+    assert job.entries[0].error == "YouTube said no"
+
+
+def test_tracks_already_in_the_library_are_not_downloaded_again():
+    from rose_bouquet.core.library import Library, Track
+
+    library = Library()
+    library.add(Track(path="/music/a.mp3", title="A", artist="One", source_id="vid-a"))
+    library.add(Track(path="/music/b.mp3", title="B", artist="Two"))
+
+    job = imports.ImportJob(title="Mix")
+    job.add_tracks([FakeTrack("A", "One"), FakeTrack("B", "Two"), FakeTrack("C", "Three")])
+    job.note_match(job.entries[0], "vid-a")
+
+    skipped = job.skip_already_downloaded(library)
+
+    assert skipped == 2                      # by video id, and by artist+title
+    assert job.count(imports.DONE) == 2
+    assert job.entries[2].state == imports.PENDING
+
+
+def test_an_import_round_trips_through_disk(tmp_path):
+    job = imports.ImportJob(title="Mix", link="https://open.spotify.com/playlist/abc")
+    job.add_tracks([FakeTrack("A", "One")])
+    job.note_match(job.entries[0], "vid-a")
+    path = job.save(tmp_path)
+
+    restored = imports.ImportJob.load(path)
+    assert restored.title == "Mix"
+    assert restored.entries[0].video_id == "vid-a"
+    assert restored.entries[0].state == imports.MATCHED
+
+
+def test_importing_the_same_playlist_continues_it(tmp_path):
+    first = imports.ImportJob(title="Mix", link="https://open.spotify.com/playlist/abc")
+    first.add_tracks([FakeTrack("A")])
+    first.save(tmp_path)
+
+    again = imports.ImportJob.for_link(
+        "https://open.spotify.com/playlist/abc", "Mix", tmp_path)
+
+    assert again.total == 1                  # the existing record, not a new one
+
+
+def test_unfinished_lists_only_imports_with_work_left(tmp_path):
+    done = imports.ImportJob(title="Finished")
+    done.add_tracks([FakeTrack("A")])
+    done.entries[0].state = imports.DONE
+    done.save(tmp_path)
+
+    todo = imports.ImportJob(title="Halfway")
+    todo.add_tracks([FakeTrack("B")])
+    todo.note_match(todo.entries[0], "vid-b")
+    todo.save(tmp_path)
+
+    assert [j.title for j in imports.unfinished(tmp_path)] == ["Halfway"]
+
+
+def test_a_finished_import_says_so():
+    job = imports.ImportJob(title="Mix")
+    job.add_tracks([FakeTrack("A"), FakeTrack("B")])
+    job.note_match(job.entries[0], "vid-a")
+    job.note_done("vid-a", "/music/a.mp3")
+    job.entries[1].state = imports.MISSING
+
+    assert job.finished
+    assert "1 of 2 downloaded" in job.summary

@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from rose_bouquet.core import spotify, ytmusic
+from rose_bouquet.core import imports, spotify, ytmusic
 from rose_bouquet.core import youtube as yt
 from rose_bouquet.core.library import Library, Track, data_dir
 from rose_bouquet.core.playlists import PlaylistStore
@@ -55,12 +55,14 @@ from rose_bouquet.ui.views import (
     YouTubeView,
 )
 from rose_bouquet.ui.visualizer import Visualizer
+from rose_bouquet.ui.watch import WatchView
 from rose_bouquet.ui.widgets import Banner, CoverArt
 
 logger = logging.getLogger(__name__)
 
 SECTIONS = [
     ("feed", "For you", "✦"),
+    ("watch", "Watch", "▶"),
     ("subscriptions", "Following", "☆"),
     ("library", "Library", "♫"),
     ("albums", "Albums", "▣"),
@@ -100,6 +102,17 @@ class MainWindow(QMainWindow):
             now_playing=self._now_playing,
         )
 
+        #: The import being worked through, if any.
+        self.import_job: Optional[imports.ImportJob] = None
+        self.last_import_link = ""
+
+        self._import_save = QTimer(self)
+        self._import_save.setSingleShot(True)
+        self._import_save.setInterval(1500)
+        self._import_save.timeout.connect(
+            lambda: self.import_job is not None and self.import_job.save()
+        )
+
         #: Library writes are coalesced: an import finishing four hundred
         #: downloads should write the library once, not four hundred times.
         self._library_save = QTimer(self)
@@ -118,6 +131,8 @@ class MainWindow(QMainWindow):
 
         self.playback.set_volume(self.preferences.volume)
         self._restore_session()
+
+        QTimer.singleShot(900, self.check_unfinished_imports)
 
         if self.preferences.first_run:
             # Ask before the empty library is on screen — an empty list with no
@@ -204,6 +219,14 @@ class MainWindow(QMainWindow):
         subscriptions.status.connect(self.notify)
         self._register("subscriptions", subscriptions)
 
+        watch = WatchView(self.youtube, self.appearance)
+        watch.playback_requested.connect(self.playback.pause)
+        watch.download_requested.connect(self.download_video)
+        watch.subscribe_requested.connect(self.subscribe_to_video_channel)
+        watch.like_toggled.connect(self.like_video)
+        watch.status.connect(self.notify)
+        self._register("watch", watch)
+
         library_view = LibraryView(self.library, self.appearance)
         library_view.play_requested.connect(self.play_track)
         library_view.menu_requested.connect(self.open_track_menu)
@@ -227,6 +250,7 @@ class MainWindow(QMainWindow):
 
         importer = ImportView(self.appearance)
         importer.import_requested.connect(self.import_spotify)
+        importer.resume_requested.connect(self.resume_import)
         importer.status.connect(self.notify)
         self._register("import", importer)
 
@@ -424,6 +448,11 @@ class MainWindow(QMainWindow):
 
     def play_track(self, track: Track, context: Optional[list[Track]] = None) -> None:
         """Play a track in the context of the list it was clicked in."""
+        # Music and a video playing over each other is nobody's intent.
+        watch = self.views.get("watch")
+        if watch is not None:
+            watch.stop()
+
         tracks = list(context) if context else [track]
         try:
             start = next(i for i, t in enumerate(tracks) if t.path == track.path)
@@ -625,6 +654,20 @@ class MainWindow(QMainWindow):
     def _download(self, request: ytmusic.DownloadRequest) -> None:
         downloads = self.views["downloads"]
         key = request.video_id
+
+        # Asking for the same track twice while the first is still going costs
+        # bandwidth and produces two files racing for the same name. Pressing
+        # Download twice is a normal thing to do, so it is handled here rather
+        # than treated as user error.
+        existing = downloads.entries.get(key)
+        if existing is not None and existing[2] in ("queued", "downloading", "converting"):
+            self.notify(f"Already downloading {request.title}", "info")
+            return
+
+        # Already in the library, from a previous run or a previous import.
+        if any(t.source_id == key for t in self.library.tracks.values()):
+            self.notify(f"{request.title} is already in your library", "info")
+            return
         label = f"{request.artist} — {request.title}" if request.artist else request.title
         downloads.note(key, label, 0.0, "queued", request)
 
@@ -653,10 +696,17 @@ class MainWindow(QMainWindow):
 
         if not outcome.ok:
             downloads.note(key, label, 0.0, "failed", outcome.request)
+            if self.import_job is not None:
+                self.import_job.note_failed(key, outcome.error)
+                self._import_save.start()
             self.notify(f"Download failed: {outcome.error[:80]}", "error")
             return
 
         downloads.note(key, label, 1.0, "done", None)
+
+        if self.import_job is not None:
+            self.import_job.note_done(key, outcome.path)
+            self._import_save.start()
 
         if self.preferences.add_downloads_to_library:
             track = ytmusic.track_from_download(outcome)
@@ -744,6 +794,37 @@ class MainWindow(QMainWindow):
             fmt=self.preferences.download_format,
         ))
 
+    def download_video(self, video) -> None:
+        """Take the audio from a video being watched or listed."""
+        self._download(ytmusic.DownloadRequest(
+            video_id=video.id, title=video.title, artist=video.channel,
+            fmt=self.preferences.download_format,
+        ))
+
+    def subscribe_to_video_channel(self, video) -> None:
+        channel = video.to_channel()
+        if not channel.id and not channel.title:
+            self.notify("That video does not say which channel it is from", "warning")
+            return
+
+        followed = self.tastes.toggle_subscription(channel)
+        self.tastes.save()
+        self.notify(
+            f"Following {channel.title}" if followed else f"Unfollowed {channel.title}",
+            "success" if followed else "info",
+        )
+        self.refresh()
+
+    def like_video(self, video) -> None:
+        liked = self.tastes.like(video.id, video.title, video.channel, video.channel_id)
+        self.tastes.save()
+        self.notify("Liked" if liked else "Like removed", "success" if liked else "info")
+
+    def watch_video(self, video) -> None:
+        """Open something in the watch screen from anywhere else in the app."""
+        self.show_section("watch")
+        self.views["watch"].watch(video)
+
     def toggle_like(self, item: Candidate) -> None:
         liked = self.tastes.like(item.id, item.title, item.artist, item.channel_id)
         self.tastes.save()
@@ -781,23 +862,28 @@ class MainWindow(QMainWindow):
             self.refresh()
 
     def open_channel(self, channel: Channel) -> None:
-        """Show a channel's recent uploads in the feed view."""
-        view = self.views["feed"]
-        view.show_progress(f"Loading {channel.title}…")
-        self.show_section("feed")
+        """Show a channel's recent uploads, watchable."""
+        watch = self.views["watch"]
+        watch.loading = True
+        watch.refresh()
+        self.show_section("watch")
 
         def work():
-            videos = self.youtube.uploads(channel.id or channel.title, limit=30)
-            return rank([v.to_candidate("channel") for v in videos], self.tastes, limit=30)
+            return self.youtube.uploads(channel.id or channel.title, limit=30)
 
-        tasks.run(work, on_done=view.show_feed,
-                  on_error=lambda message: (view.show_feed([]),
-                                            self.notify(f"Could not load that: {message}", "error")))
+        tasks.run(
+            work,
+            on_done=lambda videos: watch.show_videos(
+                videos, note=f"{len(videos)} from {channel.title}" if videos else "Nothing there"),
+            on_error=lambda message: (watch.show_videos([]),
+                                      self.notify(f"Could not load that: {message}", "error")),
+        )
 
     # ── Spotify import ────────────────────────────────────────────
 
     def import_spotify(self, link: str, text: str, download: bool) -> None:
         importer = self.views["import"]
+        self.last_import_link = link.strip()
         credentials = _credentials()
 
         def work(report) -> tuple[str, spotify.ImportReport]:
@@ -851,6 +937,28 @@ class MainWindow(QMainWindow):
             self.notify("Nothing could be read from that playlist", "warning")
             return
 
+        # An import is a record on disk, so an interrupted one can be picked up
+        # where it stopped instead of starting over.
+        job = imports.ImportJob.for_link(self.last_import_link, report.title)
+        job.partial = bool(getattr(report, "truncated", False))
+        job.add_tracks([source for source, _found in report.matched] + report.missed)
+
+        for source, found in report.matched:
+            entry = next((e for e in job.entries if e.key == _entry_key(source)), None)
+            if entry is not None:
+                job.note_match(entry, getattr(found, "id", ""))
+        for source in report.missed:
+            entry = next((e for e in job.entries if e.key == _entry_key(source)), None)
+            if entry is not None:
+                entry.state = imports.MISSING
+
+        already = job.skip_already_downloaded(self.library)
+        job.save()
+        self.import_job = job
+
+        if already:
+            self.notify(f"{already} of these are already in your library", "info")
+
         # The playlist is created either way, so the misses are recorded even if
         # nothing is downloaded.
         playlist = self.playlists.create(report.title or "Imported playlist")
@@ -868,13 +976,50 @@ class MainWindow(QMainWindow):
             self.notify(report.summary, "success" if not report.missed else "warning")
 
         if download:
-            for _source, found in report.matched:
-                self._download(ytmusic.DownloadRequest(
-                    video_id=found.id, title=found.title,
-                    artist=found.artist, album=found.album,
-                    fmt=self.preferences.download_format,
-                ))
-            self.show_section("downloads")
+            self.download_pending(job)
+
+    def download_pending(self, job=None) -> None:
+        """Download everything an import still owes, and remember what lands.
+
+        Called both after an import and to resume one: the record knows which
+        rows are outstanding, so being interrupted costs nothing but the
+        download that was in flight.
+        """
+        job = job or self.import_job
+        if job is None:
+            return
+
+        outstanding = job.pending()
+        if not outstanding:
+            self.notify(job.summary, "success")
+            return
+
+        self.notify(f"Downloading {len(outstanding)} tracks — {job.summary}", "info")
+        for entry in outstanding:
+            self._download(ytmusic.DownloadRequest(
+                video_id=entry.video_id, title=entry.title,
+                artist=entry.artist, fmt=self.preferences.download_format,
+            ))
+        self.show_section("downloads")
+
+    def resume_import(self, job) -> None:
+        """Pick up an import that was cut short."""
+        skipped = job.skip_already_downloaded(self.library)
+        job.save()
+        self.import_job = job
+
+        if skipped:
+            self.notify(f"{skipped} were already in your library", "info")
+        self.download_pending(job)
+
+    def check_unfinished_imports(self) -> None:
+        """Look for interrupted imports and offer them on the import screen."""
+        jobs = imports.unfinished()
+        self.views["import"].show_unfinished(jobs)
+        if jobs:
+            self.notify(
+                f"“{jobs[0].title}” was left unfinished — {jobs[0].summary}", "warning"
+            )
 
     # ── Server ────────────────────────────────────────────────────
 
@@ -1016,8 +1161,13 @@ class MainWindow(QMainWindow):
             logger.warning("could not save the session: %s", exc)
 
     def closeEvent(self, event) -> None:
+        # Anything still running is about to lose the widgets it reports to.
+        tasks.cancel_all()
         self._save_session()
         self.tastes.save()
+        if self.import_job is not None:
+            self.import_job.save()
+        self.views["watch"].stop()
         self.playback.stop()
         self.visualizer.stop()
         self.server.stop()
@@ -1031,6 +1181,13 @@ class MainWindow(QMainWindow):
 
         self.library.save()
         super().closeEvent(event)
+
+
+def _entry_key(track) -> str:
+    """The same identity `imports.Entry` uses, for lining rows up."""
+    artist = getattr(track, "artist", "") or ""
+    title = getattr(track, "title", "") or ""
+    return f"{artist.lower().strip()}|{title.lower().strip()}"
 
 
 def _clock(milliseconds: int) -> str:

@@ -308,6 +308,9 @@ def download(
     Files are named `Artist - Title.ext` rather than by video id, because the
     point of downloading is to end up with a music file, not a YouTube artefact.
     """
+    if not request.video_id.strip():
+        return DownloadResult(error="No video to download", request=request)
+
     folder = Path(folder or downloads_dir())
     folder.mkdir(parents=True, exist_ok=True)
 

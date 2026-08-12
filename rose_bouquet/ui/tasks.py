@@ -105,20 +105,38 @@ class Job(QRunnable):
         """Ask the job to stop. Cooperative — the work has to check `cancelled`."""
         self.cancelled = True
 
+    def _emit(self, signal, value) -> None:
+        """Emit unless the receiving side has gone away.
+
+        A job can outlive the window that started it — closing the app while a
+        download is in flight is entirely normal — and emitting through a
+        deleted QObject raises out of `run()` into Qt, which reports it as an
+        error and can take the process with it.
+        """
+        if self.cancelled:
+            return
+        try:
+            signal.emit(value)
+        except RuntimeError:
+            logger.debug("dropped a result for a job whose owner is gone")
+
     @Slot()
     def run(self) -> None:
         try:
             if self.wants_progress:
-                result = self.work(*self.args, report=self.signals.progress.emit, **self.kwargs)
+                result = self.work(
+                    *self.args,
+                    report=lambda update: self._emit(self.signals.progress, update),
+                    **self.kwargs,
+                )
             else:
                 result = self.work(*self.args, **self.kwargs)
         except Exception as exc:                  # noqa: BLE001 — the point is to not crash
             logger.exception("background job failed")
-            self.signals.failed.emit(str(exc))
+            self._emit(self.signals.failed, str(exc))
             return
 
-        if not self.cancelled:
-            self.signals.finished.emit(result)
+        self._emit(self.signals.finished, result)
 
 
 def run(
@@ -160,3 +178,10 @@ def downloads_pool() -> QThreadPool:
 def in_flight() -> int:
     """How many jobs are running. Used by tests and the shutdown path."""
     return len(_running)
+
+
+def cancel_all() -> None:
+    """Tell every job in flight to stop reporting. Called when shutting down."""
+    for job in list(_running):
+        job.cancel()
+    _running.clear()

@@ -257,9 +257,22 @@ class YouTube:
 
         Audio-only by default: this is a music app, and streaming video to play
         a song wastes bandwidth on both ends.
+
+        For video the selector asks for a *progressive* stream — one file with
+        both tracks in it. YouTube's highest qualities are served as separate
+        video and audio files expecting the player to mux them, which
+        QMediaPlayer cannot do: it would play a silent picture. A slightly lower
+        resolution that actually has sound is the right trade for a music app.
         """
         options = {
-            "format": "bestaudio/best" if audio_only else "best",
+            "format": (
+                # `bestaudio` alone can still hand back a muxed file when the
+                # client offers no audio-only format, which quietly streams the
+                # video anyway. Asking for no video codec first is what makes
+                # "audio only" actually mean it.
+                "bestaudio[vcodec=none]/bestaudio/best" if audio_only
+                else "best[acodec!=none][vcodec!=none]/b[ext=mp4][acodec!=none]/best"
+            ),
             "extract_flat": False,
         }
         data = self._extract(f"https://www.youtube.com/watch?v={video_id}", options)
