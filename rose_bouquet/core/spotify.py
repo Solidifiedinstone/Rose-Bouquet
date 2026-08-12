@@ -38,6 +38,10 @@ NEXT_DATA = re.compile(
     r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', re.S
 )
 EMBED_URL = "https://open.spotify.com/embed/playlist/{id}"
+#: The token the web player itself uses. No account, no registration — it is
+#: what makes paging a long playlist possible without credentials.
+ANON_TOKEN_URL = ("https://open.spotify.com/get_access_token"
+                  "?reason=transport&productType=web_player")
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 API_URL = "https://api.spotify.com/v1/playlists/{id}/tracks"
 
@@ -68,6 +72,8 @@ class ImportReport:
     title: str = ""
     matched: list[tuple[SpotifyTrack, object]] = field(default_factory=list)
     missed: list[SpotifyTrack] = field(default_factory=list)
+    #: Set when the source probably had more tracks than we could read.
+    truncated: bool = False
 
     @property
     def total(self) -> int:
@@ -250,6 +256,149 @@ def _from_csv(text: str) -> list[SpotifyTrack]:
         if title:
             tracks.append(SpotifyTrack(title=title, artist=artist, album=album))
     return tracks
+
+
+def anonymous_token() -> str:
+    """An access token from the public web player. Empty if it cannot be had."""
+    try:
+        import requests
+
+        response = requests.get(
+            ANON_TOKEN_URL, timeout=TIMEOUT,
+            headers={"User-Agent": "Mozilla/5.0 (rose-bouquet)"},
+        )
+        response.raise_for_status()
+        token = response.json().get("accessToken", "")
+    except Exception as exc:                      # noqa: BLE001
+        logger.info("no anonymous Spotify token: %s", exc)
+        return ""
+
+    return token if isinstance(token, str) else ""
+
+
+def _page_tracks(get_json, identifier: str, *, per_page: int = 100,
+                 ceiling: int = 10000) -> list[SpotifyTrack]:
+    """Walk every page of a playlist. `get_json(url, params)` does the fetching.
+
+    Injected rather than hard-coded so the paging itself — the part that was
+    broken — is testable without a network or an account.
+
+    The ceiling is a runaway guard, not a limit anybody should hit: it is twice
+    Spotify's own maximum playlist size.
+    """
+    tracks: list[SpotifyTrack] = []
+    offset = 0
+
+    while offset < ceiling:
+        payload = get_json(
+            API_URL.format(id=identifier),
+            {"limit": per_page, "offset": offset,
+             "fields": "items(track(name,artists(name),album(name),duration_ms)),total"},
+        )
+        if not isinstance(payload, dict):
+            break
+
+        items = payload.get("items")
+        if not isinstance(items, list) or not items:
+            break
+
+        for item in items:
+            inner = (item or {}).get("track") or {}
+            if not inner.get("name"):
+                # Local files and removed tracks come back as empty entries.
+                # They are genuinely missing, and skipping them here means the
+                # import report will not claim to have found them.
+                continue
+            tracks.append(SpotifyTrack(
+                title=inner.get("name", ""),
+                artist=_artist_names(inner),
+                album=_album_name(inner),
+                duration=int(inner.get("duration_ms", 0) // 1000),
+            ))
+
+        offset += len(items)
+        total = payload.get("total")
+        if isinstance(total, int) and offset >= total:
+            break
+
+    return tracks
+
+
+def from_public_api(link: str, token: str = "") -> tuple[str, list[SpotifyTrack]]:
+    """Read a playlist in full, with no credentials, by paging the web API.
+
+    This is the route that fixes long playlists: the embed endpoint returns only
+    the first hundred tracks and gives no hint that it truncated, so a 400-track
+    playlist silently imported as 100.
+    """
+    identifier = playlist_id(link)
+    if not identifier:
+        return "", []
+
+    token = token or anonymous_token()
+    if not token:
+        return "", []
+
+    try:
+        import requests
+
+        headers = {"Authorization": f"Bearer {token}"}
+
+        def get_json(url: str, params: dict):
+            response = requests.get(url, headers=headers, params=params, timeout=TIMEOUT)
+            response.raise_for_status()
+            return response.json()
+
+        tracks = _page_tracks(get_json, identifier)
+
+        title = ""
+        try:
+            details = get_json(
+                f"https://api.spotify.com/v1/playlists/{identifier}", {"fields": "name"}
+            )
+            title = details.get("name", "") if isinstance(details, dict) else ""
+        except Exception:                         # noqa: BLE001 — the name is a nicety
+            pass
+
+        return title, tracks
+    except Exception as exc:                      # noqa: BLE001
+        logger.warning("the public Spotify API failed: %s", exc)
+        return "", []
+
+
+def fetch_playlist(
+    link: str,
+    client_id: str = "",
+    client_secret: str = "",
+) -> tuple[str, list[SpotifyTrack]]:
+    """Read a playlist by whatever route works, most complete first.
+
+    Order matters. The embed endpoint is the most reliable but caps at 100
+    tracks, so it is the *fallback*, not the first choice — and if it is all we
+    have, and it returned exactly its limit, the caller is told the count may be
+    short rather than left to assume the playlist was small.
+    """
+    if not playlist_id(link):
+        return "", []
+
+    title, tracks = from_public_api(link)
+    if tracks:
+        return title, tracks
+
+    if client_id and client_secret:
+        title, tracks = from_api(link, client_id, client_secret)
+        if tracks:
+            return title, tracks
+
+    return from_embed(link)
+
+
+EMBED_LIMIT = 100
+
+
+def looks_truncated(tracks: list[SpotifyTrack]) -> bool:
+    """Whether a track list is suspiciously exactly one embed page long."""
+    return len(tracks) == EMBED_LIMIT
 
 
 # ── Matching ──────────────────────────────────────────────────────

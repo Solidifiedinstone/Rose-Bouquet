@@ -307,7 +307,7 @@ class SettingsDialog(QDialog):
         layout.setContentsMargins(0, 0, 0, 0)
 
         self.download_dir = QLineEdit(self.preferences.download_dir)
-        self.download_dir.setPlaceholderText("(the Rose Bouquet data folder)")
+        self.download_dir.setPlaceholderText("(your music folder)")
         self.download_dir.editingFinished.connect(self._on_downloads_changed)
         layout.addWidget(self.download_dir, 1)
 

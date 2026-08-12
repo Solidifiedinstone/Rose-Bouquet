@@ -621,7 +621,7 @@ class MainWindow(QMainWindow):
         label = f"{request.artist} — {request.title}" if request.artist else request.title
         downloads.note(key, label, 0.0, "queued", request)
 
-        folder = Path(self.preferences.download_dir) if self.preferences.download_dir else None
+        folder = self.preferences.downloads_path()
 
         def work(report) -> ytmusic.DownloadResult:
             return ytmusic.download(
@@ -793,16 +793,16 @@ class MainWindow(QMainWindow):
 
             title, tracks = "", []
             if link:
-                title, tracks = spotify.from_embed(link)
-                if not tracks and credentials.get("spotify_client_id"):
-                    report("Trying the Spotify API…")
-                    title, tracks = spotify.from_api(
-                        link,
-                        credentials.get("spotify_client_id", ""),
-                        credentials.get("spotify_client_secret", ""),
-                    )
+                title, tracks = spotify.fetch_playlist(
+                    link,
+                    credentials.get("spotify_client_id", ""),
+                    credentials.get("spotify_client_secret", ""),
+                )
             if not tracks and text:
                 tracks = spotify.from_text(text)
+
+            if tracks:
+                report(f"Read {len(tracks)} tracks")
 
             if not tracks:
                 return "", spotify.ImportReport()
@@ -814,6 +814,10 @@ class MainWindow(QMainWindow):
                 tracks, self.ytmusic.best_match, progress=progress
             )
             found.title = title or "Imported playlist"
+            # An import that stopped at exactly one page probably did not read
+            # the whole playlist, and saying so beats silently importing 100 of
+            # 400 tracks.
+            found.truncated = spotify.looks_truncated(tracks)
             return title, found
 
         importer.show_progress("Reading the playlist…")
@@ -842,7 +846,14 @@ class MainWindow(QMainWindow):
         playlist.missing = report.missed_lines()
         self.playlists.save(playlist)
 
-        self.notify(report.summary, "success" if not report.missed else "warning")
+        if getattr(report, "truncated", False):
+            self.notify(
+                f"Only the first {report.total} tracks could be read — Spotify's "
+                "public endpoint pages 100 at a time. Add API credentials in "
+                "Settings → Downloads to get the rest.", "warning",
+            )
+        else:
+            self.notify(report.summary, "success" if not report.missed else "warning")
 
         if download:
             for _source, found in report.matched:

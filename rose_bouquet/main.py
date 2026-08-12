@@ -24,6 +24,40 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _icon():
+    """The app icon, from the icon theme or straight off disk.
+
+    Qt's `fromTheme` needs an icon theme configured, and plenty of Wayland
+    sessions do not give Qt one — Hyprland included. When that lookup comes back
+    empty the icon is loaded from where the installer put it, so the window and
+    the taskbar get the right rose either way.
+    """
+    from pathlib import Path as _Path
+
+    from PySide6.QtGui import QIcon
+
+    themed = QIcon.fromTheme("rose-bouquet")
+    if not themed.isNull():
+        return themed
+
+    import os
+
+    base = os.environ.get("XDG_DATA_HOME") or str(_Path.home() / ".local" / "share")
+    icons = _Path(base) / "icons" / "hicolor"
+
+    icon = QIcon()
+    for size in (16, 24, 32, 48, 64, 128, 256):
+        candidate = icons / f"{size}x{size}" / "apps" / "rose-bouquet.png"
+        if candidate.exists():
+            icon.addFile(str(candidate))
+
+    scalable = icons / "scalable" / "apps" / "rose-bouquet.svg"
+    if icon.isNull() and scalable.exists():
+        icon.addFile(str(scalable))
+
+    return icon
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     logging.basicConfig(
@@ -31,7 +65,6 @@ def main(argv: list[str] | None = None) -> int:
         format="%(levelname)s %(name)s: %(message)s",
     )
 
-    from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication
 
     from rose_bouquet.ui.main_window import MainWindow
@@ -43,9 +76,7 @@ def main(argv: list[str] | None = None) -> int:
     app.setOrganizationName(ORGANISATION)
     app.setDesktopFileName("rose-bouquet")
 
-    icon = QIcon.fromTheme("rose-bouquet")
-    if not icon.isNull():
-        app.setWindowIcon(icon)
+    app.setWindowIcon(_icon())
 
     # Flags override the saved preferences for this run only, and are not
     # written back: they are for trying something, not for changing a setting.

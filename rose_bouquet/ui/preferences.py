@@ -172,6 +172,23 @@ class Preferences:
         self.server = data
         save_credentials({"server_password": password})
 
+    def downloads_path(self):
+        """Where downloads go.
+
+        An explicit setting wins; otherwise they land in the first music folder,
+        so anything downloaded joins the library on the next scan instead of
+        hiding in an application data directory nobody thinks to look in.
+        """
+        from pathlib import Path
+
+        from rose_bouquet.core.library import data_dir
+
+        if self.download_dir.strip():
+            return Path(self.download_dir).expanduser()
+        if self.folders:
+            return Path(self.folders[0]).expanduser()
+        return data_dir() / "downloads"
+
     def shape(self) -> Shape:
         try:
             return Shape(self.visualizer_shape)

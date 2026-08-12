@@ -444,3 +444,49 @@ def test_a_password_is_required_when_set():
     server = MusicServer(library=Library(), config=ServerConfig(password="hunter2"))
     assert not server.authorised({})
     assert server.authorised({"p": ["hunter2"]})
+
+
+# ── Long playlists ────────────────────────────────────────────────
+
+def test_paging_reads_every_page_not_just_the_first():
+    """The bug this fixes: a 250-track playlist importing as 100."""
+    total = 250
+
+    def fake_get(url, params):
+        offset = params["offset"]
+        limit = params["limit"]
+        items = [
+            {"track": {"name": f"Track {i}", "artists": [{"name": "Someone"}],
+                       "album": {"name": "An album"}, "duration_ms": 180000}}
+            for i in range(offset, min(offset + limit, total))
+        ]
+        return {"items": items, "total": total}
+
+    tracks = spotify._page_tracks(fake_get, "abc")
+    assert len(tracks) == total
+    assert tracks[-1].title == "Track 249"
+
+
+def test_paging_stops_when_a_page_comes_back_empty():
+    def fake_get(_url, _params):
+        return {"items": [], "total": 0}
+
+    assert spotify._page_tracks(fake_get, "abc") == []
+
+
+def test_paging_skips_removed_and_local_tracks():
+    """Spotify returns empty entries for those; they are genuinely missing."""
+    def fake_get(_url, params):
+        if params["offset"]:
+            return {"items": [], "total": 2}
+        return {"items": [{"track": {"name": "Real", "artists": [{"name": "A"}]}},
+                          {"track": None}], "total": 2}
+
+    tracks = spotify._page_tracks(fake_get, "abc")
+    assert [t.title for t in tracks] == ["Real"]
+
+
+def test_exactly_one_page_is_flagged_as_probably_truncated():
+    hundred = [spotify.SpotifyTrack(title=f"T{i}") for i in range(100)]
+    assert spotify.looks_truncated(hundred)
+    assert not spotify.looks_truncated(hundred[:99])
