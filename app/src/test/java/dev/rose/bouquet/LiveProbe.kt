@@ -56,8 +56,10 @@ class LiveProbe {
 
         runCatching {
             kotlinx.coroutines.runBlocking {
+                println("LOCALE: " + java.util.Locale.getDefault())
                 val found = dev.rose.bouquet.youtube.YouTubeSource.search(
                     "music", shorts = true, limit = 6)
+                found.take(4).forEach { println("   RESULT: ${it.title} | ${it.channel}") }
                 println("SHORTS SEARCH: ${found.size} found")
                 val urls = found.map { "https://www.youtube.com/shorts/${it.id}" }
 
@@ -73,10 +75,10 @@ class LiveProbe {
                     if (urls.size > 2) {
                         t = System.currentTimeMillis()
                         dev.rose.bouquet.youtube.YouTubeSource.prefetch(urls.drop(1).take(2), 720)
-                        val pre = System.currentTimeMillis() - t
-                        t = System.currentTimeMillis()
+                        println("PREFETCH returned in ${System.currentTimeMillis()-t}ms (should be ~0)")
+                        kotlinx.coroutines.delay(6000)
                         val hit = dev.rose.bouquet.youtube.YouTubeSource.cached(urls[1], 720)
-                        println("PREFETCH: ${pre}ms for 2; cached() lookup=${System.currentTimeMillis()-t}ms hit=${hit != null}")
+                        println("PREFETCH landed after 6s: hit=${hit != null} codec=${hit?.videoUrl?.contains("mime=video%2Fmp4")}")
                     }
                 }
             }

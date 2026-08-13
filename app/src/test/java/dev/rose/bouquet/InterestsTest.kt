@@ -131,3 +131,30 @@ class InterestsTest {
         assertTrue("deck" in topics)
     }
 }
+
+class TagSpamTest {
+
+    @Test
+    fun `a wall of hashtags is not a title`() {
+        // Verbatim from a one-word shorts search.
+        assertTrue(isSlop("#batidao #brazilfunk #music #vibe #shorts #viral #fyp #cover #2026 #trend"))
+        assertTrue(isSlop("#fyp #viral #trending #shorts #music #edit #foryou"))
+    }
+
+    @Test
+    fun `a real title with a few tags is left alone`() {
+        assertFalse(isSlop("Restoring a 1974 Sony reel to reel deck #retro #hifi"))
+        assertFalse(isSlop("Boards of Canada - Dayvan Cowboy"))
+        assertFalse(isSlop("How a tape head actually works #shorts"))
+    }
+
+    @Test
+    fun `a descriptive title with many tags survives if it still says something`() {
+        assertFalse(
+            isSlop(
+                "Full teardown and repair of a Technics SL-1200 turntable motor " +
+                    "#vinyl #repair #electronics #turntable #diy"
+            )
+        )
+    }
+}

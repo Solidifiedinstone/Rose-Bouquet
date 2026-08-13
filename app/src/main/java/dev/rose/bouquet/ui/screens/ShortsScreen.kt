@@ -152,7 +152,9 @@ fun ShortsScreen(model: AppViewModel) {
 
     // Prefetching, off to one side, so it can never delay a swipe.
     LaunchedEffect(pager) {
-        snapshotFlow { pager.settledPage }.collectLatest { page ->
+        // `collect`, not `collectLatest`: cancelling the previous prefetch on
+        // every swipe is what stopped anything ever being cached.
+        snapshotFlow { pager.settledPage }.collect { page ->
             YouTubeSource.prefetch(
                 (1..PREFETCH_AHEAD).mapNotNull { reel.getOrNull(page + it) }
                     .map { "https://www.youtube.com/shorts/${it.videoId}" },

@@ -11,6 +11,7 @@ import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.channel.ChannelInfo
 import org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo
 import org.schabi.newpipe.extractor.channel.tabs.ChannelTabs
+import kotlinx.coroutines.launch
 import org.schabi.newpipe.extractor.localization.ContentCountry
 import org.schabi.newpipe.extractor.localization.Localization
 import org.schabi.newpipe.extractor.search.SearchInfo
@@ -112,10 +113,19 @@ object YouTubeSource {
     /** Safe to call repeatedly and from anywhere; only the first call does work. */
     fun start() {
         if (started.compareAndSet(false, true)) {
+            // The phone's own language and country.
+            //
+            // Hardcoding the extractor's DEFAULT told YouTube nothing about who
+            // was asking, and YouTube answered with whatever it serves an
+            // unidentified client — which is how a feed ends up in Mandarin for
+            // somebody who has never watched a word of it. This is the same
+            // thing a browser sends.
+            val locale = java.util.Locale.getDefault()
             NewPipe.init(
                 NewPipeDownloader(),
-                Localization.DEFAULT,
-                ContentCountry.DEFAULT,
+                Localization.fromLocale(locale),
+                locale.country.takeIf { it.isNotBlank() }
+                    ?.let { ContentCountry(it) } ?: ContentCountry.DEFAULT,
             )
         }
     }
@@ -191,13 +201,38 @@ object YouTubeSource {
      * Fire and forget: the caller does not wait, and a failure here simply
      * means the reel resolves that one the slow way when it arrives.
      */
-    suspend fun prefetch(urls: List<String>, maxHeight: Int = 720) = coroutineScope {
+    fun prefetch(urls: List<String>, maxHeight: Int = 720) {
         urls.filter { !resolved.containsKey(cacheKey(it, maxHeight)) }
             .take(PREFETCH)
-            .map { url -> async { videoPlayback(url, maxHeight) } }
-            .awaitAll()
-        Unit
+            .forEach { url ->
+                val key = cacheKey(url, maxHeight)
+                // One in flight per URL. Without this, every swipe queued
+                // another resolve of shorts already being fetched.
+                if (!inFlight.add(key)) return@forEach
+                scope.launch {
+                    try {
+                        videoPlayback(url, maxHeight)
+                    } finally {
+                        inFlight.remove(key)
+                    }
+                }
+            }
     }
+
+    /**
+     * Prefetching lives here rather than in the screen's coroutine scope.
+     *
+     * A reel cancels its scope on every swipe, so a prefetch started from there
+     * was killed by the next swipe — which meant a steady scroll cancelled
+     * every fetch just before it finished and nothing was ever cached. The work
+     * has to outlive the page that asked for it, which is the whole point of
+     * prefetching.
+     */
+    private val scope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
+
+    private val inFlight = java.util.Collections.newSetFromMap(
+        java.util.concurrent.ConcurrentHashMap<String, Boolean>())
 
     private fun cacheKey(url: String, maxHeight: Int) = "$url|$maxHeight"
 
@@ -232,9 +267,18 @@ object YouTubeSource {
             .filter { it.content.isNotBlank() }
             .maxByOrNull { it.averageBitrate }
 
-        val video = info.videoOnlyStreams
+        // H.264 in MP4 ahead of VP9/AV1 in WebM at the same height.
+        //
+        // Every Android device decodes H.264 in hardware; VP9 and AV1 at 1080
+        // and above fall back to software on plenty of them, and a software
+        // decode that cannot keep up is a video that freezes rather than one
+        // that looks worse. Height still wins overall — this only breaks ties.
+        val playable = info.videoOnlyStreams
             .filter { it.content.isNotBlank() && it.height in 1..maxHeight }
+        val video = playable
+            .filter { it.format?.mimeType?.contains("mp4", ignoreCase = true) == true }
             .maxByOrNull { it.height }
+            ?: playable.maxByOrNull { it.height }
 
         if (video != null && audio != null) {
             val found = VideoPlayback(video.content, audio.content, video.height)

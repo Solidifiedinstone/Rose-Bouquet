@@ -99,7 +99,28 @@ fun words(text: String): List<String> = text.lowercase()
     .filter { it.length >= MIN_WORD && it !in STOPWORDS && it.toIntOrNull() == null }
 
 /** Whether a title reads as engagement bait or generated filler. */
-fun isSlop(title: String): Boolean = SLOP_PATTERN.containsMatchIn(title)
+fun isSlop(title: String): Boolean = SLOP_PATTERN.containsMatchIn(title) || isTagSpam(title)
+
+/**
+ * Titles that are a pile of hashtags rather than a description.
+ *
+ * "#batidao #brazilfunk #music #vibe #shorts #viral #fyp #cover #2026 #trend"
+ * is a real result from a one-word search. A title like this is not about
+ * anything — it is reaching for every feed at once, and it is most of what a
+ * generic shorts search returns. Two or three tags at the end of a real title
+ * are normal, so the test is whether the tags have crowded out the words.
+ */
+fun isTagSpam(title: String): Boolean {
+    val tags = title.count { it == '#' }
+    if (tags < TAG_LIMIT) return false
+
+    val withoutTags = title.replace(Regex("#\\S+"), " ").trim()
+    // Nothing left once the tags are removed, or the tags outnumber the words.
+    return withoutTags.length < title.length / 3 ||
+        withoutTags.split(Regex("\\s+")).count { it.isNotBlank() } <= tags
+}
+
+private const val TAG_LIMIT = 4
 
 /**
  * Apply the user's stated preferences to a list of candidates.
