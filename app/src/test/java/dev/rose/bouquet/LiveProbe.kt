@@ -57,6 +57,32 @@ class LiveProbe {
         runCatching {
             kotlinx.coroutines.runBlocking {
                 println("LOCALE: " + java.util.Locale.getDefault())
+
+                // MrBeast ships auto-dubs on essentially everything, which is
+                // the case that broke: several tracks, one per language.
+                val hits = dev.rose.bouquet.youtube.YouTubeSource.channelVideos(
+                    "https://www.youtube.com/@MrBeast", shorts = false, limit = 1)
+                val multi = hits.firstOrNull()?.url
+                    ?: "https://www.youtube.com/watch?v=jNQXAC9IVRw"
+                println("DUB SAMPLE: $multi")
+                val info = StreamInfo.getInfo(yt, multi)
+                println("AUDIO TRACKS on sample: ${info.audioStreams.size}")
+                info.audioStreams.take(8).forEach {
+                    println("   ${it.averageBitrate}bps type=${it.audioTrackType} " +
+                        "locale=${it.audioLocale} name=${it.audioTrackName}")
+                }
+                // Against the same StreamInfo — the URLs are re-signed on each
+                // request, so comparing them across two fetches proves nothing.
+                val match = dev.rose.bouquet.youtube.YouTubeSource.pickAudio(info.audioStreams)
+                println("CHOSEN: type=${match?.audioTrackType} locale=${match?.audioLocale} " +
+                    "name=${match?.audioTrackName} bitrate=${match?.averageBitrate}")
+                val loudest = info.audioStreams.maxByOrNull { it.averageBitrate }
+                println("OLD BEHAVIOUR would have picked: type=${loudest?.audioTrackType} " +
+                    "locale=${loudest?.audioLocale} name=${loudest?.audioTrackName}")
+
+                var mark = System.currentTimeMillis()
+                StreamInfo.getInfo(yt, multi)
+                println("TIMING: one getInfo = ${System.currentTimeMillis() - mark}ms")
                 val found = dev.rose.bouquet.youtube.YouTubeSource.search(
                     "music", shorts = true, limit = 6)
                 found.take(4).forEach { println("   RESULT: ${it.title} | ${it.channel}") }

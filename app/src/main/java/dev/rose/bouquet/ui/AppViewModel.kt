@@ -302,6 +302,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             _buildingFeed.value = true
             runCatching { recommender.rebuild(shorts, interests()) }
+                .onSuccess { built ->
+                    // Resolve the first few now, while the feed is fresh, so
+                    // opening the reel is not a cold second of page fetch. The
+                    // first short is the one nothing can prefetch ahead of.
+                    if (shorts) {
+                        YouTubeSource.prefetch(
+                            built.take(3).map { "https://www.youtube.com/shorts/${it.videoId}" },
+                            maxHeight = 720,
+                        )
+                    }
+                }
                 .onFailure { _status.value = "Could not build the feed" }
             synchronized(building) {
                 building.remove(shorts)

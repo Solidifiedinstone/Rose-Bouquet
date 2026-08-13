@@ -176,10 +176,87 @@ object YouTubeSource {
      * working on a Tuesday.
      */
     suspend fun audioStream(url: String): Playable? = io(null) {
-        StreamInfo.getInfo(service, url).audioStreams
-            .filter { it.content.isNotBlank() }
-            .maxByOrNull { it.averageBitrate }
+        pickAudio(StreamInfo.getInfo(service, url).audioStreams)
             ?.let { Playable(it.content, it.format?.mimeType, isVideo = false) }
+    }
+
+    /**
+     * The audio track to play, out of everything the video offers.
+     *
+     * YouTube now ships several audio tracks per video — the original, and
+     * machine-dubbed versions in other languages. They are all just audio
+     * streams, and the dubbed ones are frequently the higher bitrate, so
+     * picking the loudest number hands you a video auto-dubbed into Mandarin
+     * with no indication of why. That is exactly what happened.
+     *
+     * Order: the track marked original, then one in the device's language, then
+     * whatever is left. Bitrate only ever decides between tracks that are
+     * already equally right.
+     */
+    internal fun pickAudio(streams: List<org.schabi.newpipe.extractor.stream.AudioStream>):
+        org.schabi.newpipe.extractor.stream.AudioStream? {
+        val usable = streams.filter { it.content.isNotBlank() }
+        if (usable.isEmpty()) return null
+
+        // Descriptive audio is narration for blind viewers, never what somebody
+        // browsing meant to hear.
+        val candidates = usable.filterNot {
+            it.audioTrackType == org.schabi.newpipe.extractor.stream.AudioTrackType.DESCRIPTIVE
+        }.ifEmpty { usable }
+
+        // One language on offer means the choice is only about bitrate. This is
+        // the ordinary video, and it must not be dragged through the rest.
+        val languages = candidates.mapNotNull { languageOf(it) }.distinct()
+        if (languages.size <= 1) return candidates.maxByOrNull { it.averageBitrate }
+
+        val wanted = java.util.Locale.getDefault().language.lowercase()
+
+        // In order: the track YouTube marks as the original, then the device's
+        // language, then English, then whatever is first — YouTube lists the
+        // original before its dubs.
+        //
+        // Bitrate is deliberately the *last* consideration. Auto-dubs are often
+        // encoded at a higher bitrate than the original, so picking the loudest
+        // number is precisely how a video arrives dubbed into a language nobody
+        // asked for, with nothing on screen to say why.
+        val byPreference = listOf<(org.schabi.newpipe.extractor.stream.AudioStream) -> Boolean>(
+            { it.audioTrackType == org.schabi.newpipe.extractor.stream.AudioTrackType.ORIGINAL },
+            { languageOf(it) == wanted },
+            { languageOf(it) == "en" },
+        )
+
+        byPreference.forEach { matches ->
+            val group = candidates.filter(matches)
+            if (group.isNotEmpty()) return group.maxByOrNull { it.averageBitrate }
+        }
+
+        val first = languageOf(candidates.first())
+        return candidates.filter { languageOf(it) == first }.maxByOrNull { it.averageBitrate }
+    }
+
+    /**
+     * The language of an audio track, from wherever it is recorded.
+     *
+     * `audioLocale` and `audioTrackType` are both frequently null even on
+     * videos that do have several tracks — measured, not assumed. The track id
+     * survives when they do not: it looks like `en.4` or `cmn-Hans-CN.3`, so
+     * the part before the first dot is a language tag. The display name is the
+     * last resort, since it reads "English original" or "Chinese (China)".
+     */
+    private fun languageOf(stream: org.schabi.newpipe.extractor.stream.AudioStream): String? {
+        stream.audioLocale?.language?.takeIf { it.isNotBlank() }?.let { return it.lowercase() }
+
+        stream.audioTrackId?.substringBefore('.')?.takeIf { it.isNotBlank() }?.let { id ->
+            return id.substringBefore('-').lowercase()
+        }
+
+        return stream.audioTrackName
+            ?.let { java.util.Locale.getAvailableLocales()
+                .firstOrNull { locale ->
+                    locale.displayLanguage.isNotBlank() &&
+                        it.contains(locale.displayLanguage, ignoreCase = true)
+                }?.language?.lowercase()
+            }
     }
 
     /**
@@ -263,9 +340,7 @@ object YouTubeSource {
 
         val info = StreamInfo.getInfo(service, url)
 
-        val audio = info.audioStreams
-            .filter { it.content.isNotBlank() }
-            .maxByOrNull { it.averageBitrate }
+        val audio = pickAudio(info.audioStreams)
 
         // H.264 in MP4 ahead of VP9/AV1 in WebM at the same height.
         //
