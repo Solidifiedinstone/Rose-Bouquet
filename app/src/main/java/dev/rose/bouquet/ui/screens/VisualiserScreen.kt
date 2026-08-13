@@ -6,6 +6,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -13,10 +14,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
@@ -158,6 +163,7 @@ fun VisualiserScreen(model: AppViewModel) {
                     theme = theme,
                     intensity = intensity,
                     modifier = Modifier.fillMaxSize(),
+                    palette = settings.visualiserColours.map { Color(it) },
                 )
             } else {
                 Column(
@@ -258,8 +264,132 @@ fun VisualiserScreen(model: AppViewModel) {
                 )
             }
         }
+
+        // Only Solid and Multi read a palette; Theme and Rainbow decide their
+        // own colours, so offering a picker under them would be a control that
+        // does nothing.
+        val mode = layers.firstOrNull()?.mode
+        if (mode == ColourMode.Solid || mode == ColourMode.Multi) {
+            PalettePicker(
+                chosen = settings.visualiserColours,
+                multi = mode == ColourMode.Multi,
+                onChange = model::setVisualiserColours,
+            )
+        }
+
+        Spacer(Modifier.size(32.dp))
     }
 }
+
+/**
+ * Picking the colours the visualiser draws in.
+ *
+ * Swatches rather than a colour wheel: a wheel is a lot of screen and a lot of
+ * fiddling for a decision most people make in two taps, and the awkward part of
+ * a hand-picked palette is not finding a hue — it is finding one that still
+ * reads against the background. These are chosen to.
+ *
+ * In Multi the order is the gradient, so the list shows what was picked in the
+ * order it will be drawn, and tapping a chosen colour removes it.
+ */
+@Composable
+private fun PalettePicker(chosen: List<Int>, multi: Boolean, onChange: (List<Int>) -> Unit) {
+    val theme = LocalRoseTheme.current
+
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+        Text(
+            if (multi) "Colours, in order" else "Colour",
+            color = theme.text,
+            style = MaterialTheme.typography.titleSmall,
+        )
+        Text(
+            if (multi) "Tap to add. The bars fade through them left to right, " +
+                "and tapping a chosen colour removes it."
+            else "Tap one. Nothing chosen uses the theme's accent.",
+            color = theme.textDim,
+            style = MaterialTheme.typography.bodySmall,
+        )
+
+        if (chosen.isNotEmpty()) {
+            Spacer(Modifier.size(10.dp))
+            Row(
+                Modifier.fillMaxWidth().height(28.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                chosen.forEach { value ->
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .background(Color(value), RoundedCornerShape(6.dp))
+                            .clickable { onChange(chosen - value) },
+                    )
+                }
+            }
+            Spacer(Modifier.size(4.dp))
+            Text("Tap a swatch above to remove it", color = theme.textDim,
+                style = MaterialTheme.typography.labelSmall)
+        }
+
+        Spacer(Modifier.size(10.dp))
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            items(SWATCHES) { value ->
+                val on = value in chosen
+                Box(
+                    Modifier
+                        .size(40.dp)
+                        .background(Color(value), CircleShape)
+                        .border(
+                            width = if (on) 3.dp else 1.dp,
+                            color = if (on) theme.text else theme.border,
+                            shape = CircleShape,
+                        )
+                        .clickable {
+                            onChange(
+                                when {
+                                    on -> chosen - value
+                                    multi -> chosen + value
+                                    else -> listOf(value)
+                                }
+                            )
+                        },
+                )
+            }
+        }
+        if (chosen.isNotEmpty()) {
+            Spacer(Modifier.size(8.dp))
+            Text(
+                "Use the theme instead",
+                color = theme.accent,
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.clickable { onChange(emptyList()) },
+            )
+        }
+    }
+}
+
+/**
+ * The swatches on offer.
+ *
+ * A spread around the wheel at a saturation and lightness that stays legible
+ * on both a black and a light background, plus white and a near-black, because
+ * a monochrome visualiser is a real choice and picking it from a hue wheel is
+ * impossible.
+ */
+private val SWATCHES = listOf(
+    0xFFE0607E.toInt(),   // rose, the Rose accent
+    0xFFFF6B6B.toInt(),   // red
+    0xFFFFA657.toInt(),   // orange
+    0xFFFFD400.toInt(),   // yellow
+    0xFF7FC98A.toInt(),   // green
+    0xFF00FF6A.toInt(),   // bright green
+    0xFF4EC9E0.toInt(),   // cyan
+    0xFF7AA2F7.toInt(),   // blue
+    0xFFBE95FF.toInt(),   // violet
+    0xFFFF7EDB.toInt(),   // magenta
+    0xFFFFFFFF.toInt(),   // white
+    0xFF202028.toInt(),   // near-black
+)
 
 /**
  * Paints the layers.
@@ -275,9 +405,10 @@ fun VisualiserCanvas(
     intensity: Float,
     modifier: Modifier = Modifier,
     phase: Float = 0f,
+    palette: List<Color> = emptyList(),
 ) {
     Canvas(modifier) {
-        layers.forEach { layer -> drawLayer(layer, bands, theme, intensity, phase) }
+        layers.forEach { layer -> drawLayer(layer, bands, theme, intensity, phase, palette) }
     }
 }
 
@@ -287,11 +418,14 @@ private fun DrawScope.drawLayer(
     theme: RoseTheme,
     intensity: Float,
     phase: Float,
+    palette: List<Color>,
 ) {
     if (bands.isEmpty()) return
 
     val level = { index: Int -> (bands[index] * intensity * layer.scale).coerceIn(0f, 1f) }
-    val colourAt = { index: Int -> colourFor(layer, index, bands.size, theme, phase, level(index)) }
+    val colourAt = { index: Int ->
+        colourFor(layer, index, bands.size, theme, phase, level(index), palette)
+    }
 
     if (layer.shape.radial) drawRadial(layer, bands, level, colourAt, theme)
     else drawLinear(layer, bands, level, colourAt)
@@ -523,13 +657,17 @@ private fun colourFor(
     theme: RoseTheme,
     phase: Float,
     level: Float,
+    palette: List<Color>,
 ): Color {
     val position = index.toFloat() / count.coerceAtLeast(1)
 
     val base = when (layer.mode) {
         ColourMode.Theme -> theme.accent
-        ColourMode.Solid -> theme.accent
-        ColourMode.Multi -> lerp(theme.accent, theme.success, position)
+        // Falls back to the theme when nothing has been picked, so choosing
+        // Solid or Multi before choosing colours still draws something.
+        ColourMode.Solid -> palette.firstOrNull() ?: theme.accent
+        ColourMode.Multi -> gradientAt(
+            palette.ifEmpty { listOf(theme.accent, theme.success) }, position)
         ColourMode.Rainbow -> Color.hsv(((position + phase) % 1f) * 360f, 0.7f, 1f)
     }
 
@@ -543,6 +681,23 @@ private fun colourFor(
         ColourMotion.Flash -> if (level > 0.7f) Color.White else base
         ColourMotion.Pulse -> base.copy(alpha = (0.4f + level).coerceAtMost(1f))
     }
+}
+
+/**
+ * A colour partway along a chosen palette.
+ *
+ * Interpolates between neighbours rather than snapping to the nearest, so two
+ * colours give a smooth ramp across the bars and five give a smooth ramp
+ * through all five — which is what somebody picking several colours means by
+ * it. One colour is a flat fill, the same as Solid.
+ */
+private fun gradientAt(palette: List<Color>, position: Float): Color {
+    if (palette.isEmpty()) return Color.Magenta
+    if (palette.size == 1) return palette.first()
+
+    val scaled = (position.coerceIn(0f, 1f) * (palette.size - 1))
+    val low = scaled.toInt().coerceAtMost(palette.size - 2)
+    return lerp(palette[low], palette[low + 1], scaled - low)
 }
 
 private fun lerp(from: Color, to: Color, t: Float) = Color(

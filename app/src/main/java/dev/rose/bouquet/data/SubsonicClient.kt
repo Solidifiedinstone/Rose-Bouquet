@@ -102,7 +102,7 @@ class SubsonicClient(
     // ── Making a request ──────────────────────────────────────────
 
     private fun endpoint(server: Server, method: String, params: Map<String, String>): HttpUrl {
-        val base = server.url.trim().trimEnd('/').toHttpUrlOrNull()
+        val base = normalise(server.url)
             ?: throw ServerException("That server address is not a URL")
 
         val builder = base.newBuilder()
@@ -129,6 +129,24 @@ class SubsonicClient(
     }
 
     /**
+     * Turn what somebody typed into a URL.
+     *
+     * "192.168.1.10:4533" is what a person writes down and reads back off a
+     * screen; it is not a URL, and rejecting it as one teaches nothing. A
+     * missing scheme becomes `http://`, which is what a server on a home
+     * network almost always is — and if it is actually HTTPS, typing the
+     * scheme is the one case where being explicit is no hardship.
+     */
+    private fun normalise(raw: String): HttpUrl? {
+        val trimmed = raw.trim().trimEnd('/')
+        if (trimmed.isBlank()) return null
+        val withScheme =
+            if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) trimmed
+            else "http://$trimmed"
+        return withScheme.toHttpUrlOrNull()
+    }
+
+    /**
      * Run a method and hand back the `subsonic-response` body.
      *
      * On the IO dispatcher because OkHttp's synchronous call blocks, and
@@ -150,7 +168,7 @@ class SubsonicClient(
                 response.body?.string().orEmpty()
             }
         } catch (e: IOException) {
-            throw ServerException(e.message ?: "Could not reach the server")
+            throw ServerException(explain(e), 0)
         }
 
         val payload = runCatching {
@@ -185,6 +203,31 @@ class SubsonicClient(
         call(server, method, params)
     } catch (e: ServerException) {
         if (e.code == UNSUPPORTED_METHOD || e.code == NOT_FOUND) null else throw e
+    }
+
+    /**
+     * What went wrong, in words that suggest what to do.
+     *
+     * OkHttp's own messages are accurate and unhelpful: "Failed to connect to
+     * /192.168.1.10:4533" does not tell somebody their phone is on mobile data
+     * and the server is on their home wifi, which is what it usually means.
+     */
+    private fun explain(e: IOException): String {
+        val message = e.message.orEmpty()
+        return when {
+            "CLEARTEXT" in message ->
+                "This build will not use plain HTTP. Update the app, or use an https:// address."
+            "Failed to connect" in message || "connect timed out" in message.lowercase() ->
+                "Could not reach that address. Check the port, and that this phone is on the " +
+                    "same network as the server."
+            "Unable to resolve host" in message ->
+                "That hostname does not resolve. On a home network an IP address is safer " +
+                    "than a name."
+            "trust anchor" in message || "CertPath" in message ->
+                "That server's HTTPS certificate is not trusted. A self-signed certificate " +
+                    "has to be installed on the phone first, or use http:// instead."
+            else -> message.ifBlank { "Could not reach the server" }
+        }
     }
 
     // ── Methods ───────────────────────────────────────────────────

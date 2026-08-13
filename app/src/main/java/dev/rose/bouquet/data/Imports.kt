@@ -7,13 +7,15 @@ import dev.rose.bouquet.data.db.WatchEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.jsoup.Jsoup
+import java.io.BufferedInputStream
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.text.SimpleDateFormat
@@ -53,30 +55,52 @@ object Imports {
 
         var added = 0
         var skipped = 0
+        var sawHistory = false
 
         val stream = context.contentResolver.openInputStream(uri)
             ?: return@withContext Result(0, 0, "Could not open that file")
 
         stream.use { input ->
-            ZipInputStream(input).use { zip ->
+            ZipInputStream(BufferedInputStream(input)).use { zip ->
                 while (true) {
                     val entry = zip.nextEntry ?: break
                     val name = entry.name.lowercase()
-                    if (!name.contains("watch-history")) continue
+                    if (entry.isDirectory || !name.contains("watch-history")) continue
+                    sawHistory = true
 
-                    val text = zip.readBytes().decodeToString()
-                    val records = if (name.endsWith(".json")) parseTakeoutJson(text)
-                    else parseTakeoutHtml(text)
+                    // Streamed rather than read whole. A heavy user's
+                    // watch-history.html is several hundred megabytes, and
+                    // reading it into a String and then into a DOM is an
+                    // out-of-memory kill on a phone long before it is an
+                    // import. Records come out one at a time and go straight
+                    // into the database in batches.
+                    val batch = mutableListOf<WatchEntity>()
 
-                    records.forEach { record ->
+                    suspend fun flush() {
+                        if (batch.isEmpty()) return
+                        youtube.watchedAll(batch.toList())
+                        batch.clear()
+                    }
+
+                    val consume: suspend (WatchEntity) -> Unit = { record ->
                         if (record.videoId in known) {
                             skipped++
                         } else {
                             known += record.videoId
-                            youtube.watched(record)
+                            batch += record
                             added++
+                            if (batch.size >= BATCH) flush()
                         }
                     }
+
+                    // The reader must not close the zip stream between entries.
+                    val reader = BufferedReader(
+                        InputStreamReader(NonClosing(zip), Charsets.UTF_8), READ_BUFFER)
+
+                    if (name.endsWith(".json")) streamJson(reader, consume)
+                    else streamHtml(reader, consume)
+
+                    flush()
                 }
             }
         }
@@ -84,76 +108,172 @@ object Imports {
         Result(
             added, skipped,
             when {
-                added == 0 && skipped == 0 ->
-                    "No watch history in that archive. Ask Takeout for YouTube history " +
+                !sawHistory ->
+                    "No watch-history file in that archive. Ask Takeout for YouTube history " +
                         "specifically — a Takeout of everything else has none."
+                added == 0 && skipped == 0 ->
+                    "Found the history file but read nothing from it. If this was the HTML " +
+                        "export, the JSON one is more reliable."
                 added == 0 -> "Already imported — all $skipped were known."
                 else -> "Imported $added, skipped $skipped already known."
             },
         )
     }
 
-    private fun parseTakeoutJson(text: String): List<WatchEntity> {
+    /**
+     * Emit top-level objects from a JSON array without holding the array.
+     *
+     * Tracks brace depth and string state so a `{` inside a title cannot be
+     * mistaken for the start of a record. Each object is small; the array is
+     * not.
+     */
+    internal suspend fun streamJson(
+        reader: BufferedReader,
+        emit: suspend (WatchEntity) -> Unit,
+    ) {
         val json = Json { ignoreUnknownKeys = true }
-        val array = runCatching { json.parseToJsonElement(text).jsonArray }.getOrNull()
-            ?: return emptyList()
+        val current = StringBuilder()
+        var depth = 0
+        var inString = false
+        var escaped = false
 
-        return array.mapNotNull { element ->
-            val row = element.jsonObject
-            val url = row["titleUrl"]?.jsonPrimitive?.content ?: return@mapNotNull null
-            val videoId = url.substringAfter("v=", "").substringBefore('&')
-            if (videoId.isBlank()) return@mapNotNull null
+        while (true) {
+            val next = reader.read()
+            if (next < 0) break
+            val character = next.toChar()
 
-            val title = row["title"]?.jsonPrimitive?.content.orEmpty()
-                .removePrefix("Watched ")
-            val channel = row["subtitles"]?.jsonArray?.firstOrNull()
-                ?.jsonObject?.get("name")?.jsonPrimitive?.content.orEmpty()
-            val channelUrl = row["subtitles"]?.jsonArray?.firstOrNull()
-                ?.jsonObject?.get("url")?.jsonPrimitive?.content
+            if (depth > 0) current.append(character)
 
-            WatchEntity(
-                videoId = videoId,
-                title = title,
-                channel = channel,
-                channelId = channelUrl?.substringAfterLast('/'),
-                isShort = "/shorts/" in url,
-                watchedAt = parseTime(row["time"]?.jsonPrimitive?.content),
-            )
+            when {
+                escaped -> escaped = false
+                character == '\\' && inString -> escaped = true
+                character == '"' -> inString = !inString
+                inString -> Unit
+                character == '{' -> {
+                    if (depth == 0) current.append(character)
+                    depth++
+                }
+                character == '}' -> {
+                    depth--
+                    if (depth == 0) {
+                        val row = runCatching {
+                            json.parseToJsonElement(current.toString()).jsonObject
+                        }.getOrNull()
+                        if (row != null) recordFromJson(row)?.let { emit(it) }
+                        current.setLength(0)
+                    }
+                }
+            }
         }
     }
 
     /**
-     * The HTML export.
+     * Emit one record per history entry, a cell at a time.
      *
-     * Parsed with Jsoup rather than by regex because it is real, messy HTML —
-     * and because Jsoup is already here as a NewPipeExtractor dependency, so it
-     * costs nothing.
+     * Google's HTML is one enormous page of repeated `content-cell` divs. The
+     * reader accumulates until a cell is complete, parses that fragment alone,
+     * and discards it — so peak memory is one cell rather than one page.
      */
-    private fun parseTakeoutHtml(text: String): List<WatchEntity> {
-        val document = runCatching { Jsoup.parse(text) }.getOrNull() ?: return emptyList()
+    internal suspend fun streamHtml(
+        reader: BufferedReader,
+        emit: suspend (WatchEntity) -> Unit,
+    ) {
+        val buffer = StringBuilder()
+        val chunk = CharArray(READ_BUFFER)
 
-        return document.select("div.content-cell").mapNotNull { cell ->
-            val links = cell.select("a")
-            val videoLink = links.firstOrNull { "watch?v=" in it.attr("href") || "/shorts/" in it.attr("href") }
-                ?: return@mapNotNull null
-            val href = videoLink.attr("href")
-            val videoId = href.substringAfter("v=", "").substringBefore('&')
-                .ifBlank { href.substringAfterLast('/') }
-            if (videoId.isBlank()) return@mapNotNull null
+        while (true) {
+            val read = reader.read(chunk)
+            if (read < 0) break
+            buffer.append(chunk, 0, read)
 
-            val channelLink = links.firstOrNull { "/channel/" in it.attr("href") }
+            // Cut on the *start* of the next cell, so what is parsed is one
+            // whole cell and the partial one stays buffered.
+            while (true) {
+                val first = buffer.indexOf(CELL)
+                if (first < 0) break
+                val second = buffer.indexOf(CELL, first + CELL.length)
+                if (second < 0) break
 
-            WatchEntity(
-                videoId = videoId,
-                // Jsoup unescapes entities, which the desktop app originally
-                // forgot and ended up with "Rock &amp; Roll" in its history.
-                title = videoLink.text(),
-                channel = channelLink?.text().orEmpty(),
-                channelId = channelLink?.attr("href")?.substringAfterLast('/'),
-                isShort = "/shorts/" in href,
-                watchedAt = parseTime(cell.ownText()),
-            )
+                val fragment = buffer.substring(first, second)
+                recordFromHtml(fragment)?.let { emit(it) }
+                buffer.delete(0, second)
+            }
+
+            // A pathological file with no cell markers must not grow forever.
+            if (buffer.length > MAX_BUFFER) buffer.delete(0, buffer.length - CELL.length)
         }
+
+        val last = buffer.indexOf(CELL)
+        if (last >= 0) recordFromHtml(buffer.substring(last))?.let { emit(it) }
+    }
+
+    /** Lets a reader be closed without closing the zip it is reading from. */
+    private class NonClosing(private val wrapped: java.io.InputStream) : java.io.InputStream() {
+        override fun read() = wrapped.read()
+        override fun read(b: ByteArray, off: Int, len: Int) = wrapped.read(b, off, len)
+        override fun available() = wrapped.available()
+        override fun close() = Unit
+    }
+
+    private const val BATCH = 400
+    private const val READ_BUFFER = 64 * 1024
+    private const val MAX_BUFFER = 4 * 1024 * 1024
+    private const val CELL = "<div class=\"content-cell"
+
+    /** One history record from one Takeout JSON object. */
+    private fun recordFromJson(row: JsonObject): WatchEntity? {
+        val url = row["titleUrl"]?.jsonPrimitive?.contentOrNull ?: return null
+        val videoId = url.substringAfter("v=", "").substringBefore('&')
+            .ifBlank { url.substringAfterLast('/').substringBefore('?') }
+        if (videoId.isBlank()) return null
+
+        val uploader = (row["subtitles"] as? JsonArray)?.firstOrNull() as? JsonObject
+
+        return WatchEntity(
+            videoId = videoId,
+            // Google prefixes every entry with "Watched ", which is not part
+            // of the title and would otherwise become a topic in its own right.
+            title = row["title"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                .removePrefix("Watched "),
+            channel = uploader?.get("name")?.jsonPrimitive?.contentOrNull.orEmpty(),
+            channelId = uploader?.get("url")?.jsonPrimitive?.contentOrNull
+                ?.substringAfterLast('/'),
+            isShort = "/shorts/" in url,
+            watchedAt = parseTime(row["time"]?.jsonPrimitive?.contentOrNull),
+        )
+    }
+
+    /**
+     * One history record from one HTML cell.
+     *
+     * Jsoup on a fragment rather than the page: parsing is the same, and the
+     * memory is one entry instead of a few hundred megabytes of DOM.
+     */
+    private fun recordFromHtml(fragment: String): WatchEntity? {
+        val cell = runCatching { Jsoup.parseBodyFragment(fragment) }.getOrNull() ?: return null
+        val links = cell.select("a")
+
+        val videoLink = links.firstOrNull {
+            "watch?v=" in it.attr("href") || "/shorts/" in it.attr("href")
+        } ?: return null
+
+        val href = videoLink.attr("href")
+        val videoId = href.substringAfter("v=", "").substringBefore('&')
+            .ifBlank { href.substringAfterLast('/').substringBefore('?') }
+        if (videoId.isBlank()) return null
+
+        val channelLink = links.firstOrNull { "/channel/" in it.attr("href") }
+
+        return WatchEntity(
+            videoId = videoId,
+            // Jsoup unescapes entities, which a hand-rolled parser forgets and
+            // ends up with "Rock &amp; Roll" in the history.
+            title = videoLink.text(),
+            channel = channelLink?.text().orEmpty(),
+            channelId = channelLink?.attr("href")?.substringAfterLast('/'),
+            isShort = "/shorts/" in href,
+            watchedAt = parseTime(cell.body().ownText()),
+        )
     }
 
     /**

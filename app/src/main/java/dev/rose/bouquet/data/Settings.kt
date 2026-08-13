@@ -52,6 +52,13 @@ data class Settings(
     val visualiserLayers: List<Layer> = listOf(Layer(Shape.Bars)),
     /** How hard the visualiser reacts. 1 is unity. */
     val visualiserIntensity: Float = 1f,
+    /**
+     * Colours for the Solid and Multi modes, as ARGB.
+     *
+     * Empty means "use the theme", which is what Theme mode always does —
+     * so a palette chosen here survives switching to Theme and back.
+     */
+    val visualiserColours: List<Int> = emptyList(),
 )
 
 class SettingsStore(private val context: Context) {
@@ -71,6 +78,7 @@ class SettingsStore(private val context: Context) {
         val visualiserLayers = stringPreferencesKey("visualiser_layers")
         val visualiserIntensity = androidx.datastore.preferences.core.floatPreferencesKey(
             "visualiser_intensity")
+        val visualiserColours = stringPreferencesKey("visualiser_colours")
     }
 
     val settings: Flow<Settings> = context.settingsDataStore.data.map { p ->
@@ -90,6 +98,9 @@ class SettingsStore(private val context: Context) {
             visualiserLayers = p[Keys.visualiserLayers]?.let(::decodeLayers)
                 ?: defaults.visualiserLayers,
             visualiserIntensity = p[Keys.visualiserIntensity] ?: defaults.visualiserIntensity,
+            visualiserColours = p[Keys.visualiserColours]
+                ?.split(',')?.mapNotNull { it.trim().toIntOrNull() }
+                ?: defaults.visualiserColours,
         )
     }
 
@@ -107,6 +118,8 @@ class SettingsStore(private val context: Context) {
     suspend fun setVisualiserIntensity(value: Float) = put(Keys.visualiserIntensity, value)
     suspend fun setVisualiserLayers(layers: List<Layer>) =
         put(Keys.visualiserLayers, encodeLayers(layers))
+    suspend fun setVisualiserColours(colours: List<Int>) =
+        put(Keys.visualiserColours, colours.joinToString(","))
 
     private suspend fun <T> put(key: Preferences.Key<T>, value: T) {
         context.settingsDataStore.edit { it[key] = value }

@@ -283,13 +283,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         Interests(it.interests, it.blocked, it.blockedChannels, it.filterSlop)
     }
 
+    /** Which feeds are being built. A set, so building one cannot cancel the other. */
+    private val building = mutableSetOf<Boolean>()
+
     fun buildFeed(shorts: Boolean) {
-        if (_buildingFeed.value) return
+        // Guarded per feed rather than globally: a single flag meant asking for
+        // both after an import silently dropped the second one, which is why
+        // the Shorts tab stayed empty after importing a history.
+        synchronized(building) { if (!building.add(shorts)) return }
         viewModelScope.launch {
             _buildingFeed.value = true
             runCatching { recommender.rebuild(shorts, interests()) }
                 .onFailure { _status.value = "Could not build the feed" }
-            _buildingFeed.value = false
+            synchronized(building) {
+                building.remove(shorts)
+                _buildingFeed.value = building.isNotEmpty()
+            }
         }
     }
 
@@ -415,8 +424,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     suspend fun importTakeout(uri: Uri): String {
         val result = Imports.takeout(getApplication(), uri)
-        // A fresh history is worth nothing until something is built from it.
-        if (result.added > 0) buildFeed(shorts = false)
+        // A fresh history is worth nothing until something is built from it —
+        // and *both* feeds, because the point of importing is opening the app
+        // to something rather than to two empty tabs.
+        if (result.added > 0) {
+            buildFeed(shorts = false)
+            buildFeed(shorts = true)
+        }
         return result.message
     }
 
@@ -510,6 +524,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setVisualiserIntensity(value: Float) =
         viewModelScope.launch { settingsStore.setVisualiserIntensity(value) }
+
+    fun setVisualiserColours(colours: List<Int>) =
+        viewModelScope.launch { settingsStore.setVisualiserColours(colours) }
 
     fun clearStatus() { _status.value = null }
 }

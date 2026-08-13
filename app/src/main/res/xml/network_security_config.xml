@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Allow plain HTTP.
+
+    Android has blocked cleartext by default since Android 9, which is right
+    for the public internet and wrong for this app: a Subsonic server on your
+    own network is almost always plain HTTP on a port, because getting a
+    trusted certificate for 192.168.1.10 is not a thing you can do. Without
+    this, adding a home server fails with "CLEARTEXT communication to … not
+    permitted by network security policy" and there is nothing the user can do
+    about it.
+
+    Scoping this to private address ranges would be better, and is not
+    possible: the network security config matches domains, not CIDR ranges, and
+    the address here is whatever the user types. So it is permitted generally,
+    with the honest note that HTTPS is still used wherever a server offers it —
+    OkHttp follows the scheme in the address, so https:// stays https://, and
+    everything the app fetches from YouTube is HTTPS regardless.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <!-- Servers behind a private CA, and self-signed certificates
+                 installed by the user, are common on a home network. Trusting
+                 what the user has deliberately installed is not a weakening;
+                 refusing to would just push them back to plain HTTP. -->
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

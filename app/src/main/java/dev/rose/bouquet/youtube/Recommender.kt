@@ -49,10 +49,18 @@ class Recommender(
      * the desktop app's feed looked broken for weeks.
      */
     suspend fun rebuild(shorts: Boolean, interests: Interests): List<FeedEntity> {
-        val history = youtube.recent(shorts = shorts, limit = HISTORY)
+        // The shorts feed reads both histories; the video feed reads only its
+        // own. Asymmetric on purpose — see the class note, rule 1. Without
+        // this, a freshly imported history of ordinary videos produces no
+        // channels to ask for shorts and the Shorts tab stays empty forever.
+        val history =
+            if (shorts) youtube.recentAny(limit = HISTORY)
+            else youtube.recent(shorts = false, limit = HISTORY)
         val followed = youtube.activeChannels()
         val liked = youtube.opinions(liked = true)
-        val topChannels = youtube.topChannels(shorts = shorts)
+        val topChannels =
+            if (shorts) youtube.topChannelsAny()
+            else youtube.topChannels(shorts = false)
 
         val candidates = gather(shorts, history, followed, liked, topChannels)
         val ranked = rank(candidates, shorts, history, followed, interests)

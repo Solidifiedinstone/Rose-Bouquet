@@ -85,6 +85,10 @@ interface YouTubeDao {
     @Insert
     suspend fun watched(row: WatchEntity)
 
+    /** Insert many at once — an import writes thousands, one at a time is slow. */
+    @Insert
+    suspend fun watchedAll(rows: List<WatchEntity>)
+
     /**
      * Recent views, videos and shorts kept apart.
      *
@@ -108,6 +112,26 @@ interface YouTubeDao {
 
     @Query("SELECT COUNT(*) FROM watch_history WHERE isShort = :shorts")
     suspend fun historyCount(shorts: Boolean): Int
+
+    /**
+     * Recent views of anything, videos and shorts together.
+     *
+     * Used to seed the *shorts* feed and nothing else. The asymmetry is
+     * deliberate and matches the desktop app: a shorts binge must not decide
+     * the Watch tab, but what you sit down and watch says plenty about which
+     * shorts you would like — and after importing a history that is almost all
+     * ordinary videos, it is the only signal there is.
+     */
+    @Query("SELECT * FROM watch_history ORDER BY watchedAt DESC LIMIT :limit")
+    suspend fun recentAny(limit: Int = 400): List<WatchEntity>
+
+    /** Channels watched at all, in either form. See [recentAny]. */
+    @Query("""
+        SELECT channelId AS id, COUNT(*) AS plays FROM watch_history
+        WHERE channelId IS NOT NULL
+        GROUP BY channelId ORDER BY plays DESC LIMIT :limit
+    """)
+    suspend fun topChannelsAny(limit: Int = 40): List<ChannelPlays>
 
     @Query("DELETE FROM watch_history")
     suspend fun clearHistory()
