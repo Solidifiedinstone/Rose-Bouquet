@@ -62,7 +62,7 @@ fun LibraryScreen(model: AppViewModel, navController: NavController) {
     var confirmDownloadAll by remember { mutableStateOf(false) }
 
     if (confirmDownloadAll) {
-        val pending = songs.filter { !it.downloaded }
+        val pending = remember(songs) { songs.filter { !it.downloaded } }
         // Asked first, and told how much, because this is the one action here
         // that can fill a phone or a data allowance and cannot be undone by
         // pressing it again.
@@ -94,7 +94,10 @@ fun LibraryScreen(model: AppViewModel, navController: NavController) {
     Column(Modifier.fillMaxSize()) {
         SectionHeading("Library") {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                val pending = songs.count { !it.downloaded }
+                // Remembered: this counts the whole library, and the header
+                // recomposes whenever anything on the screen moves — with a
+                // large library that was a full scan several times a second.
+                val pending = remember(songs) { songs.count { !it.downloaded } }
                 Icon(
                     if (pending == 0 && songs.isNotEmpty()) Icons.Default.DownloadDone
                     else Icons.Default.Download,
@@ -227,8 +230,7 @@ private fun AlbumDetail(
         }
 
         LazyColumn(Modifier.fillMaxSize()) {
-            items(songs.size) { index ->
-                val song = songs[index]
+            itemsIndexed(songs, key = { _, song -> song.id }) { index, song ->
                 SongRow(
                     song = song,
                     coverUrl = model.coverUrl(song.coverArt, size = 128),
@@ -277,8 +279,7 @@ fun SearchScreen(model: AppViewModel) {
             query.isBlank() -> Empty("Search", "Find anything in the library on your server.")
             results.isEmpty() && !searching -> Empty("Nothing found", "No track, album or artist matches “$query”.")
             else -> LazyColumn(Modifier.fillMaxSize()) {
-                items(results.size) { index ->
-                    val song = results[index]
+                itemsIndexed(results, key = { _, song -> song.id }) { index, song ->
                     SongRow(
                         song = song,
                         coverUrl = model.coverUrl(song.coverArt, size = 128),
@@ -309,8 +310,7 @@ fun DownloadsScreen(model: AppViewModel) {
             )
         } else {
             LazyColumn(Modifier.fillMaxSize()) {
-                items(downloads.size) { index ->
-                    val song = downloads[index]
+                itemsIndexed(downloads, key = { _, song -> song.id }) { index, song ->
                     SongRow(
                         song = song,
                         coverUrl = model.coverUrl(song.coverArt, size = 128),
@@ -376,8 +376,7 @@ fun PlaylistsScreen(model: AppViewModel) {
             )
         } else {
             LazyColumn(Modifier.fillMaxSize()) {
-                items(playlists.size) { index ->
-                    val playlist = playlists[index]
+                items(playlists, key = { it.id }) { playlist ->
                     Row(
                         Modifier
                             .fillMaxWidth()

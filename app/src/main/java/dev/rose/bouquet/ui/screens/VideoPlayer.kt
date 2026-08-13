@@ -110,6 +110,65 @@ fun VideoPlayer(model: AppViewModel, video: FeedEntity, onBack: () -> Unit) {
 
     androidx.activity.compose.BackHandler(enabled = fullscreen) { fullscreen = false }
 
+    // A Dialog, because this screen is drawn inside the app's Scaffold — with a
+    // top bar above it and the nav bar and mini player below. Filling "the
+    // screen" from in there only ever filled the gap between them, which is
+    // why fullscreen was not fullscreen. A dialog with the platform width
+    // disabled is a surface over the whole window, bars included.
+    if (fullscreen) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { fullscreen = false },
+            properties = androidx.compose.ui.window.DialogProperties(
+                usePlatformDefaultWidth = false,
+                dismissOnBackPress = true,
+                dismissOnClickOutside = false,
+            ),
+        ) {
+            // The dialog is its own window, so the bars have to be hidden on
+            // *it* — hiding them on the activity's window leaves the status bar
+            // sitting over the video, which is most of what "not fullscreen"
+            // looked like.
+            val dialogWindow = (androidx.compose.ui.platform.LocalView.current.parent
+                as? androidx.compose.ui.window.DialogWindowProvider)?.window
+            androidx.compose.runtime.SideEffect {
+                dialogWindow?.let { window ->
+                    androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
+                    window.setLayout(
+                        android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                        android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                    )
+                    androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
+                        .apply {
+                            hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+                            systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat
+                                .BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                        }
+                }
+            }
+
+            Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
+                AndroidView(
+                    factory = {
+                        PlayerView(it).apply {
+                            useController = true
+                            setShowNextButton(false)
+                            setShowPreviousButton(false)
+                            // Fills the screen rather than sitting in a letterbox.
+                            // A phone is taller than 16:9, so fitting leaves bars
+                            // down both sides in landscape, which is the thing
+                            // that did not feel like fullscreen.
+                            resizeMode =
+                                androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                            setFullscreenButtonClickListener { fullscreen = false }
+                        }
+                    },
+                    update = { it.player = exo },
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
+    }
+
     // Record the view when leaving, with how much was actually watched. A view
     // is what every recommendation downstream is built from, so it is recorded
     // once, on the way out, rather than on the way in where a mis-tap counts.
@@ -125,8 +184,7 @@ fun VideoPlayer(model: AppViewModel, video: FeedEntity, onBack: () -> Unit) {
 
     Column(Modifier.fillMaxSize().background(theme.background)) {
         Box(
-            if (fullscreen) Modifier.fillMaxSize().background(Color.Black)
-            else Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(Color.Black),
+            Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(Color.Black),
             contentAlignment = Alignment.Center,
         ) {
             when {
@@ -138,22 +196,26 @@ fun VideoPlayer(model: AppViewModel, video: FeedEntity, onBack: () -> Unit) {
                     modifier = Modifier.padding(24.dp),
                 )
                 playback == null -> CircularProgressIndicator(color = theme.accent)
-                else -> AndroidView(
+                // Nothing is attached here while fullscreen: a player can only
+                // render to one view, and leaving this one attached means the
+                // fullscreen surface stays black.
+                !fullscreen -> AndroidView(
                     factory = {
                         PlayerView(it).apply {
-                            player = exo
                             useController = true
                             setShowNextButton(false)
                             setShowPreviousButton(false)
-                            setFullscreenButtonClickListener { fullscreen = it }
+                            setFullscreenButtonClickListener { fullscreen = true }
                         }
                     },
+                    update = { it.player = if (fullscreen) null else exo },
                     modifier = Modifier.fillMaxSize(),
                 )
+
+                else -> Unit
             }
         }
 
-        if (fullscreen) return@Column
 
         Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("‹ Back", color = theme.accent, style = MaterialTheme.typography.bodyMedium,

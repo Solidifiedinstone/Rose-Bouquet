@@ -27,8 +27,17 @@ class MusicRepository(
     private val database = RoseDatabase.get(context)
     private val music = database.music()
 
-    /** Cover URLs already built, so the same art keeps the same URL. */
-    private val coverUrls = java.util.concurrent.ConcurrentHashMap<String, String>()
+    /**
+     * Cover URLs already built, so the same art keeps the same URL.
+     *
+     * Bounded. Held forever, a large library and two or three requested sizes
+     * is tens of thousands of entries that are never released and never
+     * revisited once the user has scrolled past them — small individually and
+     * unbounded together, which is the shape of a leak rather than a cache.
+     */
+    private val coverUrls = object : LinkedHashMap<String, String>(256, 0.75f, true) {
+        override fun removeEldestEntry(eldest: Map.Entry<String, String>) = size > COVER_CACHE
+    }
 
     // ── Reading ───────────────────────────────────────────────────
 
@@ -157,14 +166,24 @@ class MusicRepository(
      */
     fun coverUrl(server: Server, coverArt: String?, size: Int = 512): String? {
         val art = coverArt?.takeIf { it.isNotBlank() } ?: return null
-        return coverUrls.getOrPut("${server.id}|$art|$size") {
-            client.coverUrl(server, art, size) ?: return null
+        val key = "${server.id}|$art|$size"
+        // Synchronised because LinkedHashMap in access order mutates on read,
+        // and this is called from composition on the main thread while a
+        // library refresh may be filling it from an IO thread.
+        synchronized(coverUrls) {
+            coverUrls[key]?.let { return it }
+            val built = client.coverUrl(server, art, size) ?: return null
+            coverUrls[key] = built
+            return built
         }
     }
 
     companion object {
         private const val PAGE = 100
         private const val MAX_ALBUMS = 20_000
+
+        /** Enough for several screens of art either side of where you are. */
+        private const val COVER_CACHE = 600
     }
 }
 

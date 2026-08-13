@@ -25,6 +25,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -58,13 +59,17 @@ fun BrowseScreen(model: AppViewModel) {
     val theme = LocalRoseTheme.current
     var shelves by remember { mutableStateOf<List<Pair<String, List<Video>>>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
+    // Bumped to ask for another look. Keying the effect on a counter rather
+    // than having the button set `loading` itself, which is what it did — the
+    // spinner came on and nothing ever fetched, so it span until the screen
+    // was left.
+    var attempt by remember { mutableIntStateOf(0) }
 
-    LaunchedEffect(Unit) {
-        if (shelves.isEmpty()) {
-            loading = true
-            shelves = model.browse()
-            loading = false
-        }
+    LaunchedEffect(attempt) {
+        if (shelves.isNotEmpty() && attempt == 0) return@LaunchedEffect
+        loading = true
+        shelves = model.browse()
+        loading = false
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -72,9 +77,7 @@ fun BrowseScreen(model: AppViewModel) {
             Icon(
                 Icons.Default.Refresh, contentDescription = "Look again",
                 tint = if (loading) theme.textDim else theme.accent,
-                modifier = Modifier.size(22.dp).clickable(enabled = !loading) {
-                    loading = true
-                },
+                modifier = Modifier.size(22.dp).clickable(enabled = !loading) { attempt++ },
             )
         }
         LoadingLine(loading)
