@@ -20,6 +20,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
@@ -58,15 +59,64 @@ fun LibraryScreen(model: AppViewModel, navController: NavController) {
     val refreshing by model.refreshing.collectAsStateWithLifecycle()
     val server by model.activeServer.collectAsStateWithLifecycle()
     val theme = LocalRoseTheme.current
+    var confirmDownloadAll by remember { mutableStateOf(false) }
+
+    if (confirmDownloadAll) {
+        val pending = songs.filter { !it.downloaded }
+        // Asked first, and told how much, because this is the one action here
+        // that can fill a phone or a data allowance and cannot be undone by
+        // pressing it again.
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirmDownloadAll = false },
+            title = { Text("Download the whole library?") },
+            text = {
+                Text(
+                    "${pending.size} tracks are not on this phone yet" +
+                        (estimateSize(pending)?.let { ", roughly $it" } ?: "") +
+                        ". Downloads run on wifi unless you have allowed mobile data " +
+                        "in Settings."
+                )
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    model.download(pending)
+                    confirmDownloadAll = false
+                }) { Text("Download all") }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(
+                    onClick = { confirmDownloadAll = false },
+                ) { Text("Cancel") }
+            },
+        )
+    }
 
     Column(Modifier.fillMaxSize()) {
         SectionHeading("Library") {
-            Icon(
-                Icons.Default.Refresh,
-                contentDescription = "Rescan",
-                tint = if (refreshing) theme.textDim else theme.accent,
-                modifier = Modifier.size(24.dp).clickable(enabled = !refreshing) { model.refresh() },
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                val pending = songs.count { !it.downloaded }
+                Icon(
+                    if (pending == 0 && songs.isNotEmpty()) Icons.Default.DownloadDone
+                    else Icons.Default.Download,
+                    contentDescription =
+                        if (pending == 0) "Everything is downloaded" else "Download all $pending",
+                    tint = when {
+                        songs.isEmpty() -> theme.textDim
+                        pending == 0 -> theme.success
+                        else -> theme.accent
+                    },
+                    modifier = Modifier.size(24.dp)
+                        .clickable(enabled = pending > 0) { confirmDownloadAll = true },
+                )
+                Spacer(Modifier.width(18.dp))
+                Icon(
+                    Icons.Default.Refresh,
+                    contentDescription = "Rescan",
+                    tint = if (refreshing) theme.textDim else theme.accent,
+                    modifier = Modifier.size(24.dp)
+                        .clickable(enabled = !refreshing) { model.refresh() },
+                )
+            }
         }
         LoadingLine(refreshing)
 
@@ -346,4 +396,22 @@ fun PlaylistsScreen(model: AppViewModel) {
             }
         }
     }
+}
+
+
+/**
+ * Roughly how much space a set of tracks needs.
+ *
+ * Null when the server did not report sizes — a guessed number people plan
+ * around is worse than none, so it simply is not shown.
+ */
+private fun estimateSize(songs: List<dev.rose.bouquet.data.db.SongEntity>): String? {
+    val known = songs.mapNotNull { it.sizeBytes }.filter { it > 0 }
+    if (known.size < songs.size / 2) return null
+
+    // Scaled up for the tracks with no reported size, so the figure is not
+    // quietly an underestimate of the thing about to fill somebody's phone.
+    val total = known.sum() * songs.size / known.size.coerceAtLeast(1)
+    val mb = total / 1_048_576.0
+    return if (mb >= 1024) "%.1f GB".format(mb / 1024) else "%.0f MB".format(mb)
 }

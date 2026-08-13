@@ -80,7 +80,27 @@ fun ShortsScreen(model: AppViewModel) {
         return
     }
 
-    val pager = rememberPagerState(pageCount = { feed.size })
+    // A snapshot that only ever grows.
+    //
+    // Watching a short removes it from the feed table — right, so it is not
+    // recommended twice, and disastrous here: the list the pager is scrolling
+    // shrinks under it, so the current index lands on a different short. That
+    // is the "it scrolls by itself", and because both collectors are keyed on
+    // the list, every removal restarted them and re-resolved the stream, which
+    // is the slowness. The reel reads its own copy and appends new pages to it.
+    var reel by remember { mutableStateOf<List<FeedEntity>>(emptyList()) }
+    LaunchedEffect(feed) {
+        if (feed.isEmpty()) return@LaunchedEffect
+        val known = reel.mapTo(mutableSetOf()) { it.videoId }
+        val fresh = feed.filterNot { it.videoId in known }
+        if (fresh.isNotEmpty()) reel = reel + fresh
+    }
+    if (reel.isEmpty()) {
+        Empty("Finding shorts…", "Reading the channels you watch.")
+        return
+    }
+
+    val pager = rememberPagerState(pageCount = { reel.size })
     val context = LocalContext.current
 
     // One player for the whole reel, reused as pages change. Creating one per
@@ -109,9 +129,9 @@ fun ShortsScreen(model: AppViewModel) {
     //
     // `collectLatest` on the playing side matters too: a fling through five
     // shorts should abandon the four it passed rather than resolve each in turn.
-    LaunchedEffect(pager, feed) {
+    LaunchedEffect(pager) {
         snapshotFlow { pager.settledPage }.collectLatest { page ->
-            val short = feed.getOrNull(page) ?: return@collectLatest
+            val short = reel.getOrNull(page) ?: return@collectLatest
 
             // Already resolved by a prefetch? Then this is not a load at all,
             // and showing a spinner for it makes an instant swipe look slow.
@@ -131,10 +151,10 @@ fun ShortsScreen(model: AppViewModel) {
     }
 
     // Prefetching, off to one side, so it can never delay a swipe.
-    LaunchedEffect(pager, feed) {
+    LaunchedEffect(pager) {
         snapshotFlow { pager.settledPage }.collectLatest { page ->
             YouTubeSource.prefetch(
-                (1..PREFETCH_AHEAD).mapNotNull { feed.getOrNull(page + it) }
+                (1..PREFETCH_AHEAD).mapNotNull { reel.getOrNull(page + it) }
                     .map { "https://www.youtube.com/shorts/${it.videoId}" },
                 maxHeight = SHORT_HEIGHT,
             )
@@ -142,7 +162,7 @@ fun ShortsScreen(model: AppViewModel) {
     }
 
     VerticalPager(state = pager, modifier = Modifier.fillMaxSize()) { page ->
-        val short = feed[page]
+        val short = reel[page]
         Box(Modifier.fillMaxSize().background(Color.Black)) {
             // Always behind the player: a resolving short is otherwise a black
             // rectangle, which reads as broken rather than as loading.
