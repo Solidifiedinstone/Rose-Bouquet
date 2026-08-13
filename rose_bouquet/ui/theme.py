@@ -567,7 +567,7 @@ def contrast(one: str, two: str) -> float:
 
 def _mix(colour: str, other: str, amount: float) -> str:
     a, b = _channels(colour), _channels(other)
-    blended = [round(255 * (x + (y - x) * amount)) for x, y in zip(a, b)]
+    blended = [round(255 * (x + (y - x) * amount)) for x, y in zip(a, b, strict=True)]
     return "#{:02x}{:02x}{:02x}".format(*blended)
 
 
