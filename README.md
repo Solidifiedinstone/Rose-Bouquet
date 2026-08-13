@@ -113,12 +113,12 @@ profile are rows in a database on your phone. Uninstalling deletes them.
 There is no Play Store listing and no F-Droid entry yet, so this installs as an
 APK.
 
-1. Download `rose-bouquet.apk` from the
+1. Download `bouquet.apk` from the
    [latest release](https://github.com/Solidifiedinstone/Rose-Bouquet-Android/releases/latest).
 2. Open it. Android will ask whether to allow installing apps from this source —
    that prompt is normal for anything not from the Play Store, and it is asking
    about your browser or file manager, not about this app.
-3. Open Rose Bouquet, go to **Settings → Add a server**, and enter the address,
+3. Open Bouquet, tap the menu, go to **Settings → Add a server**, and enter the address,
    username and password of your Subsonic server. The address includes the
    port, for example `http://192.168.1.10:4533`.
 4. Press **Rescan library**. The first scan reads every album, so a large
