@@ -76,6 +76,9 @@ android {
 
     buildFeatures {
         compose = true
+        // For the version shown in Settings — otherwise the only way to tell
+        // which build is on the phone is the system app info screen.
+        buildConfig = true
     }
 
     packaging {

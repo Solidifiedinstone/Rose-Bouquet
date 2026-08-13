@@ -34,6 +34,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.util.UnstableApi
+import dev.rose.bouquet.BuildConfig
 import dev.rose.bouquet.ui.AppViewModel
 import dev.rose.bouquet.ui.SectionHeading
 import dev.rose.bouquet.ui.theme.LocalRoseTheme
@@ -197,6 +198,12 @@ fun SettingsScreen(model: AppViewModel) {
 
         item {
             Column(Modifier.padding(16.dp)) {
+                Text("Bouquet", color = theme.text,
+                    style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "Version ${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE})",
+                    color = theme.textDim, style = MaterialTheme.typography.bodySmall,
+                )
                 Text("Rose Bouquet for Android", color = theme.textDim,
                     style = MaterialTheme.typography.bodySmall)
                 Text("A project of R.O.S.E. — Rose Open Source Endeavours",
