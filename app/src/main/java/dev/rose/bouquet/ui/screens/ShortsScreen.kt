@@ -28,6 +28,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.collectLatest
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -97,23 +98,45 @@ fun ShortsScreen(model: AppViewModel) {
 
     // Follow the settled page rather than every frame of the swipe, so a fling
     // through ten shorts resolves one stream instead of ten.
-    LaunchedEffect(pager) {
-        snapshotFlow { pager.settledPage }.collect { page ->
-            val short = feed.getOrNull(page) ?: return@collect
-            loading = true
-            exo.stop()
-            val found = YouTubeSource.videoPlayback(
-                "https://www.youtube.com/shorts/${short.videoId}", maxHeight = 720)
-            if (found != null) exo.playYouTube(context, found)
+    // Two separate collectors, and that separation is the point.
+    //
+    // `collect` runs its body to completion before taking the next emission, so
+    // doing anything slow in the same block as the page change makes the *next*
+    // swipe wait for it. Prefetching inside the page handler — which is what
+    // this did — meant every swipe queued behind three page fetches for shorts
+    // nobody had reached yet, so adding a prefetch made the reel slower than
+    // having none at all.
+    //
+    // `collectLatest` on the playing side matters too: a fling through five
+    // shorts should abandon the four it passed rather than resolve each in turn.
+    LaunchedEffect(pager, feed) {
+        snapshotFlow { pager.settledPage }.collectLatest { page ->
+            val short = feed.getOrNull(page) ?: return@collectLatest
+
+            // Already resolved by a prefetch? Then this is not a load at all,
+            // and showing a spinner for it makes an instant swipe look slow.
+            val url = "https://www.youtube.com/shorts/${short.videoId}"
+            val cached = YouTubeSource.cached(url, maxHeight = SHORT_HEIGHT)
+            loading = cached == null
+
+            val found = cached ?: YouTubeSource.videoPlayback(url, maxHeight = SHORT_HEIGHT)
+            if (found != null) {
+                exo.playYouTube(context, found)
+            } else {
+                exo.stop()
+            }
             loading = false
             model.watched(short)
+        }
+    }
 
-            // Resolve the next few while this one plays, so the swipe after
-            // this costs nothing. A short is roughly a second of page fetch and
-            // parse, which is the whole of why the reel felt slow.
+    // Prefetching, off to one side, so it can never delay a swipe.
+    LaunchedEffect(pager, feed) {
+        snapshotFlow { pager.settledPage }.collectLatest { page ->
             YouTubeSource.prefetch(
-                (1..3).mapNotNull { feed.getOrNull(page + it) }
+                (1..PREFETCH_AHEAD).mapNotNull { feed.getOrNull(page + it) }
                     .map { "https://www.youtube.com/shorts/${it.videoId}" },
+                maxHeight = SHORT_HEIGHT,
             )
         }
     }
@@ -125,32 +148,45 @@ fun ShortsScreen(model: AppViewModel) {
             // rectangle, which reads as broken rather than as loading.
             Cover(short.thumbnail, Modifier.fillMaxSize(), corner = 0)
 
-            if (page == pager.settledPage) {
-                AndroidView(
-                    factory = {
-                        PlayerView(it).apply {
-                            player = exo
-                            useController = false
-                            // Fill the screen the way every other reel does;
-                            // letterboxing a vertical video looks broken.
-                            resizeMode =
-                                androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                        }
-                    },
-                    modifier = Modifier.fillMaxSize(),
+            // The view exists on every page but holds the player on exactly
+            // one. Creating it only for the settled page meant a new PlayerView
+            // per swipe with the old one still attached to the same player, and
+            // a player attached to two views renders to neither reliably.
+            AndroidView(
+                factory = {
+                    PlayerView(it).apply {
+                        useController = false
+                        // Fill the screen the way every other reel does;
+                        // letterboxing a vertical video looks broken.
+                        resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                        // Transparent until it has a player, so the thumbnail
+                        // behind shows through rather than a black rectangle.
+                        setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
+                    }
+                },
+                update = { view ->
+                    view.player = if (page == pager.settledPage) exo else null
+                },
+                modifier = Modifier.fillMaxSize(),
+            )
+
+            if (page == pager.settledPage && loading) {
+                CircularProgressIndicator(
+                    color = Color.White,
+                    modifier = Modifier.align(Alignment.Center),
                 )
-                if (loading) {
-                    CircularProgressIndicator(
-                        color = Color.White,
-                        modifier = Modifier.align(Alignment.Center),
-                    )
-                }
             }
 
             Overlay(short, model, Modifier.align(Alignment.BottomStart))
         }
     }
 }
+
+/** 720 is plenty on a phone and resolves faster than asking for more. */
+private const val SHORT_HEIGHT = 720
+
+/** How far ahead to resolve. Three covers a fast swipe without wasting fetches. */
+private const val PREFETCH_AHEAD = 3
 
 @UnstableApi
 @Composable

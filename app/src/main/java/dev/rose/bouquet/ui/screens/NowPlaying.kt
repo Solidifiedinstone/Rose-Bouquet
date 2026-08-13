@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
@@ -31,6 +33,10 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -42,6 +48,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -73,15 +81,49 @@ fun NowPlayingSheet(model: AppViewModel, onDismiss: () -> Unit) {
     // this sheet is on screen. A ticker running behind a closed sheet is a
     // wakeup per second for a number nobody is looking at.
     var scrubbing by remember { mutableStateOf<Float?>(null) }
-    var showVisualiser by remember { mutableStateOf(false) }
     val settings by model.settings.collectAsStateWithLifecycle()
+    val context = LocalContext.current
 
-    // Started only while it is on screen and switched on. An audio tap running
-    // behind a closed sheet is a wakeup per frame for something nobody can see.
+    // On by default. "Play a song and see the visualiser" is the entire point
+    // of having one; hiding it behind a toggle that starts off meant it was
+    // there and nobody could tell.
+    // Keyed on the saved value: settings arrive from DataStore a moment after
+    // the first composition, so an unkeyed remember would capture the default
+    // and ignore what the user actually chose.
+    var showVisualiser by remember(settings.visualiserOnNowPlaying) {
+        mutableStateOf(settings.visualiserOnNowPlaying)
+    }
+
+    var granted by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED
+        )
+    }
+    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        granted = it
+    }
+
     val spectrum = remember { dev.rose.bouquet.player.Spectrum() }
-    DisposableEffect(showVisualiser) {
-        if (showVisualiser) spectrum.start()
+
+    // Waits for the player's audio session before attaching, and keeps trying.
+    //
+    // The service creates its session when it starts, which may be after this
+    // sheet is first opened — and `start()` on a session of 0 can only fail, so
+    // a single attempt at the wrong moment left the visualiser dead for the
+    // rest of the session with no way to retry short of restarting the app.
+    DisposableEffect(showVisualiser, granted) {
         onDispose { spectrum.stop() }
+    }
+    LaunchedEffect(showVisualiser, granted) {
+        if (!showVisualiser || !granted) return@LaunchedEffect
+        repeat(SESSION_ATTEMPTS) {
+            if (dev.rose.bouquet.player.AudioSession.id != 0) {
+                spectrum.start()
+                if (spectrum.active.value) return@LaunchedEffect
+            }
+            kotlinx.coroutines.delay(300)
+        }
     }
     LaunchedEffect(Unit) {
         while (true) {
@@ -121,11 +163,33 @@ fun NowPlayingSheet(model: AppViewModel, onDismiss: () -> Unit) {
                             palette = settings.visualiserColours.map { Color(it) },
                             modifier = Modifier.fillMaxSize(),
                         )
-                        if (!spectrum.active.value) {
+                        if (!granted) {
+                            // Asked for here rather than only in the Visualiser
+                            // tab: this is where somebody notices it is blank.
+                            Column(
+                                Modifier.align(Alignment.Center).padding(20.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
+                                Text(
+                                    "The visualiser needs permission to read this " +
+                                        "app's audio. Nothing is recorded or sent.",
+                                    color = theme.textDim,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    textAlign = TextAlign.Center,
+                                )
+                                Spacer(Modifier.size(10.dp))
+                                androidx.compose.material3.Button(
+                                    onClick = { ask.launch(Manifest.permission.RECORD_AUDIO) },
+                                ) { Text("Allow") }
+                            }
+                        } else if (!spectrum.active.value) {
                             Text(
-                                "Allow audio access in the Visualiser tab",
+                                if (playback.playing) "This device will not let an app read " +
+                                    "its own audio output."
+                                else "Play something to see it.",
                                 color = theme.textDim,
                                 style = MaterialTheme.typography.bodySmall,
+                                textAlign = TextAlign.Center,
                                 modifier = Modifier.align(Alignment.Center).padding(16.dp),
                             )
                         }
@@ -139,12 +203,29 @@ fun NowPlayingSheet(model: AppViewModel, onDismiss: () -> Unit) {
                 }
             }
 
-            Text(
-                if (showVisualiser) "Show artwork" else "Show visualiser",
-                color = theme.accent,
-                style = MaterialTheme.typography.labelLarge,
-                modifier = Modifier.clickable { showVisualiser = !showVisualiser },
-            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(20.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    if (showVisualiser) Icons.Default.Image else Icons.Default.GraphicEq,
+                    contentDescription = if (showVisualiser) "Show artwork" else "Show visualiser",
+                    tint = theme.accent,
+                    modifier = Modifier.size(26.dp).clickable {
+                        showVisualiser = !showVisualiser
+                        model.setVisualiserOnNowPlaying(showVisualiser)
+                    },
+                )
+                Text(
+                    if (showVisualiser) "Artwork" else "Visualiser",
+                    color = theme.accent,
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.clickable {
+                        showVisualiser = !showVisualiser
+                        model.setVisualiserOnNowPlaying(showVisualiser)
+                    },
+                )
+            }
 
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
@@ -245,3 +326,6 @@ fun NowPlayingSheet(model: AppViewModel, onDismiss: () -> Unit) {
         }
     }
 }
+
+/** How long to wait for the player's audio session before giving up. */
+private const val SESSION_ATTEMPTS = 20

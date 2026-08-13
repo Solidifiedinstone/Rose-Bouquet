@@ -560,6 +560,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun setVisualiserColours(colours: List<Int>) =
         viewModelScope.launch { settingsStore.setVisualiserColours(colours) }
 
+    fun setVisualiserOnNowPlaying(on: Boolean) =
+        viewModelScope.launch { settingsStore.setVisualiserOnNowPlaying(on) }
+
     fun clearStatus() { _status.value = null }
 
     private companion object {

@@ -201,6 +201,18 @@ object YouTubeSource {
 
     private fun cacheKey(url: String, maxHeight: Int) = "$url|$maxHeight"
 
+    /**
+     * An already-resolved stream, without touching the network or a dispatcher.
+     *
+     * Lets the reel tell "prefetched, play it now" from "not ready, show a
+     * spinner". Going through the suspending path for a cache hit costs a
+     * dispatch and makes an instant swipe render a spinner for a frame.
+     */
+    fun cached(url: String, maxHeight: Int = 1080): VideoPlayback? {
+        val hit = resolved[cacheKey(url, maxHeight)] ?: return null
+        return if (System.currentTimeMillis() - hit.at < URL_TTL_MS) hit.playback else null
+    }
+
     suspend fun videoPlayback(url: String, maxHeight: Int = 1080): VideoPlayback? = io(null) {
         val key = cacheKey(url, maxHeight)
         val now = System.currentTimeMillis()

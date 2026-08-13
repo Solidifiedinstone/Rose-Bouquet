@@ -59,6 +59,8 @@ data class Settings(
      * so a palette chosen here survives switching to Theme and back.
      */
     val visualiserColours: List<Int> = emptyList(),
+    /** Show the visualiser instead of the artwork on Now Playing. On by default. */
+    val visualiserOnNowPlaying: Boolean = true,
 )
 
 class SettingsStore(private val context: Context) {
@@ -79,6 +81,7 @@ class SettingsStore(private val context: Context) {
         val visualiserIntensity = androidx.datastore.preferences.core.floatPreferencesKey(
             "visualiser_intensity")
         val visualiserColours = stringPreferencesKey("visualiser_colours")
+        val visualiserOnNowPlaying = booleanPreferencesKey("visualiser_now_playing")
     }
 
     val settings: Flow<Settings> = context.settingsDataStore.data.map { p ->
@@ -101,6 +104,8 @@ class SettingsStore(private val context: Context) {
             visualiserColours = p[Keys.visualiserColours]
                 ?.split(',')?.mapNotNull { it.trim().toIntOrNull() }
                 ?: defaults.visualiserColours,
+            visualiserOnNowPlaying = p[Keys.visualiserOnNowPlaying]
+                ?: defaults.visualiserOnNowPlaying,
         )
     }
 
@@ -120,6 +125,7 @@ class SettingsStore(private val context: Context) {
         put(Keys.visualiserLayers, encodeLayers(layers))
     suspend fun setVisualiserColours(colours: List<Int>) =
         put(Keys.visualiserColours, colours.joinToString(","))
+    suspend fun setVisualiserOnNowPlaying(on: Boolean) = put(Keys.visualiserOnNowPlaying, on)
 
     private suspend fun <T> put(key: Preferences.Key<T>, value: T) {
         context.settingsDataStore.edit { it[key] = value }

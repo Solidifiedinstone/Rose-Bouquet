@@ -55,6 +55,34 @@ class LiveProbe {
         }.onFailure { println("SEARCH/STREAM FAILED: $it") }
 
         runCatching {
+            kotlinx.coroutines.runBlocking {
+                val found = dev.rose.bouquet.youtube.YouTubeSource.search(
+                    "music", shorts = true, limit = 6)
+                println("SHORTS SEARCH: ${found.size} found")
+                val urls = found.map { "https://www.youtube.com/shorts/${it.id}" }
+
+                if (urls.isNotEmpty()) {
+                    var t = System.currentTimeMillis()
+                    val first = dev.rose.bouquet.youtube.YouTubeSource.videoPlayback(urls[0], 720)
+                    val cold = System.currentTimeMillis() - t
+                    t = System.currentTimeMillis()
+                    dev.rose.bouquet.youtube.YouTubeSource.videoPlayback(urls[0], 720)
+                    val warm = System.currentTimeMillis() - t
+                    println("RESOLVE: cold=${cold}ms warm=${warm}ms playable=${first != null}")
+
+                    if (urls.size > 2) {
+                        t = System.currentTimeMillis()
+                        dev.rose.bouquet.youtube.YouTubeSource.prefetch(urls.drop(1).take(2), 720)
+                        val pre = System.currentTimeMillis() - t
+                        t = System.currentTimeMillis()
+                        val hit = dev.rose.bouquet.youtube.YouTubeSource.cached(urls[1], 720)
+                        println("PREFETCH: ${pre}ms for 2; cached() lookup=${System.currentTimeMillis()-t}ms hit=${hit != null}")
+                    }
+                }
+            }
+        }.onFailure { println("SHORTS PIPELINE FAILED: $it") }
+
+        runCatching {
             val h = yt.searchQHFactory.fromQuery("boards of canada #shorts", listOf("videos"), "")
             val items = SearchInfo.getInfo(yt, h).relatedItems.filterIsInstance<StreamInfoItem>()
             println("HASHSHORTS: ${items.size} items; flaggedShort=${items.count { it.isShortFormContent }}; under3min=${items.count { it.duration in 1..180 }}")
