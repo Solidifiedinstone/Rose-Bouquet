@@ -209,19 +209,34 @@ class Interests:
         return score
 
 
+#: The slop phrases as one alternation, anchored on word boundaries.
+#:
+#: Built once rather than per title, since this runs over every candidate in a
+#: feed. Longest first so "ai cover" is tried before any shorter phrase that
+#: happens to be a prefix of it.
+_SLOP_PATTERN = re.compile(
+    r"(?<![^\W_])(?:%s)(?![^\W_])" % "|".join(
+        re.escape(phrase) for phrase in sorted(SLOP, key=len, reverse=True)),
+    re.IGNORECASE,
+)
+
+
 def is_slop(title: str) -> bool:
     """Whether a title is one of the things a topic search drags in.
 
     Phrases are matched as phrases — "hot girl" rather than "hot" — because
     single words catch far too much: "hot" is in half the cooking videos ever
     made, and a filter that hides those is a filter people turn off.
+
+    Matched on word boundaries rather than on surrounding spaces. Spaces were
+    the obvious thing and they were wrong in both directions: `(AI COVER)` has
+    no space before "ai" so the commonest form of the commonest phrase was
+    missed entirely, while a bare substring test fires on "sora" inside
+    "Sorabji" and quietly eats a piano recital.
     """
     if not title:
         return False
-
-    lowered = f" {title.lower()} "
-    return any(f" {phrase} " in lowered or lowered.strip().startswith(f"{phrase} ")
-               for phrase in SLOP)
+    return _SLOP_PATTERN.search(title) is not None
 
 
 def derive_topics(tastes, limit: int = TOPIC_LIMIT,

@@ -980,6 +980,26 @@ def test_the_slop_filter_does_not_catch_ordinary_things():
         assert not is_slop(innocent), innocent
 
 
+def test_the_slop_filter_matches_on_word_boundaries():
+    """Not on spaces, and not on bare substrings — both are wrong.
+
+    Spaces miss "(AI COVER)", which is the commonest form of the commonest
+    phrase in the list; bare substrings fire on "sora" inside "Sorabji" and
+    quietly delete a piano recital, which nobody would ever trace back to here.
+    """
+    from rose_bouquet.core.interests import is_slop
+
+    for punctuated in ("Bohemian Rhapsody (AI COVER)", "Hotel California [ai cover]",
+                       "Something - AI cover!", "NSFW.", "Made with Sora"):
+        assert is_slop(punctuated), punctuated
+
+    for inside_a_longer_word in ("A history of the Sorabji piano sonatas",
+                                 "Veolia water treatment works",
+                                 "Building a 300 watts amplifier",
+                                 "The Essex marshes at dawn"):
+        assert not is_slop(inside_a_longer_word), inside_a_longer_word
+
+
 def test_shorts_history_does_not_decide_the_video_feed(tastes):
     """What somebody flicks past at one in the morning is not what they sat
     down to watch."""
