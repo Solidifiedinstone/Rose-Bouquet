@@ -329,8 +329,20 @@ def test_smoothing_averages_neighbours():
     assert smoothed[1] == pytest.approx(1 / 3)
 
 
-def test_the_config_matches_the_quickshell_one():
-    """The player and the desktop bar must be drawing the same numbers."""
+def test_the_frame_rate_is_configurable():
+    """Not every machine can spare a core for decoration at 60fps."""
+    assert "framerate = 24" in cava.CONFIG.format(
+        framerate=cava.clamp_framerate(24), bars=50, maximum=1000, noise=20)
+
+
+def test_an_absurd_frame_rate_is_clamped_rather_than_obeyed():
+    assert cava.clamp_framerate(100000) == cava.MAX_FRAMERATE
+    assert cava.clamp_framerate(0) == cava.MIN_FRAMERATE
+    assert cava.clamp_framerate("nonsense") == cava.FRAMERATE
+
+
+def test_the_cava_config_uses_the_expected_settings():
+    """A bar configured the same way must draw the same numbers."""
     text = cava.CONFIG.format(framerate=60, bars=50, maximum=1000, noise=20)
     assert "mode = waves" in text
     assert "bars = 50" in text
@@ -422,9 +434,9 @@ def test_track_ids_are_stable_and_distinct():
 
 
 def test_server_config_round_trips():
-    config = ServerConfig(enabled=True, port=9000, username="gavin")
+    config = ServerConfig(enabled=True, port=9000, username="listener")
     restored = ServerConfig.from_dict(json.loads(json.dumps(config.to_dict())))
-    assert restored.enabled and restored.port == 9000 and restored.username == "gavin"
+    assert restored.enabled and restored.port == 9000 and restored.username == "listener"
 
 
 def test_a_silly_port_is_clamped():

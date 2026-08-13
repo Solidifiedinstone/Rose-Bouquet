@@ -30,7 +30,14 @@ from rose_bouquet.ui.theme import (
     get_style,
     get_theme,
 )
-from rose_bouquet.ui.visualizer import Shape
+from rose_bouquet.ui.visualizer import (
+    DEFAULT_COLOURS,
+    MAX_COLOURS,
+    ColourMode,
+    ColourMotion,
+    Palette,
+    Shape,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +53,6 @@ CREDENTIALS_PATH = config_dir() / "credentials.json"
 
 STYLE_AXES: dict[str, tuple[str, str]] = {
     "radius": ("Corners", "int"),
-    "spacing": ("Spacing", "int"),
     "padding": ("Padding", "int"),
     "font_size": ("Interface text", "int"),
     "heading_size": ("Heading size", "int"),
@@ -56,7 +62,6 @@ STYLE_AXES: dict[str, tuple[str, str]] = {
 
 STYLE_RANGES: dict[str, tuple[int, int]] = {
     "radius": (0, 40),
-    "spacing": (4, 40),
     "padding": (2, 24),
     "font_size": (9, 24),
     "heading_size": (14, 44),
@@ -117,6 +122,9 @@ class Preferences:
     section: str = "library"
     window_size: tuple[int, int] = (1180, 760)
     sidebar_width: int = 210
+    #: Pulled in to a narrow rail. The width above is kept either way, so
+    #: pulling the sidebar back out restores the size it was dragged to.
+    sidebar_collapsed: bool = False
 
     # ── Music ─────────────────────────────────────────────────────
 
@@ -137,9 +145,37 @@ class Preferences:
 
     visualizer: bool = True
     visualizer_shape: str = Shape.WAVE.value
-    #: Fill opacity. The Quickshell one uses 0.15; this is that in percent.
+    #: Fill opacity, in percent. Low by default: it sits under the artwork.
     visualizer_alpha: int = 15
     visualizer_blur: bool = True
+    #: How hard it reacts to sound, as a percentage. 100 is "as measured".
+    visualizer_intensity: int = 100
+    #: Frames a second, for cava and for the widget alike. Lower is cheaper;
+    #: not every machine can spare a core for decoration.
+    visualizer_fps: int = 60
+
+    # ── Visualiser colour ─────────────────────────────────────────
+
+    #: theme | solid | multi | rainbow
+    visualizer_colour_mode: str = "theme"
+    #: static | fade | sweep | flash | pulse
+    visualizer_colour_motion: str = "static"
+    #: The chosen colours. The first is used on its own for "one colour"; the
+    #: whole list is spread across the bands for "several colours".
+    visualizer_colours: list = field(default_factory=lambda: list(DEFAULT_COLOURS))
+
+    #: Shapes drawn on top of each other. Empty means "just the one shape
+    #: above", which is what every existing preferences file says.
+    visualizer_layers: list = field(default_factory=list)
+    visualizer_fullscreen_layers: list = field(default_factory=list)
+
+    #: How large each shape draws, keyed by shape value, in percent. Absent
+    #: means 100 — natural size — so this stays empty until something is moved.
+    visualizer_scales: dict = field(default_factory=dict)
+    #: The shape the full-screen visualiser uses, kept apart from the small
+    #: one: what reads well at 46 pixels tall and what fills a screen are
+    #: rarely the same choice.
+    visualizer_fullscreen_shape: str = Shape.RADIAL.value
 
     # ── Server ────────────────────────────────────────────────────
 
@@ -200,6 +236,47 @@ class Preferences:
 
         return browser_cookies()
 
+    def palette(self, accent: str) -> Palette:
+        """The colour settings as something the visualiser can use."""
+        try:
+            mode = ColourMode(self.visualizer_colour_mode)
+        except ValueError:
+            mode = ColourMode.THEME
+        try:
+            motion = ColourMotion(self.visualizer_colour_motion)
+        except ValueError:
+            motion = ColourMotion.STATIC
+
+        return Palette(accent, mode=mode, motion=motion,
+                       colours=self.visualizer_colours or list(DEFAULT_COLOURS))
+
+    def layers(self, *, fullscreen: bool = False) -> list:
+        """The stack of shapes to draw, best-effort.
+
+        Names that no longer exist are dropped rather than raising: a
+        preferences file written by a newer version must not stop an older one
+        from starting.
+        """
+        names = (self.visualizer_fullscreen_layers if fullscreen
+                 else self.visualizer_layers)
+
+        stack = []
+        for name in names:
+            try:
+                stack.append(Shape(name))
+            except ValueError:
+                continue
+
+        if stack:
+            return stack
+
+        single = (self.visualizer_fullscreen_shape if fullscreen
+                  else self.visualizer_shape)
+        try:
+            return [Shape(single)]
+        except ValueError:
+            return [Shape.WAVE]
+
     def shape(self) -> Shape:
         try:
             return Shape(self.visualizer_shape)
@@ -251,6 +328,7 @@ class Preferences:
             "section": self.section,
             "window_size": list(self.window_size),
             "sidebar_width": self.sidebar_width,
+            "sidebar_collapsed": self.sidebar_collapsed,
             "folders": list(self.folders),
             "download_dir": self.download_dir,
             "download_format": self.download_format,
@@ -261,6 +339,15 @@ class Preferences:
             "visualizer_shape": self.visualizer_shape,
             "visualizer_alpha": self.visualizer_alpha,
             "visualizer_blur": self.visualizer_blur,
+            "visualizer_intensity": self.visualizer_intensity,
+            "visualizer_fps": self.visualizer_fps,
+            "visualizer_colour_mode": self.visualizer_colour_mode,
+            "visualizer_colour_motion": self.visualizer_colour_motion,
+            "visualizer_colours": list(self.visualizer_colours),
+            "visualizer_layers": list(self.visualizer_layers),
+            "visualizer_fullscreen_layers": list(self.visualizer_fullscreen_layers),
+            "visualizer_scales": dict(self.visualizer_scales),
+            "visualizer_fullscreen_shape": self.visualizer_fullscreen_shape,
             "server": dict(self.server),
             "remote_control": self.remote_control,
             "volume": self.volume,
@@ -309,10 +396,50 @@ class Preferences:
         except (TypeError, ValueError):
             pass
 
+        prefs.sidebar_collapsed = bool(data.get("sidebar_collapsed", False))
+
         try:
             prefs.visualizer_alpha = max(2, min(60, int(data.get("visualizer_alpha", 15))))
         except (TypeError, ValueError):
             pass
+
+        try:
+            prefs.visualizer_intensity = max(20, min(400, int(
+                data.get("visualizer_intensity", 100))))
+        except (TypeError, ValueError):
+            pass
+
+        try:
+            prefs.visualizer_fps = max(10, min(144, int(data.get("visualizer_fps", 60))))
+        except (TypeError, ValueError):
+            pass
+
+        for key in ("visualizer_colour_mode", "visualizer_colour_motion"):
+            value = data.get(key)
+            if isinstance(value, str) and value:
+                setattr(prefs, key, value)
+
+        colours = data.get("visualizer_colours")
+        if isinstance(colours, list):
+            usable = [c for c in colours if isinstance(c, str) and c.startswith("#")]
+            if usable:
+                prefs.visualizer_colours = usable[:MAX_COLOURS]
+
+        for key in ("visualizer_layers", "visualizer_fullscreen_layers"):
+            layers = data.get(key)
+            if isinstance(layers, list):
+                setattr(prefs, key, [s for s in layers if isinstance(s, str)])
+
+        scales = data.get("visualizer_scales")
+        if isinstance(scales, dict):
+            prefs.visualizer_scales = {
+                str(k): int(v) for k, v in scales.items()
+                if isinstance(v, (int, float))
+            }
+
+        shape = data.get("visualizer_fullscreen_shape")
+        if isinstance(shape, str) and shape:
+            prefs.visualizer_fullscreen_shape = shape
 
         try:
             prefs.volume = max(0.0, min(1.0, float(data.get("volume", 0.8))))

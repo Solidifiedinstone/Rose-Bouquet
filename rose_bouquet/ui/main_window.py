@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QEasingCurve, Qt, QTimer, QVariantAnimation
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -29,24 +29,37 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from rose_bouquet.core import imports, spotify, takeout, ytmusic
+from rose_bouquet.core import cava, imports, optical, spotify, takeout, ytmusic
 from rose_bouquet.core import youtube as yt
 from rose_bouquet.core.library import Library, Track, data_dir
+from rose_bouquet.core.mpris import Mpris
 from rose_bouquet.core.playlists import PlaylistStore
 from rose_bouquet.core.playqueue import Repeat
-from rose_bouquet.core.recommend import Candidate, rank
+from rose_bouquet.core.recommend import (
+    Candidate,
+    feed_channels,
+    load_feed,
+    rank,
+    save_feed,
+    top_artists,
+)
 from rose_bouquet.core.server import MusicServer
 from rose_bouquet.core.tastes import Channel, Tastes
 from rose_bouquet.ui import tasks
 from rose_bouquet.ui.branding import APP_NAME
+from rose_bouquet.ui.cdplayer import CdPlayer
+from rose_bouquet.ui.disc import DiscView
 from rose_bouquet.ui.feed_views import FeedView, SubscriptionsView
 from rose_bouquet.ui.first_run import FirstRunDialog
 from rose_bouquet.ui.playback import Playback
 from rose_bouquet.ui.preferences import Preferences
 from rose_bouquet.ui.settings import SettingsDialog
+from rose_bouquet.ui.shorts import ShortsView
 from rose_bouquet.ui.theme import Appearance, set_active_style
+from rose_bouquet.ui.video import VideoStage
 from rose_bouquet.ui.views import (
     AlbumsView,
+    BrowseMusicView,
     DownloadsView,
     ImportView,
     LibraryView,
@@ -54,24 +67,42 @@ from rose_bouquet.ui.views import (
     ServerView,
     YouTubeView,
 )
-from rose_bouquet.ui.visualizer import Visualizer
-from rose_bouquet.ui.watch import WatchView
+from rose_bouquet.ui.visualizer import FullscreenVisualizer, Shape, Visualizer
 from rose_bouquet.ui.widgets import Banner, CoverArt
 
 logger = logging.getLogger(__name__)
 
 SECTIONS = [
-    ("feed", "For you", "✦"),
-    ("watch", "Watch", "▶"),
+    ("feed", "Watch", "▶"),
+    ("shorts", "Shorts", "⧉"),
     ("subscriptions", "Following", "☆"),
+    ("browse", "Browse", "✦"),
     ("library", "Library", "♫"),
     ("albums", "Albums", "▣"),
     ("playlists", "Playlists", "≡"),
     ("youtube", "YouTube Music", "▶"),
     ("import", "Import", "⤓"),
     ("downloads", "Downloads", "↓"),
+    ("disc", "Disc", "◎"),
     ("server", "Serve", "⇄"),
 ]
+
+#: Width of the sidebar once it has been pulled in — wide enough for the
+#: toggle and nothing else.
+SIDEBAR_RAIL_WIDTH = 52
+SIDEBAR_ANIMATION_MS = 200
+
+#: How many results one watched thing may contribute to a feed. Without a cap
+#: a single stray view — something watched once, out of character — becomes a
+#: tenth of the screen, and the feed reads as random to the person who watched
+#: it and forgot.
+PER_SEED = 4
+
+#: Below this the window is too narrow to give a third of itself to a sidebar,
+#: so the rail pulls itself in. Phones are the obvious case, but a half-screen
+#: window on a laptop hits it too — and the user's own choice is remembered
+#: separately, so widening the window gives them back what they had.
+NARROW_WIDTH = 720
 
 
 class MainWindow(QMainWindow):
@@ -91,6 +122,8 @@ class MainWindow(QMainWindow):
         self.playlists = PlaylistStore()
         self.ytmusic = ytmusic.YouTubeMusic()
         self.youtube = yt.YouTube()
+        #: Stream URLs resolved ahead of being needed — see `StreamCache`.
+        self.streams = yt.StreamCache(self.youtube)
         self.tastes = Tastes.load()
         self.playback = Playback(self.library, self)
         self.downloads_pool = tasks.downloads_pool()
@@ -120,8 +153,37 @@ class MainWindow(QMainWindow):
         self._library_save.setInterval(2000)
         self._library_save.timeout.connect(self.library.save)
 
+        #: The same for the taste profile, which is a few hundred kilobytes by
+        #: the time somebody has imported a history. Writing it on every scroll
+        #: of a reel is a lot of disk for a file nobody reads until next launch.
+        self._tastes_save = QTimer(self)
+        self._tastes_save.setSingleShot(True)
+        self._tastes_save.setInterval(3000)
+        self._tastes_save.timeout.connect(self.tastes.save)
+
         self.setWindowTitle(APP_NAME)
         self.resize(*self.preferences.window_size)
+
+        #: Set before the rail is built, because building it consults this.
+        self.sidebar_collapsed = False
+        #: Pulled in because the window is narrow rather than because the user
+        #: asked — remembered so widening it can undo exactly that.
+        self._collapsed_for_width = False
+
+        #: Built on first use — see `open_fullscreen_visualizer`.
+        self.fullscreen_visualizer = None
+
+        #: The list a streamed track came from, and where in it we are.
+        self._streaming: list = []
+        self._streaming_at = 0
+
+        #: Audio CDs, streamed from the drive rather than played from files.
+        self.cd = CdPlayer(self)
+        self.cd.track_changed.connect(self._cd_track_changed)
+        self.cd.state_changed.connect(self._cd_state_changed)
+        self.cd.position_changed.connect(self._on_position)
+        self.cd.failed.connect(lambda message: self.notify(message, "error"))
+        self.cd.finished.connect(lambda: self.notify("Disc finished", "info"))
 
         self._build()
         self._shortcuts()
@@ -129,8 +191,19 @@ class MainWindow(QMainWindow):
         self.apply_appearance(self.appearance)
         self.show_section(self.preferences.section)
 
+        if self.preferences.sidebar_collapsed:
+            # No animation on the way in: the sidebar should already be pulled
+            # in when the window appears, not slide shut in front of the user.
+            self.set_sidebar_collapsed(True, animate=False)
+
         self.playback.set_volume(self.preferences.volume)
         self._restore_session()
+
+        #: The desktop's media controls — the bar, `playerctl`, media keys.
+        #: None when there is no session bus to join, which is not an error.
+        self.mpris = Mpris.start(self.playback, self, parent=self)
+
+        self._restore_feed()
 
         QTimer.singleShot(900, self.check_unfinished_imports)
 
@@ -172,10 +245,25 @@ class MainWindow(QMainWindow):
         rail.setObjectName("Sidebar")
         rail.setMinimumWidth(150)
         rail.setMaximumWidth(260)
+        self.nav_rail = rail
 
         layout = QVBoxLayout(rail)
         layout.setContentsMargins(10, 12, 10, 12)
         layout.setSpacing(2)
+
+        # Pull-in toggle, first and always visible: collapsing a sidebar that
+        # hides its own way back out is a one-way door.
+        self.sidebar_toggle = QPushButton("☰")
+        self.sidebar_toggle.setObjectName("SidebarToggle")
+        self.sidebar_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.sidebar_toggle.setToolTip("Hide the sidebar  (Ctrl+B)")
+        self.sidebar_toggle.setFixedHeight(34)
+        self.sidebar_toggle.clicked.connect(self.toggle_sidebar)
+        layout.addWidget(self.sidebar_toggle)
+        layout.addSpacing(6)
+
+        #: Everything that goes away when the rail is pulled in.
+        self.nav_items: list[QPushButton] = []
 
         self.nav_buttons: dict[str, QPushButton] = {}
         group = QButtonGroup(self)
@@ -189,6 +277,7 @@ class MainWindow(QMainWindow):
             group.addButton(button)
             layout.addWidget(button)
             self.nav_buttons[key] = button
+            self.nav_items.append(button)
 
         layout.addStretch(1)
 
@@ -196,8 +285,81 @@ class MainWindow(QMainWindow):
         settings.setObjectName("SidebarItem")
         settings.clicked.connect(self.open_settings)
         layout.addWidget(settings)
+        self.nav_items.append(settings)
 
         return rail
+
+    # ── Pulling the sidebar in and out ────────────────────────────
+
+    def toggle_sidebar(self) -> None:
+        self.set_sidebar_collapsed(not self.sidebar_collapsed)
+
+    def set_sidebar_collapsed(self, collapsed: bool, *, animate: bool = True) -> None:
+        """Narrow the rail to just its toggle, or put it back.
+
+        Rows are hidden outright rather than squeezed: a column of labels
+        clipped to a few pixels is noise, not navigation. The width the sidebar
+        had is remembered so pulling it back out returns it to the size it was
+        dragged to rather than a default.
+        """
+        if collapsed == self.sidebar_collapsed:
+            return
+
+        if collapsed:
+            width = self.splitter.sizes()[0]
+            if width > SIDEBAR_RAIL_WIDTH:
+                self.preferences.sidebar_width = width
+
+        self.sidebar_collapsed = collapsed
+        for item in self.nav_items:
+            item.setVisible(not collapsed)
+
+        self.sidebar_toggle.setToolTip(
+            "Show the sidebar  (Ctrl+B)" if collapsed else "Hide the sidebar  (Ctrl+B)"
+        )
+
+        target = SIDEBAR_RAIL_WIDTH if collapsed else max(150, self.preferences.sidebar_width)
+
+        # Widened to span both ends for the duration. Left as they are, the
+        # rail's own limits would clamp the very first animation step to the
+        # final width and the movement would never be seen.
+        self.nav_rail.setMinimumWidth(SIDEBAR_RAIL_WIDTH)
+        self.nav_rail.setMaximumWidth(260)
+
+        self._resize_sidebar(target, animate=animate)
+
+    def _settle_sidebar(self) -> None:
+        """Put the rail's width limits back, once it has finished moving.
+
+        Restored rather than left open so that dragging the splitter cannot
+        park the sidebar at a width where the labels are cut in half.
+        """
+        collapsed = self.sidebar_collapsed
+        self.nav_rail.setMinimumWidth(SIDEBAR_RAIL_WIDTH if collapsed else 150)
+        self.nav_rail.setMaximumWidth(SIDEBAR_RAIL_WIDTH if collapsed else 260)
+
+    def _resize_sidebar(self, target: int, *, animate: bool) -> None:
+        sizes = self.splitter.sizes()
+        start, middle, queue = sizes[0], sizes[1], sizes[2]
+
+        def apply(width: int) -> None:
+            # The middle column absorbs the difference; the queue panel keeps
+            # whatever it had, open or closed.
+            self.splitter.setSizes([width, middle + (start - width), queue])
+
+        if not animate:
+            apply(target)
+            self._settle_sidebar()
+            return
+
+        self._sidebar_animation = QVariantAnimation(self)
+        self._sidebar_animation.setStartValue(start)
+        self._sidebar_animation.setEndValue(target)
+        self._sidebar_animation.setDuration(SIDEBAR_ANIMATION_MS)
+        self._sidebar_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self._sidebar_animation.valueChanged.connect(lambda value: apply(int(value)))
+        self._sidebar_animation.finished.connect(self._settle_sidebar)
+        self._sidebar_animation.start()
 
     def _sections(self) -> QWidget:
         self.stack = QStackedWidget()
@@ -208,8 +370,58 @@ class MainWindow(QMainWindow):
         feed.play_requested.connect(self.play_candidate)
         feed.download_requested.connect(self.download_candidate)
         feed.like_toggled.connect(self.toggle_like)
+        feed.search_requested.connect(self.search_youtube)
+        feed.watch_requested.connect(self.watch_candidate)
         feed.status.connect(self.notify)
+
+        # The picture half of the Watch tab. Given the YouTube client here
+        # rather than built inside the view, which is deliberately handed only
+        # the local profile.
+        video = VideoStage(self.youtube, self.appearance)
+        video.playback_requested.connect(self.playback.pause)
+        video.download_requested.connect(self.download_candidate)
+        video.like_toggled.connect(self.toggle_like)
+        video.status.connect(self.notify)
+        feed.attach_video(video)
+        self.video = video
+
         self._register("feed", feed)
+
+        disc = DiscView(self.appearance, self.preferences.downloads_path)
+        disc.status.connect(self.notify)
+        disc.ripped.connect(self._ripped)
+        disc.burn_requested.connect(self.burn_queue)
+        disc.play_disc_requested.connect(self.play_disc)
+        disc.drive_needed.connect(self._free_the_drive)
+        disc.watch_requested.connect(self.watch_disc)
+        self._register("disc", disc)
+
+        shorts = ShortsView(self.tastes, self.appearance)
+        shorts.search_requested.connect(self.search_shorts)
+        shorts.refresh_requested.connect(self.refresh_shorts)
+        shorts.watch_requested.connect(self.watch_short)
+        shorts.more_requested.connect(self.more_shorts)
+        shorts.download_requested.connect(self.download_candidate)
+        shorts.like_toggled.connect(self.toggle_like)
+        shorts.status.connect(self.notify)
+
+        shorts_video = VideoStage(self.youtube, self.appearance)
+        shorts_video.playback_requested.connect(self.playback.pause)
+        shorts_video.download_requested.connect(self.download_candidate)
+        shorts_video.like_toggled.connect(self.toggle_like)
+        shorts_video.status.connect(self.notify)
+        shorts.attach_video(shorts_video)
+        self.shorts_video = shorts_video
+
+        self._register("shorts", shorts)
+
+        browse = BrowseMusicView(self.appearance)
+        browse.search_requested.connect(self.search_browse)
+        browse.refresh_requested.connect(self.refresh_browse)
+        browse.play_requested.connect(self.play_music_result)
+        browse.download_requested.connect(self.download_result)
+        browse.status.connect(self.notify)
+        self._register("browse", browse)
 
         subscriptions = SubscriptionsView(self.tastes, self.appearance)
         subscriptions.subscribe_requested.connect(self.subscribe_to)
@@ -218,14 +430,6 @@ class MainWindow(QMainWindow):
         subscriptions.open_channel.connect(self.open_channel)
         subscriptions.status.connect(self.notify)
         self._register("subscriptions", subscriptions)
-
-        watch = WatchView(self.youtube, self.appearance)
-        watch.playback_requested.connect(self.playback.pause)
-        watch.download_requested.connect(self.download_video)
-        watch.subscribe_requested.connect(self.subscribe_to_video_channel)
-        watch.like_toggled.connect(self.like_video)
-        watch.status.connect(self.notify)
-        self._register("watch", watch)
 
         library_view = LibraryView(self.library, self.appearance)
         library_view.play_requested.connect(self.play_track)
@@ -330,9 +534,9 @@ class MainWindow(QMainWindow):
         # ── Transport ────────────────────────────────────────────
         for text, slot, name, tip in (
             ("⇄", self.toggle_shuffle, "shuffle", "Shuffle  (Ctrl+H)"),
-            ("⏮", self.playback.previous, "previous", "Previous  (Ctrl+Left)"),
-            ("⏵", self.playback.toggle, "play", "Play or pause  (Space)"),
-            ("⏭", self.playback.next, "next", "Next  (Ctrl+Right)"),
+            ("⏮", self.previous_track, "previous", "Previous  (Ctrl+Left)"),
+            ("⏵", self.toggle_playback, "play", "Play or pause  (Space)"),
+            ("⏭", self.next_track, "next", "Next  (Ctrl+Right)"),
             ("↻", self.cycle_repeat, "repeat", "Repeat  (Ctrl+R)"),
         ):
             button = QPushButton(text)
@@ -353,9 +557,38 @@ class MainWindow(QMainWindow):
             height=30,
             blur=self.preferences.visualizer_blur,
             alpha=self.preferences.visualizer_alpha / 100,
+            intensity=self.preferences.visualizer_intensity / 100,
+            fps=self.preferences.visualizer_fps,
         )
+        # Applied here as well as on every settings change: constructing one
+        # only takes a single shape and the theme accent, so a saved stack and
+        # a saved palette were both lost on every launch and only reappeared
+        # if you happened to open Settings and touch something.
+        self.visualizer.set_layers(self.preferences.layers())
+        self.visualizer.set_palette(self.preferences.palette(self.appearance.theme.accent))
+        self.visualizer.set_scales(self.preferences.visualizer_scales)
+
         self.visualizer.setVisible(self.preferences.visualizer)
-        seek_column.addWidget(self.visualizer)
+        self.visualizer.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.visualizer.setToolTip("Full screen  (F11)")
+        self.visualizer.clicked.connect(self.open_fullscreen_visualizer)
+
+        # The visualiser is clickable, but nothing about it says so. A button
+        # beside it is the part people actually find.
+        visualizer_row = QHBoxLayout()
+        visualizer_row.setContentsMargins(0, 0, 0, 0)
+        visualizer_row.setSpacing(4)
+        visualizer_row.addWidget(self.visualizer, 1)
+
+        self.fullscreen_button = QPushButton("⛶")
+        self.fullscreen_button.setObjectName("Quiet")
+        self.fullscreen_button.setToolTip("Full screen visualiser  (F11)")
+        self.fullscreen_button.setFixedWidth(26)
+        self.fullscreen_button.setVisible(self.preferences.visualizer)
+        self.fullscreen_button.clicked.connect(self.open_fullscreen_visualizer)
+        visualizer_row.addWidget(self.fullscreen_button)
+
+        seek_column.addLayout(visualizer_row)
 
         seek_row = QHBoxLayout()
         seek_row.setSpacing(8)
@@ -396,12 +629,15 @@ class MainWindow(QMainWindow):
 
     def _shortcuts(self) -> None:
         bindings = [
-            ("Space", self.playback.toggle),
-            ("Ctrl+Right", self.playback.next),
-            ("Ctrl+Left", self.playback.previous),
+            ("Space", self.toggle_playback),
+            ("Ctrl+Right", self.next_track),
+            ("Ctrl+Left", self.previous_track),
             ("Ctrl+H", self.toggle_shuffle),
             ("Ctrl+R", self.cycle_repeat),
             ("Ctrl+Q", self.toggle_queue),
+            ("Ctrl+B", self.toggle_sidebar),
+            ("F11", self.open_fullscreen_visualizer),
+            ("Esc", self.close_video),
             ("Ctrl+F", self._focus_search),
             ("Ctrl+,", self.open_settings),
             ("Ctrl+Shift+R", self.rescan),
@@ -420,11 +656,40 @@ class MainWindow(QMainWindow):
         self.playback.state_changed.connect(self._on_state_changed)
         self.playback.position_changed.connect(self._on_position)
         self.playback.queue_changed.connect(self._refresh_queue)
-        self.playback.finished.connect(lambda: self.notify("Queue finished", "info"))
+        self.playback.finished.connect(self._queue_finished)
+
+        # Shuffle, repeat and volume can now be changed from outside this
+        # window — a bar, `playerctl`, a headset button — so the controls have
+        # to follow the player rather than assume they are the only way in.
+        self.playback.queue_changed.connect(self._update_mode_buttons)
+        self.playback.volume_changed.connect(self._on_volume_changed)
+
+    def _queue_finished(self) -> None:
+        # A streamed track finishing is the middle of a list, not the end of
+        # one — the queue only ever held the single track being streamed.
+        if self._step_stream(1):
+            return
+        self.notify("Queue finished", "info")
+
+    def _on_volume_changed(self, volume: float) -> None:
+        value = round(volume * 100)
+        if value == self.volume.value():
+            return
+        # Without this the slider's own signal would set the volume straight
+        # back, and a slow drag from a bar would fight itself.
+        self.volume.blockSignals(True)
+        self.volume.setValue(value)
+        self.volume.blockSignals(False)
 
     # ── Sections ──────────────────────────────────────────────────
 
     def show_section(self, key: str) -> None:
+        # "watch" was a section of its own before search moved into the feed.
+        # A saved preference naming it should land on its replacement rather
+        # than silently dumping the user in the library.
+        if key == "watch":
+            key = "feed"
+
         view = self.views.get(key)
         if view is None:
             key, view = "library", self.views["library"]
@@ -452,10 +717,8 @@ class MainWindow(QMainWindow):
     def play_track(self, track: Track, context: Optional[list[Track]] = None) -> None:
         """Play a track in the context of the list it was clicked in."""
         # Music and a video playing over each other is nobody's intent.
-        watch = self.views.get("watch")
-        if watch is not None:
-            watch.stop()
-
+        self.video.stop()
+        self.cd.stop()
         tracks = list(context) if context else [track]
         try:
             start = next(i for i, t in enumerate(tracks) if t.path == track.path)
@@ -493,7 +756,26 @@ class MainWindow(QMainWindow):
         )
         self.tastes.save()
 
+    def _feed_artwork(self, track) -> None:
+        """Hand the sleeve to the visualiser, for the shapes that draw it."""
+        from PySide6.QtGui import QPixmap
+
+        from rose_bouquet.core import artwork
+
+        path = artwork.local_art(track) if track is not None else ""
+        pixmap = QPixmap(path) if path else None
+        self.visualizer.set_artwork(pixmap)
+        if self.fullscreen_visualizer is not None:
+            self.fullscreen_visualizer.visualizer.set_artwork(pixmap)
+
     def _on_track_changed(self, track: Optional[Track]) -> None:
+        self._feed_artwork(track)
+        if self.fullscreen_visualizer is not None:
+            self.fullscreen_visualizer.set_track(
+                track.display_title if track else "Nothing playing",
+                track.display_artist if track else "",
+            )
+
         self.now_art.set_track(track)
         self.now_title.setText(track.display_title if track else "Nothing playing")
         self.now_artist.setText(track.display_artist if track else "")
@@ -507,6 +789,8 @@ class MainWindow(QMainWindow):
     def _on_state_changed(self, playing: bool) -> None:
         self.play_button.setText("⏸" if playing else "⏵")
         self.visualizer.set_live(playing)
+        if self.fullscreen_visualizer is not None:
+            self.fullscreen_visualizer.set_live(playing)
 
     def _on_position(self, position: int, duration: int) -> None:
         if not self._seeking:
@@ -646,6 +930,14 @@ class MainWindow(QMainWindow):
 
     # ── Downloading ───────────────────────────────────────────────
 
+    def play_music_result(self, result: ytmusic.Result) -> None:
+        """Stream something found while browsing, without downloading first."""
+        self.play_candidate(Candidate(
+            id=result.id, title=result.title, artist=result.artist,
+            kind=result.kind, duration=result.duration,
+            thumbnail=result.thumbnail, source="discover",
+        ), context=[])
+
     def download_result(self, result: ytmusic.Result) -> None:
         request = ytmusic.DownloadRequest(
             video_id=result.id, title=result.title,
@@ -725,6 +1017,26 @@ class MainWindow(QMainWindow):
 
     # ── The local algorithm ───────────────────────────────────────
 
+    def _restore_feed(self) -> None:
+        """Put the last feed back, and build one if there is nothing to put.
+
+        The feed used to live only in memory, so "For you" opened empty on
+        every launch and stayed empty until you knew to press Rebuild and wait
+        half a minute for the network. An empty page with a button on it is not
+        a feed — it is a form.
+        """
+        ranked, built_at = load_feed()
+        if ranked:
+            self.views["feed"].show_feed(ranked)
+            if built_at:
+                logger.info("restored a feed of %d, built %s", len(ranked), built_at)
+            return
+
+        if self.tastes.subscriptions() or self.tastes.signals:
+            # Nothing saved but plenty to build from — do it rather than
+            # showing an empty page. Delayed so the window is up first.
+            QTimer.singleShot(1500, self.rebuild_feed)
+
     def rebuild_feed(self) -> None:
         """Gather candidates, then rank them here.
 
@@ -732,11 +1044,14 @@ class MainWindow(QMainWindow):
         this machine. That split is the whole design.
         """
         view = self.views["feed"]
-        channels = self.tastes.subscriptions()
 
-        if not channels and not self.tastes.signals:
+        if not self.tastes.subscriptions() and not self.tastes.signals:
             self.notify("Follow something or play some music first", "warning")
             return
+
+        # A sample rather than all of them: every channel costs a round trip,
+        # and a feed nobody waits for is a feed nobody has.
+        channels = feed_channels(self.tastes)
 
         def work(report) -> list:
             candidates: list[Candidate] = []
@@ -747,32 +1062,109 @@ class MainWindow(QMainWindow):
 
             # Related tracks to what you liked or replayed, as further
             # candidates — YouTube's suggestions, ranked by our weights.
+            # The seeds are looked up together rather than one after another:
+            # each is its own round trip and they do not depend on each other.
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
             from rose_bouquet.core.recommend import seeds
 
-            for seed in seeds(self.tastes, limit=4):
-                report(f"Looking for more like {seed.title or seed.id}")
-                for video in self.youtube.related(seed.id, limit=8):
-                    candidates.append(video.to_candidate("related"))
+            chosen_seeds = seeds(self.tastes, limit=4)
+            if chosen_seeds:
+                report(f"Looking for more like {chosen_seeds[0].title or 'what you play'}")
+                with ThreadPoolExecutor(max_workers=len(chosen_seeds)) as pool:
+                    jobs = [
+                        pool.submit(self.youtube.related, seed.id, 8, title=seed.title)
+                        for seed in chosen_seeds
+                    ]
+                    for job in as_completed(jobs):
+                        try:
+                            for video in job.result():
+                                candidates.append(video.to_candidate("related"))
+                        except Exception:    # noqa: BLE001 — one dead seed
+                            continue
+
+            # Discovery: things about the subjects you watch, from channels
+            # you have never seen. Without this the feed is a subscription box
+            # that shows the same dozen creators until it runs dry.
+            from rose_bouquet.core.interests import search_terms
+
+            # Two searches, not six. A search returns whatever ranks for a
+            # phrase, which is where the slop lives; the related lookups above
+            # are seeded from things this person chose to watch.
+            terms = search_terms(self.tastes, self.tastes.interests, limit=2,
+                                 forms=("video",))
+            if terms and len(candidates) < 60:
+                report("Looking a bit wider")
+                candidates.extend(
+                    yt.discover(self.youtube, terms[:1], per_term=8, report=report))
+
+            # And channels like the ones already followed, so the feed can
+            # introduce a creator rather than only a video.
+            report("Looking for channels like the ones you follow")
+            for channel in yt.similar_channels(self.youtube, channels[:6], limit=6):
+                if self.tastes.subscribed(channel.id):
+                    continue
+                for video in self.youtube.uploads(channel.id, limit=3):
+                    candidate = video.to_candidate("similar")
+                    candidate.channel_id = candidate.channel_id or channel.id
+                    candidates.append(candidate)
 
             report(f"Ranking {len(candidates)} candidates")
-            return rank(candidates, self.tastes, limit=60)
+            return rank(candidates, self.tastes, limit=60,
+                        interests=self.tastes.interests)
 
         view.show_progress("Checking your subscriptions…")
         tasks.run(
             work,
             on_progress=view.show_progress,
-            on_done=lambda ranked: (view.show_feed(ranked),
+            on_done=lambda ranked: (view.show_feed(ranked), save_feed(ranked),
                                     self.notify(f"{len(ranked)} things for you", "success")),
             on_error=lambda message: (view.show_feed([]),
                                       self.notify(f"Could not build the feed: {message}", "error")),
         )
 
-    def play_candidate(self, item: Candidate) -> None:
-        """Stream something from the feed without downloading it first."""
+    def close_video(self) -> None:
+        """Escape closes the video, and does nothing at all otherwise.
+
+        Bound globally, so it must be harmless when there is no video — a
+        shortcut that steals Escape from every dialog would be worse than no
+        shortcut.
+        """
+        if self.video.isVisible():
+            self.video.close_player()
+
+    def watch_candidate(self, item: Candidate) -> None:
+        """Watch something in the Watch tab, picture and all."""
+        self.show_section("feed")
+        self.video.watch(item)
+        self.tastes.note_play(item.id, item.title, item.artist, item.channel_id)
+        self._tastes_save.start()
+
+    def play_candidate(self, item: Candidate, context=None) -> None:
+        """Stream something from the feed without downloading it first.
+
+        The list it came from is remembered, because a streamed track cannot
+        be queued the way a file can — every one needs its URL resolved first,
+        so the queue holds exactly one track and Skip had nothing to move to.
+        What follows it lives here instead.
+        """
+        # Taking the audio into the music player means the video is done.
+        self.video.stop()
+        self.cd.stop()
+
+        if context is None:
+            view = self.views["feed"]
+            scored = view.results or view.ranked
+            context = [s.candidate for s in scored]
+
+        self._streaming = list(context) or [item]
+        self._streaming_at = next(
+            (i for i, c in enumerate(self._streaming) if c.id == item.id), 0)
+
         self.notify(f"Loading {item.title}…", "info")
 
         def work():
-            return self.youtube.stream_url(item.id, audio_only=True)
+            return self.streams.resolve(item.id, audio_only=True)
 
         def play(url: str) -> None:
             if not url:
@@ -797,39 +1189,10 @@ class MainWindow(QMainWindow):
             fmt=self.preferences.download_format,
         ))
 
-    def download_video(self, video) -> None:
-        """Take the audio from a video being watched or listed."""
-        self._download(ytmusic.DownloadRequest(
-            video_id=video.id, title=video.title, artist=video.channel,
-            fmt=self.preferences.download_format,
-        ))
-
-    def subscribe_to_video_channel(self, video) -> None:
-        channel = video.to_channel()
-        if not channel.id and not channel.title:
-            self.notify("That video does not say which channel it is from", "warning")
-            return
-
-        followed = self.tastes.toggle_subscription(channel)
-        self.tastes.save()
-        self.notify(
-            f"Following {channel.title}" if followed else f"Unfollowed {channel.title}",
-            "success" if followed else "info",
-        )
-        self.refresh()
-
-    def like_video(self, video) -> None:
-        liked = self.tastes.like(video.id, video.title, video.channel, video.channel_id)
-        self.tastes.save()
-        self.notify("Liked" if liked else "Like removed", "success" if liked else "info")
-
-    def watch_video(self, video) -> None:
-        """Open something in the watch screen from anywhere else in the app."""
-        self.show_section("watch")
-        self.views["watch"].watch(video)
-
     def toggle_like(self, item: Candidate) -> None:
-        liked = self.tastes.like(item.id, item.title, item.artist, item.channel_id)
+        form = "short" if item.source == "shorts" else "video"
+        liked = self.tastes.like(item.id, item.title, item.artist,
+                                 item.channel_id, form=form)
         self.tastes.save()
         self.notify("Liked — your feed will lean this way" if liked else "Like removed",
                     "success" if liked else "info")
@@ -864,21 +1227,57 @@ class MainWindow(QMainWindow):
             self.tastes.save()
             self.refresh()
 
+    def _as_results(self, videos) -> list:
+        """Videos as feed rows.
+
+        Search results and channel uploads go through the same rows as the
+        feed, unscored — one list widget to keep working rather than two that
+        drift apart.
+        """
+        from rose_bouquet.core.recommend import Scored
+
+        return [Scored(candidate=video.to_candidate("search")) for video in videos]
+
+    def search_youtube(self, query: str) -> None:
+        """Search from the Watch tab, into the same list the feed uses."""
+        view = self.views["feed"]
+        view.loading = True
+        view.progress_text = f"Searching for {query}…"
+        view.refresh()
+        self.show_section("feed")
+
+        def done(videos) -> None:
+            view.show_results(
+                self._as_results(videos),
+                note=f"Results for “{query}”" if videos else "",
+            )
+            if not videos:
+                self.notify("Nothing found for that", "warning")
+
+        tasks.run(
+            lambda: self.youtube.search(query, limit=30),
+            on_done=done,
+            on_error=lambda message: (view.show_results([]),
+                                      self.notify(f"Search failed: {message}", "error")),
+        )
+
     def open_channel(self, channel: Channel) -> None:
-        """Show a channel's recent uploads, watchable."""
-        watch = self.views["watch"]
-        watch.loading = True
-        watch.refresh()
-        self.show_section("watch")
+        """Show a channel's recent uploads in the Watch tab."""
+        view = self.views["feed"]
+        view.loading = True
+        view.progress_text = f"Loading {channel.title}…"
+        view.refresh()
+        self.show_section("feed")
 
         def work():
             return self.youtube.uploads(channel.id or channel.title, limit=30)
 
         tasks.run(
             work,
-            on_done=lambda videos: watch.show_videos(
-                videos, note=f"{len(videos)} from {channel.title}" if videos else "Nothing there"),
-            on_error=lambda message: (watch.show_videos([]),
+            on_done=lambda videos: view.show_results(
+                self._as_results(videos),
+                note=f"From {channel.title}" if videos else "Nothing there"),
+            on_error=lambda message: (view.show_results([]),
                                       self.notify(f"Could not load that: {message}", "error")),
         )
 
@@ -1039,11 +1438,19 @@ class MainWindow(QMainWindow):
             return data, takeout.apply(data, self.tastes)
 
         def done(outcome) -> None:
-            _data, (plays, followed) = outcome
+            data, (plays, followed) = outcome
             if not plays and not followed:
-                self.notify(
-                    "Nothing usable in there — it needs watch-history.json or "
-                    "subscriptions.csv from a YouTube Takeout", "warning")
+                # Nothing *new* and nothing *usable* are different outcomes and
+                # used to give the same message, so a second import of a good
+                # export read as a broken one.
+                if data.watched or data.subscriptions:
+                    self.notify(
+                        f"Already imported — all {data.summary} in there are "
+                        "already in your profile", "info")
+                else:
+                    self.notify(
+                        "Nothing usable in there — it needs watch-history.json or "
+                        "subscriptions.csv from a YouTube Takeout", "warning")
                 return
 
             self.tastes.save()
@@ -1098,6 +1505,429 @@ class MainWindow(QMainWindow):
             self.notify(
                 f"“{jobs[0].title}” was left unfinished — {jobs[0].summary}", "warning"
             )
+
+    # ── Browsing music ────────────────────────────────────────────
+
+    def refresh_browse(self) -> None:
+        """Music for the subjects you listen to, in shelves.
+
+        The same topics that drive the video feeds, asked of YouTube Music —
+        so a taste picked up in one place informs the others, rather than
+        every screen starting from nothing.
+        """
+        from rose_bouquet.core.interests import search_terms
+
+        interests = self.tastes.interests
+        terms = search_terms(self.tastes, interests, limit=5)
+
+        artists = [name for name, _ in top_artists(self.tastes, limit=3)]
+        terms = [t for t in terms if t] + [a for a in artists if a]
+
+        if not terms:
+            self.notify("Play something first, or add interests in Settings",
+                        "warning")
+            return
+
+        view = self.views["browse"]
+        view.show_progress("Looking for music you might like…")
+        self.show_section("browse")
+
+        def work(report):
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            shelves = []
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                jobs = {pool.submit(self.ytmusic.search, term, None, 10): term
+                        for term in terms[:6]}
+                for job in as_completed(jobs):
+                    term = jobs[job]
+                    report(f"Looking for {term}")
+                    try:
+                        results = job.result()
+                    except Exception:        # noqa: BLE001 — one dead search
+                        continue
+
+                    # Blocked topics apply here too: a filter that only works
+                    # on video would be a filter nobody trusts.
+                    kept = [r for r in results
+                            if not interests.blocks(title=r.title, channel=r.artist)]
+                    if kept:
+                        shelves.append((f"Because you like {term}", kept))
+            return shelves
+
+        tasks.run(work, on_progress=view.show_progress,
+                  on_done=view.show_shelves,
+                  on_error=lambda m: (view.show_shelves([]),
+                                      self.notify(f"Could not look: {m}", "error")))
+
+    def search_browse(self, query: str) -> None:
+        view = self.views["browse"]
+        view.show_progress(f"Searching for {query}…")
+        self.show_section("browse")
+
+        tasks.run(
+            lambda: self.ytmusic.search(query, None, 30),
+            on_done=lambda results: view.show_shelves(
+                [(f"Results for “{query}”", results)] if results else []),
+            on_error=lambda m: (view.show_shelves([]),
+                                self.notify(f"Search failed: {m}", "error")),
+        )
+
+    # ── Shorts ────────────────────────────────────────────────────
+
+    def search_shorts(self, query: str) -> None:
+        view = self.views["shorts"]
+        view.show_progress(f"Searching shorts for {query}…")
+        self.show_section("shorts")
+
+        def done(videos) -> None:
+            view.show_shorts([v.to_candidate("shorts") for v in videos],
+                             note=f"Shorts for “{query}”" if videos else "")
+            if not videos:
+                self.notify("No shorts found for that", "warning")
+
+        tasks.run(lambda: self.youtube.search(query, limit=40, shorts=True),
+                  on_done=done,
+                  on_error=lambda m: (view.show_shorts([]),
+                                      self.notify(f"Search failed: {m}", "error")))
+
+    def refresh_shorts(self) -> None:
+        """Shorts from the channels you actually watch, and ones like them.
+
+        Built on the watch history rather than on searching, because searching
+        does not work: a title search returns whatever ranks for those words,
+        and `related` turned out to *be* a title search — YouTube stopped
+        publishing a related list, and the mixes that replaced it exist for
+        almost no ordinary video. Measured: none of six seeds had one.
+
+        What a watch history does have is channels, and a count of how often
+        each was chosen. That is the strongest signal available here and it
+        needs no search engine to interpret it.
+        """
+        from rose_bouquet.core.recommend import watched_channels
+
+        interests = self.tastes.interests
+        watched = watched_channels(self.tastes, limit=14,
+                                   forms=("short", "video"))
+        if not watched:
+            self.notify("Watch a few things first — this is built from what "
+                        "you actually watch", "warning")
+            return
+
+        view = self.views["shorts"]
+        view.show_progress("Looking at what you watch…")
+        self.show_section("shorts")
+
+        def work(report):
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            found = []
+
+            # Shorts from the channels this person watches most.
+            report(f"Checking {len(watched)} channels you watch")
+            with ThreadPoolExecutor(max_workers=yt.CHANNEL_WORKERS) as pool:
+                jobs = {pool.submit(self.youtube.uploads, c.id or c.title,
+                                    PER_SEED, tab="shorts"): c for c in watched}
+                for job in as_completed(jobs):
+                    channel = jobs[job]
+                    try:
+                        for video in job.result():
+                            candidate = video.to_candidate("shorts")
+                            candidate.channel_id = candidate.channel_id or channel.id
+                            found.append(candidate)
+                    except Exception:        # noqa: BLE001 — one bad channel
+                        continue
+
+            # A minority of things from outside that circle, so the feed can
+            # still show something new.
+            #
+            # Done by searching the titles of things actually watched, which is
+            # unsatisfying but is what is left: YouTube stopped publishing a
+            # related list, the mixes that replaced it exist for almost no
+            # ordinary video, and the "channels" shelf that used to name
+            # similar creators now answers "this channel does not have a
+            # channels tab" for every channel tried. So: real titles, from
+            # recurring subjects, hard-capped at a fraction of the feed.
+            from rose_bouquet.core.recommend import seeds
+
+            known = {c.id for c in watched}
+            grounded = seeds(self.tastes, limit=3, forms=("short", "video"))
+
+            if grounded:
+                report("Looking a little further out")
+                with ThreadPoolExecutor(max_workers=3) as pool:
+                    jobs = [pool.submit(self.youtube.related, seed.id, 4,
+                                        title=seed.title) for seed in grounded]
+                    for job in as_completed(jobs):
+                        try:
+                            taken = 0
+                            for video in job.result():
+                                if taken >= 3:
+                                    break
+                                if video.channel_id in known:
+                                    continue
+                                if video.duration and not video.is_short:
+                                    continue
+                                found.append(video.to_candidate("similar"))
+                                taken += 1
+                        except Exception:    # noqa: BLE001
+                            continue
+
+            ranked = rank(found, self.tastes, limit=80, interests=interests)
+            return [s.candidate for s in ranked]
+
+        tasks.run(work, on_progress=view.show_progress,
+                  on_done=lambda found: view.show_shorts(found, note="Picked for you"),
+                  on_error=lambda m: (view.show_shorts([]),
+                                      self.notify(f"Could not load shorts: {m}", "error")))
+
+    def watch_short(self, item: Candidate) -> None:
+        """Play a short, and get the next few ready while it plays."""
+        view = self.views["shorts"]
+        self.playback.pause()
+        self.video.stop()
+        self.cd.stop()
+
+        # Already resolved, if the reel got here in the usual way.
+        url = self.streams.cached(item.id, audio_only=False)
+        self.shorts_video.watch(item, url=url or None)
+
+        # The next few, so scrolling on costs a repaint rather than a round
+        # trip. Two ahead is enough to stay in front of a fast scroller
+        # without resolving a wall of URLs nobody will watch.
+        coming = view.shorts[view.reel_at + 1:view.reel_at + 3]
+        self.streams.prefetch([c.id for c in coming], audio_only=False)
+
+        # And release what is behind: a URL scrolled past is not coming back.
+        behind = view.shorts[max(0, view.reel_at - 4):max(0, view.reel_at - 3)]
+        for old_item in behind:
+            self.streams.forget(old_item.id)
+
+        self.tastes.note_play(item.id, item.title, item.artist, item.channel_id,
+                              form="short")
+        self._tastes_save.start()
+
+    def more_shorts(self) -> None:
+        """Another batch, fetched while the reel is still playing the last one."""
+        view = self.views["shorts"]
+        query = view.search.text().strip()
+
+        def done(videos) -> None:
+            view.add_shorts([v.to_candidate("shorts") for v in videos])
+
+        def failed(_message: str) -> None:
+            view.fetching_more = False
+
+        if query:
+            # A deeper cut of the same search — the first page has been seen.
+            tasks.run(lambda: self.youtube.search(query, limit=80, shorts=True),
+                      on_done=done, on_error=failed)
+            return
+
+        from rose_bouquet.core.recommend import feed_channels
+        chosen = feed_channels(self.tastes, limit=12)
+
+        def work():
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            found = []
+            with ThreadPoolExecutor(max_workers=yt.CHANNEL_WORKERS) as pool:
+                jobs = {pool.submit(self.youtube.uploads, c.id or c.title, 6,
+                                    tab="shorts"): c for c in chosen}
+                for job in as_completed(jobs):
+                    try:
+                        for video in job.result():
+                            found.append(video)
+                    except Exception:        # noqa: BLE001
+                        continue
+            return found
+
+        tasks.run(work, on_done=done, on_error=failed)
+
+    # ── Discs ─────────────────────────────────────────────────────
+
+    def toggle_playback(self) -> None:
+        logger.info("transport: cd.track=%s -> %s", self.cd.track,
+                    "cd" if self.cd.track is not None else "music")
+        """Play or pause whichever of the two is actually running.
+
+        A disc and a file cannot both be playing, so there is always exactly
+        one right answer — but the buttons have to know which.
+        """
+        (self.cd if self.cd.track is not None else self.playback).toggle()
+
+    def next_track(self) -> None:
+        logger.info("skip: cd=%s streaming=%d queue=%d at=%s track=%s",
+                    self.cd.track is not None, len(self._streaming),
+                    len(self.playback.queue), self.playback.queue.position,
+                    self.playback.track.display_title if self.playback.track else None)
+        if self.cd.track is not None:
+            self.cd.next()
+        elif not self._step_stream(1):
+            self.playback.next()
+
+    def previous_track(self) -> None:
+        logger.info("previous: cd=%s streaming=%d queue=%d at=%s",
+                    self.cd.track is not None, len(self._streaming),
+                    len(self.playback.queue), self.playback.queue.position)
+        if self.cd.track is not None:
+            self.cd.previous()
+        elif not self._step_stream(-1):
+            self.playback.previous()
+
+    def _step_stream(self, direction: int) -> bool:
+        """Move through a streamed list. False means there is no such list.
+
+        Only applies while the thing playing *is* the streamed track — once
+        something else is playing, the list is stale and the ordinary queue
+        takes over again.
+        """
+        if not self._streaming:
+            return False
+
+        track = self.playback.track
+        current = self._streaming[self._streaming_at]
+        if track is None or track.source_id != current.id:
+            self._streaming = []
+            return False
+
+        target = self._streaming_at + direction
+        if not 0 <= target < len(self._streaming):
+            return False
+
+        self._streaming_at = target
+        self.play_candidate(self._streaming[target], context=self._streaming)
+        return True
+
+    def _free_the_drive(self) -> None:
+        """Stop playing the disc, because something else needs to read it.
+
+        Only one thing can read a CD at a time. A rip starting while the disc
+        is playing leaves both fighting over the drive — measured at nine to
+        twelve seconds of stalling — and the rip may simply fail.
+        """
+        if self.cd.track is not None:
+            self.cd.stop()
+            self.notify("Stopped playing the disc — the drive is needed", "info")
+
+    def play_disc(self, disc, device) -> None:
+        """Play an audio CD, streamed from the drive.
+
+        The music player steps aside rather than mixing with it — two things
+        playing at once is nobody's intent — and the player bar follows the
+        disc while it runs.
+        """
+        self.playback.pause()
+        self.video.stop()
+        self.cd.set_volume(self.playback.volume)
+        self.cd.play_disc(disc, device)
+        self.notify(f"Playing the disc — {len(disc)} tracks", "success")
+
+    def _cd_track_changed(self, track) -> None:
+        """Show the CD track in the player bar, where the music would be."""
+        if track is None:
+            self._on_track_changed(self.playback.track)
+            return
+
+        view = self.views["disc"]
+        album = view.album_field.text().strip() if hasattr(view, "album_field") else ""
+        artist = view.artist_field.text().strip() if hasattr(view, "artist_field") else ""
+
+        self.now_art.set_track(None)
+        self.now_title.setText(track.display_title)
+        self.now_artist.setText(artist or album or "Audio CD")
+        self.setWindowTitle(f"{track.display_title} — {APP_NAME}")
+
+    def _cd_state_changed(self, playing: bool) -> None:
+        self.play_button.setText("⏸" if playing else "⏵")
+        self.visualizer.set_live(playing)
+        if self.fullscreen_visualizer is not None:
+            self.fullscreen_visualizer.set_live(playing)
+
+    def watch_disc(self, device: str) -> None:
+        """Watch a film disc — or play it, if it turns out to be music.
+
+        An audio CD handed to the video player produces "could not open file",
+        which reads as a broken app rather than as "that is a music disc". The
+        check has to happen even when the disc has not been read yet, because
+        pressing Watch is often the *first* thing anybody does.
+        """
+        view = self.views["disc"]
+
+        if view.disc is not None and view.disc.tracks:
+            self.play_disc(view.disc, Path(device) if device else None)
+            return
+
+        self.notify("Looking at the disc…", "info")
+
+        def looked(disc) -> None:
+            # It was music all along: play it rather than refusing.
+            view.disc = disc
+            view.refresh()
+            self.play_disc(disc, Path(device) if device else None)
+
+        def not_audio(_message: str) -> None:
+            # No audio table of contents, so it is a data or film disc —
+            # which is exactly what the video player is for.
+            self.show_section("feed")
+            self.video.watch_file(device, title="Disc", artist="")
+
+        tasks.run(lambda: optical.read_toc(Path(device) if device else None),
+                  on_done=looked, on_error=not_audio)
+
+
+    def _ripped(self, folder: str) -> None:
+        """A rip finished; fold the new files into the library."""
+        if folder not in self.library.folders:
+            # Ripped into a folder outside the scanned set — usually a
+            # per-album subfolder of the download directory, which the parent
+            # scan will pick up anyway.
+            logger.debug("ripped into %s", folder)
+        self.rescan()
+
+    def burn_queue(self) -> None:
+        """Write what is in the play queue to a blank, in queue order."""
+        tracks = [t for t in self.playback.queue.tracks if Path(t.path).exists()]
+        if not tracks:
+            self.notify("The queue is empty — add some music first", "warning")
+            return
+
+        absent = optical.missing("cdrskin", "ffmpeg")
+        if absent:
+            self.notify(absent[0].message.split("\n")[0], "error")
+            return
+
+        total = sum(t.duration for t in tracks)
+        if not optical.fits_on_a_disc(total):
+            self.notify(
+                f"The queue is {int(total // 60)} minutes and a CD holds about "
+                f"{optical.COMMON_MINUTES}", "warning")
+            return
+
+        drive = optical.default_drive()
+        if drive is None:
+            self.notify("No optical drive found", "error")
+            return
+
+        self._free_the_drive()
+        burner = optical.CdBurner(drive.device)
+        view = self.views["disc"]
+        view._job = burner
+        view._begin(f"Burning {len(tracks)} tracks…")
+
+        paths = [Path(t.path) for t in tracks]
+
+        def work(report):
+            return burner.burn(paths, progress=lambda update: report(update))
+
+        def done(result) -> None:
+            view._end()
+            view.refresh()
+            self.notify(result.summary, "success")
+
+        self.show_section("disc")
+        tasks.run(work, on_progress=view._on_progress, on_done=done,
+                  on_error=lambda message: (view._on_failed(message)))
 
     # ── Server ────────────────────────────────────────────────────
 
@@ -1168,10 +1998,11 @@ class MainWindow(QMainWindow):
             search.selectAll()
 
     def open_settings(self) -> None:
-        dialog = SettingsDialog(self.preferences, self)
+        dialog = SettingsDialog(self.preferences, self.tastes, self)
         dialog.appearance_changed.connect(self.apply_appearance)
         dialog.library_changed.connect(self._library_folders_changed)
         dialog.visualizer_changed.connect(self._visualizer_changed)
+        dialog.interests_changed.connect(self.refresh)
         dialog.server_changed.connect(self._server_settings_changed)
         dialog.exec()
 
@@ -1181,12 +2012,86 @@ class MainWindow(QMainWindow):
 
     def _visualizer_changed(self) -> None:
         self.visualizer.setVisible(self.preferences.visualizer)
-        self.visualizer.set_shape(self.preferences.shape())
+        self.fullscreen_button.setVisible(self.preferences.visualizer)
+        self.visualizer.set_layers(self.preferences.layers())
         self.visualizer.alpha = self.preferences.visualizer_alpha / 100
+        self.visualizer.set_blur(self.preferences.visualizer_blur)
+        self.visualizer.set_intensity(self.preferences.visualizer_intensity / 100)
+        self.visualizer.set_fps(self.preferences.visualizer_fps)
+        self.visualizer.set_palette(self.preferences.palette(self.appearance.theme.accent))
+        self.visualizer.set_scales(self.preferences.visualizer_scales)
+
+        if self.fullscreen_visualizer is not None:
+            self.fullscreen_visualizer.apply(
+                shape=self._fullscreen_shape(),
+                layers=self.preferences.layers(fullscreen=True),
+                alpha=self.preferences.visualizer_alpha / 100,
+                blur=self.preferences.visualizer_blur,
+                intensity=self.preferences.visualizer_intensity / 100,
+                fps=self.preferences.visualizer_fps,
+            )
+            self.fullscreen_visualizer.visualizer.set_palette(
+                self.preferences.palette(self.appearance.theme.accent))
+            self.fullscreen_visualizer.visualizer.set_scales(
+                self.preferences.visualizer_scales)
+
         if self.preferences.visualizer:
             self.visualizer.start()
         else:
             self.visualizer.stop()
+
+    # ── Full screen visualiser ────────────────────────────────────
+
+    def _fullscreen_shape(self) -> Shape:
+        try:
+            return Shape(self.preferences.visualizer_fullscreen_shape)
+        except ValueError:
+            return Shape.RADIAL
+
+    def open_fullscreen_visualizer(self) -> None:
+        """Fill the screen with the visualiser. Escape, F11 or a click leaves.
+
+        Built on first use rather than at startup: most sessions never open it,
+        and an unused full-screen window is a second cava consumer and a second
+        widget to keep in step with the settings.
+        """
+        if not cava.available():
+            self.notify("cava is not installed, so there is nothing to show", "warning")
+            return
+
+        if self.fullscreen_visualizer is None:
+            self.fullscreen_visualizer = FullscreenVisualizer(
+                self.appearance,
+                shape=self._fullscreen_shape(),
+                alpha=self.preferences.visualizer_alpha / 100,
+                blur=self.preferences.visualizer_blur,
+                intensity=self.preferences.visualizer_intensity / 100,
+                fps=self.preferences.visualizer_fps,
+                parent=self,
+            )
+            self.fullscreen_visualizer.visualizer.set_layers(
+                self.preferences.layers(fullscreen=True))
+            self.fullscreen_visualizer.visualizer.set_palette(
+                self.preferences.palette(self.appearance.theme.accent))
+            self.fullscreen_visualizer.visualizer.set_scales(
+                self.preferences.visualizer_scales)
+            self.fullscreen_visualizer.previous_requested.connect(self.previous_track)
+            self.fullscreen_visualizer.toggle_requested.connect(self.toggle_playback)
+            self.fullscreen_visualizer.next_requested.connect(self.next_track)
+            self.fullscreen_visualizer.closed.connect(self._fullscreen_closed)
+
+        track = self.playback.track
+        self.fullscreen_visualizer.set_track(
+            track.display_title if track else "Nothing playing",
+            track.display_artist if track else "",
+        )
+        self.fullscreen_visualizer.set_live(self.playback.playing)
+        self.fullscreen_visualizer.open()
+
+    def _fullscreen_closed(self) -> None:
+        # The small one shares cava with it and had its timer left running, so
+        # there is nothing to restart — only the live flag to hand back.
+        self.visualizer.set_live(self.playback.playing)
 
     def _server_settings_changed(self) -> None:
         self.server.config = self.preferences.server_config()
@@ -1198,6 +2103,16 @@ class MainWindow(QMainWindow):
         self.appearance = appearance
         set_active_style(appearance.style)
         self.setStyleSheet(appearance.stylesheet())
+
+        if self.fullscreen_visualizer is not None:
+            self.fullscreen_visualizer.restyle(appearance)
+            self.fullscreen_visualizer.visualizer.set_palette(
+                self.preferences.palette(appearance.theme.accent))
+
+        self.visualizer.set_palette(self.preferences.palette(appearance.theme.accent))
+
+        self.video.apply_appearance(appearance)
+        self.shorts_video.apply_appearance(appearance)
 
         for widget in (*self.views.values(), self.banner, self.visualizer, self.now_art):
             stage = getattr(widget, "stage_appearance", None)
@@ -1238,22 +2153,54 @@ class MainWindow(QMainWindow):
         except OSError as exc:
             logger.warning("could not save the session: %s", exc)
 
+    def resizeEvent(self, event) -> None:
+        """Pull the sidebar in when there is no room for it.
+
+        The user's own preference is left alone: this is the window reacting
+        to its size, not a setting being changed behind their back, so making
+        it wide again restores whatever they had chosen.
+        """
+        super().resizeEvent(event)
+
+        # The event's size, not the widget's: during a resize the widget may
+        # still report the width it is coming *from*.
+        narrow = event.size().width() < NARROW_WIDTH
+        if narrow and not self.sidebar_collapsed:
+            self._collapsed_for_width = True
+            self.set_sidebar_collapsed(True, animate=False)
+        elif not narrow and getattr(self, "_collapsed_for_width", False):
+            self._collapsed_for_width = False
+            if not self.preferences.sidebar_collapsed:
+                self.set_sidebar_collapsed(False, animate=False)
+
     def closeEvent(self, event) -> None:
         # Anything still running is about to lose the widgets it reports to.
         tasks.cancel_all()
         self._save_session()
+        self._tastes_save.stop()
         self.tastes.save()
         if self.import_job is not None:
             self.import_job.save()
-        self.views["watch"].stop()
         self.playback.stop()
+        self.video.stop()
+        self.shorts_video.stop()
+        self.streams.close()
+        self.cd.stop()
         self.visualizer.stop()
         self.server.stop()
+        if self.mpris is not None:
+            self.mpris.stop()
 
         self.preferences.window_size = (self.width(), self.height())
         sizes = self.splitter.sizes()
-        if sizes:
+        # Pulled in, the rail's width is not a width the user chose — saving it
+        # would lose the one they dragged to.
+        if sizes and not self.sidebar_collapsed:
             self.preferences.sidebar_width = sizes[0]
+        # Not saved if it was the window's width that pulled it in: that is a
+        # fact about this session, not something the user picked.
+        if not self._collapsed_for_width:
+            self.preferences.sidebar_collapsed = self.sidebar_collapsed
         self.preferences.volume = self.playback.volume
         self.preferences.save()
 

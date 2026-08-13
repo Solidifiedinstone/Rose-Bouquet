@@ -25,7 +25,7 @@ from rose_bouquet.core import spotify, ytmusic
 from rose_bouquet.core.library import Library
 from rose_bouquet.core.playlists import Playlist, PlaylistStore
 from rose_bouquet.core.server import MusicServer
-from rose_bouquet.ui import tasks
+from rose_bouquet.ui import icons, tasks
 from rose_bouquet.ui.theme import Appearance
 from rose_bouquet.ui.widgets import Card, SectionHeading, TrackRow
 
@@ -64,6 +64,9 @@ class ScrollingView(QWidget):
         self.body_layout.setSpacing(2)
         scroll.setWidget(self.body)
         outer.addWidget(scroll, 1)
+        #: Kept, so a view can hide its list to give the space to something
+        #: else — the Shorts reel takes the whole view this way.
+        self.scroll = scroll
 
     @staticmethod
     def clear(layout) -> None:
@@ -326,11 +329,7 @@ class PlaylistsView(ScrollingView):
         row = QWidget()
         row.setObjectName("TrackRow")
         row.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        row.setStyleSheet(
-            f"#TrackRow {{ background: transparent;"
-            f" border-radius: {self.appearance.style.radius}px; }}"
-            f"#TrackRow:hover {{ background-color: {self.appearance.theme.panel}; }}"
-        )
+
 
         layout = QHBoxLayout(row)
         layout.setContentsMargins(12, 8, 12, 8)
@@ -421,6 +420,130 @@ class PlaylistsView(ScrollingView):
 
 
 # ── YouTube Music ─────────────────────────────────────────────────
+
+class BrowseMusicView(ScrollingView):
+    """Music to discover, rather than music you already have.
+
+    The Library shows what is on disk and YouTube Music shows what you
+    searched for. This shows what neither does: things picked out for you,
+    from the same topics the other feeds use — so a taste in one place informs
+    the others instead of every screen starting from nothing.
+    """
+
+    play_requested = Signal(object)        # Result
+    download_requested = Signal(object)
+    search_requested = Signal(str)
+    refresh_requested = Signal()
+    status = Signal(str, str)
+
+    def __init__(self, appearance: Appearance, parent: Optional[QWidget] = None) -> None:
+        super().__init__(appearance, parent)
+        self.shelves: list[tuple[str, list]] = []
+        self.loading = False
+        self.progress_text = ""
+
+        title = QLabel("Browse")
+        title.setObjectName("Heading")
+        self.header_layout.addWidget(title)
+        self.header_layout.addStretch(1)
+
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search for music…")
+        self.search.setFixedWidth(240)
+        self.search.setClearButtonEnabled(True)
+        self.search.returnPressed.connect(
+            lambda: self.search.text().strip() and
+            self.search_requested.emit(self.search.text().strip()))
+        self.header_layout.addWidget(self.search)
+
+        refresh = QPushButton("Refresh")
+        refresh.setObjectName("Quiet")
+        refresh.setToolTip("Find music for the things you listen to")
+        refresh.clicked.connect(self.refresh_requested.emit)
+        self.header_layout.addWidget(refresh)
+
+    def show_progress(self, text: str) -> None:
+        self.loading = True
+        self.progress_text = text
+        self.refresh()
+
+    def show_shelves(self, shelves: list) -> None:
+        self.loading = False
+        self.shelves = list(shelves)
+        self.refresh()
+
+    def refresh(self, *_args) -> None:
+        self.clear(self.body_layout)
+
+        if self.loading:
+            self.body_layout.addWidget(
+                self.empty_label(self.progress_text or "Looking for music…"))
+            self.body_layout.addStretch(1)
+            return
+
+        if not self.shelves:
+            self.body_layout.addWidget(self.empty_label(
+                "Nothing here yet.\n\nPress Refresh to find music for the "
+                "things you listen to, or search above.\n\n"
+                "What it looks for comes from Settings → Interests."
+            ))
+            self.body_layout.addStretch(1)
+            return
+
+        for heading, results in self.shelves:
+            if not results:
+                continue
+            self.body_layout.addWidget(
+                SectionHeading(heading, self.appearance, count=len(results)))
+            for result in results[:8]:
+                self.body_layout.addWidget(self._row(result))
+
+        self.body_layout.addStretch(1)
+
+    def _row(self, result) -> QWidget:
+        row = QWidget()
+        row.setObjectName("TrackRow")
+        row.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(12, 6, 12, 6)
+        layout.setSpacing(10)
+
+        kind = QLabel()
+        kind.setPixmap(icons.kind_icon(result.kind, 18, self.appearance.theme.text_dim))
+        kind.setFixedWidth(22)
+        kind.setToolTip(icons.LABELS.get(result.kind, result.kind.title()))
+        layout.addWidget(kind)
+
+        column = QVBoxLayout()
+        column.setSpacing(1)
+        title = QLabel(result.title)
+        title.setObjectName("RowTitle")
+        column.addWidget(title)
+        subtitle = QLabel(result.subtitle)
+        subtitle.setObjectName("Subtle")
+        column.addWidget(subtitle)
+        layout.addLayout(column, 1)
+
+        if result.duration:
+            length = QLabel(result.clock)
+            length.setObjectName("Subtle")
+            layout.addWidget(length)
+
+        if result.kind in ("song", "video"):
+            play = QPushButton("▶")
+            play.setObjectName("Quiet")
+            play.clicked.connect(lambda: self.play_requested.emit(result))
+            layout.addWidget(play)
+
+            download = QPushButton("↓")
+            download.setObjectName("Quiet")
+            download.setToolTip("Download")
+            download.clicked.connect(lambda: self.download_requested.emit(result))
+            layout.addWidget(download)
+
+        return row
+
 
 class YouTubeView(ScrollingView):
     """Search and browse YouTube Music; download what you want to keep."""
@@ -541,16 +664,19 @@ class YouTubeView(ScrollingView):
         layout.setContentsMargins(12, 6, 12, 6)
         layout.setSpacing(10)
 
-        kind = QLabel(result.kind[:1].upper())
-        kind.setObjectName("Subtle")
-        kind.setFixedWidth(16)
+        # An icon rather than the first letter of the kind: "A" was both album
+        # and artist, which told the user nothing either way.
+        kind = QLabel()
+        kind.setPixmap(icons.kind_icon(result.kind, 18, self.appearance.theme.text_dim))
+        kind.setFixedWidth(22)
+        kind.setToolTip(icons.LABELS.get(result.kind, result.kind.title()))
+        kind.setStyleSheet("background: transparent;")
         layout.addWidget(kind)
 
         column = QVBoxLayout()
         column.setSpacing(1)
         title = QLabel(result.title)
-        title.setStyleSheet(
-            f"color: {self.appearance.theme.text}; background: transparent;")
+        title.setObjectName("RowTitle")
         column.addWidget(title)
         subtitle = QLabel(result.subtitle)
         subtitle.setObjectName("Subtle")

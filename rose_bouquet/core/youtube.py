@@ -21,7 +21,7 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Sequence
 
 from rose_bouquet.core.recommend import Candidate
 from rose_bouquet.core.tastes import Channel
@@ -40,6 +40,44 @@ SHORT_SECONDS = 60
 
 #: Shared with the downloader — see `ytmusic.PLAYER_CLIENTS`.
 PLAYER_CLIENTS = ["tv", "android", "ios", "web"]
+
+#: Clients used when the URL is handed to *something else* to fetch — which is
+#: what streaming is: Qt opens the URL itself, with none of yt-dlp's session.
+#:
+#: This is a different problem from downloading, where yt-dlp does the fetching
+#: and its own session makes any client's URL work. Several clients now hand
+#: back URLs that answer 403 to anyone else — measured, not guessed: `tv`,
+#: `web` and `mweb` all refuse, `android` serves. Asking for those first is why
+#: a stream would play one minute and fail the next, depending on which client
+#: happened to answer.
+#: Asked in tiers rather than all at once. yt-dlp queries every client it is
+#: given, in turn, whether or not the first one already worked — measured at
+#: 4.4s for the full list against 0.96s for `android` alone. Since `android`
+#: serves a playable URL nearly every time, asking it on its own first makes
+#: pressing play four times faster, and the rest are still there for the times
+#: it does not.
+STREAM_CLIENTS = ["android"]
+FALLBACK_STREAM_CLIENTS = ["web_safari", "ios", "tv", "web"]
+
+#: How many channels to read at once. Bounded well below the number of
+#: subscriptions: this is somebody's home connection and YouTube's patience,
+#: not a datacentre.
+CHANNEL_WORKERS = 8
+
+#: How much of a stream to ask for when checking whether it is actually
+#: playable. Small enough to be instant; the server either serves a range or
+#: refuses the request outright, and either answer is the one being tested.
+PROBE_BYTES = 2048
+
+#: How many URLs to test before giving up on a tier. A video can offer thirty
+#: formats, and testing all of them at six seconds each is minutes of waiting
+#: to discover what the first two already said.
+PROBE_LIMIT = 3
+
+#: A probe is a round trip to a CDN that is either going to answer or refuse.
+#: Six seconds was patience for a slow link; it is also six seconds of dead
+#: air per format when something is wrong.
+PROBE_TIMEOUT = 2.5
 
 
 @dataclass
@@ -102,6 +140,37 @@ def channel_id(link: str) -> str:
     if link.startswith(("UC", "@")):
         return link.lstrip("@")
     return ""
+
+
+def playable(url: str, *, timeout: float = PROBE_TIMEOUT) -> bool:
+    """Whether something else can actually fetch this URL.
+
+    Worth the round trip because the alternative is worse: a refused URL handed
+    to the player produces "Could not open file" several seconds later, with no
+    way to tell a dead link from a dead network. Asking for the first couple of
+    kilobytes settles it in well under a second, and the answer is exactly the
+    question — can a plain HTTP client read this.
+    """
+    if not url:
+        return False
+    if not url.startswith(("http://", "https://")):
+        return True                      # a local file; nothing to check
+
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(url, headers={"Range": f"bytes=0-{PROBE_BYTES - 1}"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status in (200, 206)
+    except urllib.error.HTTPError as exc:
+        logger.debug("stream url answered %s", exc.code)
+        return False
+    except Exception as exc:             # noqa: BLE001 — a probe must never raise
+        # A network problem is not the URL's fault, and refusing to play
+        # because a probe timed out would be worse than trying anyway.
+        logger.debug("could not probe the stream url: %s", exc)
+        return True
 
 
 def _options(extra: Optional[dict] = None) -> dict:
@@ -254,7 +323,12 @@ class YouTube:
         if not query.strip():
             return []
 
-        data = self._extract(f"ytsearch{limit * 2 if shorts else limit}:{query}")
+        # `#shorts` in the query is how YouTube itself is asked for them.
+        # Filtering an ordinary search by duration finds almost nothing —
+        # a search for "skateboard" returns full-length videos, correctly
+        # discards every one, and leaves an empty screen.
+        terms = f"{query} #shorts" if shorts else query
+        data = self._extract(f"ytsearch{limit * 2 if shorts else limit}:{terms}")
         if not data:
             return []
 
@@ -264,27 +338,54 @@ class YouTube:
         ]
 
         if shorts:
-            videos = [v for v in videos if 0 < v.duration <= SHORT_SECONDS]
+            # The docstring's promise, which the code was not keeping: a flat
+            # search frequently omits durations, and dropping every row that
+            # has none meant a search for shorts returning nothing at all.
+            # Known-short first, then the unknowns, then nothing else.
+            known = [v for v in videos if 0 < v.duration <= SHORT_SECONDS]
+            unknown = [v for v in videos if v.duration == 0]
+            videos = known + unknown
 
         return videos[:limit]
 
-    def related(self, video_id: str, limit: int = 10) -> list[Video]:
+    def related(self, video_id: str, limit: int = 10, *, title: str = "") -> list[Video]:
         """What YouTube considers related to a video.
 
         Used as *candidates* for the local ranker rather than as recommendations
         in their own right: the ordering here is YouTube's opinion, and the
         whole point of this app is that the final ordering is yours.
-        """
-        data = self._extract(f"https://www.youtube.com/watch?v={video_id}",
-                             {"extract_flat": False, "playlistend": limit})
-        if not data:
-            return []
 
-        related = data.get("related_videos") or []
-        return [
-            _video(entry) for entry in related[:limit]
-            if isinstance(entry, dict) and entry.get("id")
+        Two sources, because the obvious one is gone. The watch page used to
+        carry a `related_videos` list and no longer does — it now comes back
+        empty for every video, which silently reduced the feed to subscription
+        uploads and nothing else. What still works:
+
+        1. The **mix** — `list=RD<id>` is a radio playlist YouTube builds around
+           a video, which is its recommender's own output and the closest
+           remaining thing to the old list. Not every video has one; anything
+           outside music usually does not.
+        2. **Search** on the title, as a fallback, which works for anything at
+           all but is a weaker notion of "related".
+        """
+        mix = self._extract(
+            f"https://www.youtube.com/watch?v={video_id}&list=RD{video_id}",
+            {"extract_flat": True, "playlistend": limit + 1},
+        )
+        entries = (mix or {}).get("entries") or []
+
+        videos = [
+            _video(entry) for entry in entries
+            if isinstance(entry, dict) and entry.get("id") and entry.get("id") != video_id
         ]
+        if videos:
+            return videos[:limit]
+
+        if title:
+            # The seed itself will come back in the results; it is dropped
+            # rather than recommended back to someone who just watched it.
+            return [v for v in self.search(title, limit=limit + 1) if v.id != video_id][:limit]
+
+        return []
 
     # ── Streaming ─────────────────────────────────────────────────
 
@@ -310,24 +411,53 @@ class YouTube:
                 else "best[acodec!=none][vcodec!=none]/b[ext=mp4][acodec!=none]/best"
             ),
             "extract_flat": False,
+            "extractor_args": {
+                "youtubetab": {"skip": ["authcheck"]},
+                "youtube": {"player_client": STREAM_CLIENTS},
+            },
         }
-        data = self._extract(f"https://www.youtube.com/watch?v={video_id}", options)
-        if not data:
-            return ""
+        for clients in (STREAM_CLIENTS, FALLBACK_STREAM_CLIENTS):
+            options["extractor_args"] = {
+                "youtubetab": {"skip": ["authcheck"]},
+                "youtube": {"player_client": clients},
+            }
+            data = self._extract(f"https://www.youtube.com/watch?v={video_id}", options)
+            if not data:
+                continue
+
+            for attempt, url in enumerate(
+                    self._candidate_urls(data, audio_only=audio_only)):
+                if attempt >= PROBE_LIMIT:
+                    # Everything this client offered was refused. Another
+                    # client is far more likely to help than a thirtieth
+                    # format from the same one.
+                    break
+                if playable(url):
+                    return url
+                logger.debug("stream url refused, trying the next format")
+
+            logger.info("no playable stream from %s, widening the search", clients)
+
+        return ""
+
+    def _candidate_urls(self, data: dict, *, audio_only: bool):
+        """Every URL worth trying for this video, best first."""
+        seen: set[str] = set()
 
         url = data.get("url")
         if url:
-            return url
+            seen.add(url)
+            yield url
 
-        formats = data.get("formats") or []
-        for candidate in reversed(formats):
+        for candidate in reversed(data.get("formats") or []):
             if not isinstance(candidate, dict):
                 continue
             if audio_only and candidate.get("vcodec") not in (None, "none"):
                 continue
-            if candidate.get("url"):
-                return candidate["url"]
-        return ""
+            found = candidate.get("url")
+            if found and found not in seen:
+                seen.add(found)
+                yield found
 
 
 # ── The feed ──────────────────────────────────────────────────────
@@ -345,17 +475,247 @@ def subscription_candidates(
     request not to see something, and honouring it partially is worse than not
     offering it.
     """
+    wanted = [c for c in channels if not c.muted]
+    if not wanted:
+        return []
+
+    # Fetched in parallel. Each channel is one network round trip of about half
+    # a second, and forty of them in a row is twenty seconds of a progress bar
+    # — nearly all of it spent waiting rather than working. Each call builds
+    # its own extractor, so there is nothing shared to protect.
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     candidates: list[Candidate] = []
+    done = 0
 
-    for index, channel in enumerate(channels):
-        if channel.muted:
-            continue
-        if report is not None:
-            report(f"Checking {channel.title} ({index + 1} of {len(channels)})")
+    def fetch(channel):
+        return channel, youtube.uploads(channel.id or channel.title, limit=per_channel)
 
-        for video in youtube.uploads(channel.id or channel.title, limit=per_channel):
-            candidate = video.to_candidate("subscription")
-            candidate.channel_id = candidate.channel_id or channel.id
-            candidates.append(candidate)
+    with ThreadPoolExecutor(max_workers=CHANNEL_WORKERS) as pool:
+        jobs = [pool.submit(fetch, channel) for channel in wanted]
+        for job in as_completed(jobs):
+            done += 1
+            try:
+                channel, videos = job.result()
+            except Exception as exc:            # noqa: BLE001 — one bad channel
+                logger.debug("could not read a channel: %s", exc)
+                continue
+
+            if report is not None:
+                report(f"Checked {done} of {len(wanted)} channels")
+
+            for video in videos:
+                candidate = video.to_candidate("subscription")
+                candidate.channel_id = candidate.channel_id or channel.id
+                candidates.append(candidate)
 
     return candidates
+
+
+class StreamCache:
+    """Stream URLs, resolved ahead of time and kept until they expire.
+
+    Resolving one takes about a second and a half of network, which is fine
+    when it happens while you decide what to watch and unbearable when it
+    happens after you have already scrolled. So the reel asks for what is
+    coming *next* while the current one plays, and by the time it is scrolled
+    to, the answer is already here.
+
+    YouTube's URLs carry an expiry a few hours out. They are held for rather
+    less than that: a stale one fails at the player, which is exactly the
+    situation the cache exists to avoid.
+    """
+
+    #: How long a resolved URL is trusted for.
+    TTL_SECONDS = 1800
+
+    #: How many to keep. Expired entries are only noticed when something looks
+    #: them up, so without a ceiling an evening of scrolling shorts leaves a
+    #: few thousand dead URLs in memory that nobody will ever ask for again.
+    LIMIT = 120
+
+    def __init__(self, youtube: "YouTube", workers: int = 3) -> None:
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
+        self.youtube = youtube
+        self._urls: dict[tuple[str, bool], tuple[float, str]] = {}
+        # Reentrant: `prefetch` holds this and then asks `cached`, which takes
+        # it again. With a plain Lock that is a deadlock — and since prefetch
+        # runs on the interface thread, it freezes the whole window.
+        self._lock = threading.RLock()
+        # Threads that will not hold the app open: a prefetch in flight must
+        # not delay quitting, and a URL nobody asked for is not worth waiting
+        # on. Python joins pool threads at exit unless told otherwise.
+        self._pool = ThreadPoolExecutor(max_workers=workers,
+                                        thread_name_prefix="rose-stream")
+        self._closed = False
+        self._pending: set[tuple[str, bool]] = set()
+
+    def cached(self, video_id: str, *, audio_only: bool = True) -> str:
+        """A URL already resolved and still fresh, or "" — never any network."""
+        import time
+
+        key = (video_id, audio_only)
+        with self._lock:
+            found = self._urls.get(key)
+            if found is None:
+                return ""
+            at, url = found
+            if time.time() - at > self.TTL_SECONDS:
+                del self._urls[key]
+                return ""
+            return url
+
+    def resolve(self, video_id: str, *, audio_only: bool = True) -> str:
+        """The URL, fetching it if it is not already here. Blocks."""
+        cached = self.cached(video_id, audio_only=audio_only)
+        if cached:
+            return cached
+
+        url = self.youtube.stream_url(video_id, audio_only=audio_only)
+        if url:
+            self._store(video_id, audio_only, url)
+        return url
+
+    def prefetch(self, video_ids, *, audio_only: bool = True) -> None:
+        """Start resolving these in the background. Returns at once."""
+        if self._closed:
+            return
+
+        for video_id in video_ids:
+            key = (video_id, audio_only)
+            with self._lock:
+                if key in self._pending or self.cached(video_id, audio_only=audio_only):
+                    continue
+                self._pending.add(key)
+            self._pool.submit(self._fetch, video_id, audio_only)
+
+    def _fetch(self, video_id: str, audio_only: bool) -> None:
+        try:
+            url = self.youtube.stream_url(video_id, audio_only=audio_only)
+            if url:
+                self._store(video_id, audio_only, url)
+        except Exception as exc:            # noqa: BLE001 — a prefetch may fail quietly
+            logger.debug("could not prefetch %s: %s", video_id, exc)
+        finally:
+            with self._lock:
+                self._pending.discard((video_id, audio_only))
+
+    def _store(self, video_id: str, audio_only: bool, url: str) -> None:
+        import time
+
+        with self._lock:
+            self._urls[(video_id, audio_only)] = (time.time(), url)
+
+            if len(self._urls) > self.LIMIT:
+                # Oldest first: a URL resolved long ago is both nearest to
+                # expiring and least likely to be wanted again.
+                for key, _ in sorted(self._urls.items(), key=lambda kv: kv[1][0])[
+                        :len(self._urls) - self.LIMIT]:
+                    self._urls.pop(key, None)
+
+    def close(self) -> None:
+        """Stop prefetching. Safe to call twice."""
+        if not self._closed:
+            self._closed = True
+            self._pool.shutdown(wait=False, cancel_futures=True)
+
+    def forget(self, video_id: str) -> None:
+        """Drop a video's URLs — it played badly, or is long gone from view."""
+        with self._lock:
+            for audio_only in (True, False):
+                self._urls.pop((video_id, audio_only), None)
+
+
+def discover(
+    youtube: "YouTube",
+    terms: Sequence[str],
+    *,
+    shorts: bool = False,
+    per_term: int = 12,
+    report=None,
+) -> list[Candidate]:
+    """Search several topics at once and pool the results.
+
+    This is the half of a feed that is not a subscription box. Given the
+    subjects somebody actually watches — see `interests.search_terms` — it goes
+    and finds things by those subjects, from channels they have never heard of.
+
+    Searched in parallel because each term is its own round trip and eight of
+    them in a row is eight seconds of waiting.
+    """
+    terms = [term for term in terms if term and term.strip()]
+    if not terms:
+        return []
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    found: list[Candidate] = []
+    seen: set[str] = set()
+    done = 0
+
+    def look(term: str):
+        return term, youtube.search(term, limit=per_term, shorts=shorts)
+
+    with ThreadPoolExecutor(max_workers=min(CHANNEL_WORKERS, len(terms))) as pool:
+        jobs = [pool.submit(look, term) for term in terms]
+        for job in as_completed(jobs):
+            done += 1
+            try:
+                _term, videos = job.result()
+            except Exception as exc:        # noqa: BLE001 — one dead search
+                logger.debug("a search failed: %s", exc)
+                continue
+
+            if report is not None:
+                report(f"Looked at {done} of {len(terms)} topics")
+
+            for video in videos:
+                if video.id in seen:
+                    continue
+                seen.add(video.id)
+                candidate = video.to_candidate("shorts" if shorts else "discover")
+                found.append(candidate)
+
+    return found
+
+
+def similar_channels(youtube: "YouTube", channels: Sequence, limit: int = 12) -> list[Channel]:
+    """Channels like the ones already followed.
+
+    Read from each channel's own "channels" shelf — the featured and related
+    creators a channel points at itself. It is YouTube's own answer to "who
+    else is like this", published on the page, and it needs no account to see.
+    """
+    if not channels:
+        return []
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    found: dict[str, Channel] = {}
+
+    def shelf(channel):
+        identifier = channel_id(channel.id or channel.title) or channel.id
+        base = (f"https://www.youtube.com/channel/{identifier}"
+                if identifier.startswith("UC")
+                else f"https://www.youtube.com/@{identifier}")
+        return youtube._extract(f"{base}/channels", {"playlistend": 20})
+
+    with ThreadPoolExecutor(max_workers=min(CHANNEL_WORKERS, len(channels))) as pool:
+        jobs = [pool.submit(shelf, channel) for channel in channels]
+        for job in as_completed(jobs):
+            try:
+                data = job.result()
+            except Exception:               # noqa: BLE001 — a channel may hide it
+                continue
+
+            for entry in (data or {}).get("entries") or []:
+                if not isinstance(entry, dict):
+                    continue
+                found_id = entry.get("channel_id") or entry.get("id") or ""
+                title = entry.get("channel") or entry.get("title") or ""
+                if found_id.startswith("UC") and found_id not in found:
+                    found[found_id] = Channel(id=found_id, title=title, kind="channel")
+
+    return list(found.values())[:limit]

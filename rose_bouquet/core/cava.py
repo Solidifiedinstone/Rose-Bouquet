@@ -1,10 +1,9 @@
 """Audio levels from cava, for the visualiser.
 
-Deliberately the same source the rest of Gavin's desktop uses: cava reading
-PipeWire, in waves mode, 50 bars, 60fps, raw ASCII on stdout — the exact
-settings in `~/.config/quickshell/ii/scripts/cava/raw_output_config.txt`. The
-visualiser in the player and the one in the bar are then drawing the same
-numbers, and a track looks the same in both.
+cava reading the system audio, in waves mode, 50 bars, 60fps, raw ASCII on
+stdout. These are the settings desktop bars commonly use for their own cava
+visualisers, so a bar configured the same way and this player end up drawing
+the same numbers and a track looks the same in both.
 
 Reading system audio rather than the app's own buffer has a nice property: it
 visualises whatever is actually playing, so it still works for audio Rose Bouquet
@@ -26,7 +25,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-#: Matches the Quickshell config so both visualisers agree.
+#: The common defaults for a bar's cava visualiser, so both agree.
 BARS = 50
 FRAMERATE = 60
 NOISE_REDUCTION = 20
@@ -35,8 +34,8 @@ NOISE_REDUCTION = 20
 MAX_VALUE = 1000
 
 CONFIG = """\
-# Written by Rose Bouquet. Mirrors the Quickshell raw-output config so the
-# player's visualiser and the desktop bar's are drawing the same numbers.
+# Written by Rose Bouquet. Mirrors the usual raw-output config so the
+# player's visualiser and a desktop bar's can draw the same numbers.
 [general]
 mode = waves
 framerate = {framerate}
@@ -64,7 +63,21 @@ def available() -> bool:
     return shutil.which("cava") is not None
 
 
-def write_config(path: Optional[Path] = None) -> Path:
+#: cava will accept a very wide range; these are the bounds worth offering.
+#: Below 10 the motion reads as stuttering rather than slow, and above 144
+#: nothing on a normal display can show the difference.
+MIN_FRAMERATE = 10
+MAX_FRAMERATE = 144
+
+
+def clamp_framerate(framerate: int) -> int:
+    try:
+        return max(MIN_FRAMERATE, min(MAX_FRAMERATE, int(framerate)))
+    except (TypeError, ValueError):
+        return FRAMERATE
+
+
+def write_config(path: Optional[Path] = None, *, framerate: int = FRAMERATE) -> Path:
     """Write the cava config this app drives, and return where it went."""
     if path is None:
         folder = Path(tempfile.gettempdir()) / "rose-bouquet"
@@ -73,7 +86,7 @@ def write_config(path: Optional[Path] = None) -> Path:
 
     path.write_text(
         CONFIG.format(
-            framerate=FRAMERATE, bars=BARS,
+            framerate=clamp_framerate(framerate), bars=BARS,
             maximum=MAX_VALUE, noise=NOISE_REDUCTION,
         ),
         encoding="utf-8",
@@ -105,7 +118,7 @@ def parse_frame(line: str, bars: int = BARS) -> list[float]:
 def smooth(values: list[float], window: int = 2) -> list[float]:
     """A moving average over neighbouring bars.
 
-    The same smoothing the Quickshell visualiser applies before drawing, with
+    The same smoothing a bar's visualiser applies before drawing, with
     the same window, so the curve has the same character rather than merely the
     same data.
     """
@@ -122,8 +135,13 @@ def smooth(values: list[float], window: int = 2) -> list[float]:
     return smoothed
 
 
-def start(config: Optional[Path] = None) -> Optional[subprocess.Popen]:
+def start(config: Optional[Path] = None, *,
+          framerate: int = FRAMERATE) -> Optional[subprocess.Popen]:
     """Start cava, or return None if it is not available.
+
+    The frame rate is cava's, not just the widget's: asking cava for 30 frames
+    a second costs half the CPU of asking for 60 and then dropping every other
+    one. On a machine that cannot keep up, that is the difference that matters.
 
     stderr is discarded: cava is chatty about audio devices, and none of it is
     actionable from inside a music player.
@@ -132,7 +150,7 @@ def start(config: Optional[Path] = None) -> Optional[subprocess.Popen]:
         logger.info("cava is not installed — the visualiser will stay flat")
         return None
 
-    path = write_config(config)
+    path = write_config(config, framerate=framerate)
     try:
         return subprocess.Popen(
             ["cava", "-p", str(path)],

@@ -38,6 +38,11 @@ class Playback(QObject):
     position_changed = Signal(int, int)  # position ms, duration ms
     queue_changed = Signal()
     finished = Signal()                 # the queue ran out
+    volume_changed = Signal(float)      # 0.0 – 1.0
+    #: A seek the user asked for, in ms. Distinct from `position_changed`,
+    #: which also fires as a track plays normally: desktop media controls need
+    #: to know when the position *jumped*, not when it advanced.
+    seeked = Signal(int)
 
     def __init__(self, library: Library, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
@@ -46,6 +51,10 @@ class Playback(QObject):
 
         self._output = QAudioOutput()
         self._output.setVolume(0.8)
+        # Relayed through a lambda rather than connected signal-to-signal:
+        # Qt's own volumeChanged carries a C++ float, which will not bind
+        # directly to a Python-declared Signal(float).
+        self._output.volumeChanged.connect(lambda value: self.volume_changed.emit(float(value)))
 
         self._player = QMediaPlayer()
         self._player.setAudioOutput(self._output)
@@ -152,7 +161,9 @@ class Playback(QObject):
             self._load(track, play=True)
 
     def seek(self, milliseconds: int) -> None:
-        self._player.setPosition(max(0, milliseconds))
+        position = max(0, milliseconds)
+        self._player.setPosition(position)
+        self.seeked.emit(position)
 
     def set_volume(self, volume: float) -> None:
         self._output.setVolume(max(0.0, min(1.0, volume)))
@@ -180,6 +191,16 @@ class Playback(QObject):
         mode = self.queue.cycle_repeat()
         self.queue_changed.emit()
         return mode
+
+    def set_shuffle(self, shuffle: bool) -> None:
+        """Set shuffle outright. Toggling is what a button wants; a desktop
+        media control sends the state it wants and expects that state."""
+        self.queue.set_shuffle(bool(shuffle))
+        self.queue_changed.emit()
+
+    def set_repeat(self, mode: Repeat) -> None:
+        self.queue.repeat = mode
+        self.queue_changed.emit()
 
     # ── Loading ───────────────────────────────────────────────────
 

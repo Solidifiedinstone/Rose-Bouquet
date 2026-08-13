@@ -14,8 +14,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="rose-bouquet", description=APP_NAME)
     parser.add_argument("--music-dir", type=Path, action="append",
                         help="scan this folder for music (repeatable, this run only)")
-    parser.add_argument("--section", help="open on: library, albums, playlists, youtube, "
-                                          "import, downloads, server")
+    parser.add_argument("--section", help="open on: feed, shorts, subscriptions, browse, "
+                                          "library, albums, playlists, youtube, import, "
+                                          "downloads, disc, server")
     parser.add_argument("--serve", action="store_true",
                         help="start the network server on launch")
     parser.add_argument("--theme", help="start with this theme, ignoring the saved one")
@@ -58,12 +59,72 @@ def _icon():
     return icon
 
 
+def _log_to_file(level: int) -> None:
+    """Keep a rolling log on disk as well as on the terminal.
+
+    Most people run this from a launcher, where stdout goes nowhere anybody
+    can read it — so when something misbehaves there is no record of it at all
+    and the only evidence is what the user managed to describe. One capped file
+    costs nothing and turns "it did nothing" into something answerable.
+    """
+    import logging.handlers
+
+    try:
+        from rose_bouquet.core.library import data_dir
+
+        folder = data_dir() / "logs"
+        folder.mkdir(parents=True, exist_ok=True)
+
+        handler = logging.handlers.RotatingFileHandler(
+            folder / "rose-bouquet.log", maxBytes=512_000, backupCount=2, encoding="utf-8",
+        )
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s: %(message)s", datefmt="%H:%M:%S"))
+        handler.setLevel(level)
+
+        root = logging.getLogger()
+        root.addHandler(handler)
+        root.setLevel(min(root.level, level))
+    except OSError:
+        # A read-only home is not a reason to refuse to start.
+        pass
+
+
+def _log_crashes() -> None:
+    """Send anything that escapes to the log as well as the terminal.
+
+    Qt keeps running after an exception in a callback, which is merciful but
+    silent: the traceback goes to a terminal nobody launched the app from, and
+    the only evidence left is a user saying it did something odd. A shipped
+    app has to leave a record of its own bugs.
+    """
+    import sys
+
+    previous = sys.excepthook
+
+    def hook(kind, value, traceback) -> None:
+        logging.getLogger("rose_bouquet").critical(
+            "unhandled error", exc_info=(kind, value, traceback))
+        previous(kind, value, traceback)
+
+    sys.excepthook = hook
+
+    # Qt's own messages are deliberately *not* routed here. Installing a
+    # `qInstallMessageHandler` that logs through Python deadlocked the app on
+    # startup: Qt emits messages from its own threads while holding internal
+    # locks, Python's logging takes locks of its own, and the two met during
+    # multimedia initialisation. The window never appeared. Catching Python's
+    # own escapes — which is what was actually needed — costs none of that.
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.WARNING,
         format="%(levelname)s %(name)s: %(message)s",
     )
+    _log_to_file(logging.DEBUG if args.verbose else logging.INFO)
+    _log_crashes()
 
     from PySide6.QtWidgets import QApplication
 
@@ -96,6 +157,12 @@ def main(argv: list[str] | None = None) -> int:
 
     window = MainWindow(preferences)
     window.show()
+
+    # A definite marker that startup finished. Worth a line on its own: a
+    # hung app is still a running app, so "the process is alive" proves
+    # nothing — this is the difference between started and merely launched.
+    logging.getLogger("rose_bouquet").info("started")
+
     return app.exec()
 
 

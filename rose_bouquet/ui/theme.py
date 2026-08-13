@@ -10,7 +10,7 @@ them to:
     borders are.
 
 Keeping them apart is the whole point. Someone who loves Gruvbox but wants sharp
-corners, or Rosé Pine at a denser spacing, should not have to choose between
+corners, or Rosé Pine with heavier borders, should not have to choose between
 them or hand-edit a stylesheet — any theme composes with any style, and each
 axis of a style can be overridden on its own.
 
@@ -49,8 +49,7 @@ class Style:
     radius_large: int = 18
     radius_small: int = 8
 
-    #: Gap between panels, and the padding inside them.
-    spacing: int = 18
+    #: Padding inside panels.
     padding: int = 10
 
     #: Base font size in points. Everything else scales off it.
@@ -368,7 +367,7 @@ STYLES: dict[str, Style] = {
     "soft": Style(
         name="Soft",
         radius=18, radius_large=26, radius_small=12,
-        spacing=20, padding=12,
+        padding=12,
     ),
     "pill": Style(
         name="Pill",
@@ -376,19 +375,19 @@ STYLES: dict[str, Style] = {
         # capsule. Qt clamps a radius to half the shorter side, which is what
         # makes one absurd number do the right thing at every control size.
         radius=999, radius_large=28, radius_small=999,
-        spacing=18, padding=11,
+        padding=11,
     ),
     "compact": Style(
         name="Compact",
         radius=8, radius_large=12, radius_small=6,
-        spacing=10, padding=6,
+        padding=6,
         font_size=13, heading_size=20,
         editor_font_size=13, line_height=130, editor_margin=14,
     ),
     "spacious": Style(
         name="Spacious",
         radius=14, radius_large=22, radius_small=10,
-        spacing=28, padding=15,
+        padding=15,
         font_size=15, heading_size=28,
         editor_font_size=17, line_height=170, editor_margin=40,
     ),
@@ -409,7 +408,7 @@ STYLES: dict[str, Style] = {
         # For anyone who thinks in plain text: monospace body, tight corners,
         # and the leading a terminal would give you.
         radius=4, radius_large=6, radius_small=2,
-        spacing=14, padding=8,
+        padding=8,
         editor_font_size=15, line_height=140,
         editor_monospace=True, editor_margin=32,
     ),
@@ -418,7 +417,7 @@ STYLES: dict[str, Style] = {
         # Long-form prose: wide margins, generous leading, large type. The
         # interface recedes and the text is the only thing on screen.
         radius=10, radius_large=16, radius_small=6,
-        spacing=24, padding=13,
+        padding=13,
         font_size=15, heading_size=27,
         border_width=0,
         editor_font_size=18, line_height=185, editor_margin=64,
@@ -427,7 +426,7 @@ STYLES: dict[str, Style] = {
     "big-text": Style(
         name="Big Text",
         radius=12, radius_large=18, radius_small=8,
-        spacing=20, padding=12,
+        padding=12,
         font_size=17, heading_size=30,
         editor_font_size=20, line_height=165, editor_margin=32,
     ),
@@ -442,7 +441,6 @@ _default_style = STYLES[DEFAULT_STYLE]
 RADIUS_LARGE = _default_style.radius_large
 RADIUS = _default_style.radius
 RADIUS_SMALL = _default_style.radius_small
-SPACING = _default_style.spacing
 
 
 def set_active_style(style: "Style") -> None:
@@ -458,11 +456,10 @@ def set_active_style(style: "Style") -> None:
     and would never see an update. Callers that want to follow the style must
     reach it through the module, `ui_theme.RADIUS`.
     """
-    global RADIUS, RADIUS_LARGE, RADIUS_SMALL, SPACING
+    global RADIUS, RADIUS_LARGE, RADIUS_SMALL
     RADIUS = style.radius
     RADIUS_LARGE = style.radius_large
     RADIUS_SMALL = style.radius_small
-    SPACING = style.spacing
 
 
 @dataclass
@@ -674,6 +671,41 @@ def stylesheet(theme: Theme, style: Optional[Style] = None) -> str:
         width: 1px;
     }}
 
+    /* ── List rows ──────────────────────────────────────────────
+       Defined once here rather than per row. Qt re-parses a stylesheet for
+       every widget it is set on, and a hundred-row list doing that twice per
+       row measured at 428ms of blocked interface against 35ms without —
+       twelve times the cost, to say the same thing a hundred times over. */
+
+    #TrackRow {{
+        background-color: transparent;
+        border-radius: {RADIUS}px;
+    }}
+
+    #TrackRow:hover {{
+        background-color: {theme.panel};
+    }}
+
+    #RowTitle {{
+        color: {theme.text};
+        background: transparent;
+    }}
+
+    /* The playing row, selected on a property so that marking a row playing
+       is a repaint rather than a fresh stylesheet. */
+    #TrackRow[playing="true"] #RowTitle {{
+        color: {theme.accent};
+        font-weight: 600;
+    }}
+
+    QPushButton#Quiet[liked="true"] {{
+        color: {theme.accent};
+    }}
+
+    QPushButton#Quiet[liked="false"] {{
+        color: {theme.text_dim};
+    }}
+
     /* ── Buttons ────────────────────────────────────────────── */
 
     QPushButton {{
@@ -721,6 +753,24 @@ def stylesheet(theme: Theme, style: Optional[Style] = None) -> str:
     QPushButton#Quiet:hover {{
         background-color: {theme.elevated};
         color: {theme.text};
+    }}
+
+    /* The sidebar's pull-in toggle. Sits at the top of the rail and has to
+       look the same at both widths, since it is all that is left when the
+       sidebar is closed. */
+    QPushButton#SidebarToggle {{
+        background-color: transparent;
+        border: none;
+        border-radius: {RADIUS_SMALL}px;
+        padding: 4px;
+        color: {theme.text_dim};
+        font-size: 15px;
+        text-align: center;
+    }}
+
+    QPushButton#SidebarToggle:hover {{
+        background-color: {theme.elevated};
+        color: {theme.accent};
     }}
 
     /* ── The note list ──────────────────────────────────────── */

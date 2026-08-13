@@ -24,6 +24,7 @@ Everything is best-effort: a row that cannot be read is skipped, not fatal.
 from __future__ import annotations
 
 import csv
+import html
 import json
 import logging
 import re
@@ -43,6 +44,15 @@ HTML_ENTRY = re.compile(
     r'<div class="content-cell[^"]*">(.*?)</div>', re.S | re.I
 )
 HTML_LINK = re.compile(r'<a href="([^"]+)">([^<]*)</a>', re.S)
+
+#: The date at the end of an HTML cell: "Aug 12, 2026, 5:16:39 PM PDT".
+#: The trailing zone abbreviation is deliberately left out of the capture —
+#: `%Z` only knows a couple of them, and an hour's error either way means
+#: nothing to a decay measured in months.
+HTML_DATE = re.compile(
+    r"([A-Z][a-z]{2}\s+\d{1,2},\s+\d{4},\s+\d{1,2}:\d{2}:\d{2}\s*[AP]M)"
+)
+HTML_DATE_FORMATS = ("%b %d, %Y, %I:%M:%S %p", "%b %d, %Y, %H:%M:%S")
 
 #: Watch history can be enormous. Only the most recent entries say anything
 #: useful about current taste, and reading 200,000 rows to weight them at
@@ -88,6 +98,10 @@ class TakeoutData:
 
 def _clean_title(title: str) -> str:
     """Takeout prefixes history entries with "Watched "."""
+    # The HTML export is HTML, so its titles carry entities: without this,
+    # every apostrophe in the feed reads as "It&#39;s".
+    title = html.unescape(title)
+
     for prefix in ("Watched ", "Viewed ", "Watched a video that has been removed"):
         if title.startswith(prefix):
             return title[len(prefix):].strip()
@@ -136,6 +150,30 @@ def parse_watch_history_json(text: str, limit: int = HISTORY_LIMIT) -> list[Watc
     return watched
 
 
+def _html_date(cell: str) -> str:
+    """The watch date out of an HTML cell, as ISO. "" if it cannot be read.
+
+    Without this every imported video is stamped with the moment of import, and
+    a decade of history all lands on today — which tells the feed that a video
+    watched in 2019 is as current as one watched this morning.
+    """
+    # Takeout separates the time from AM/PM with a narrow no-break space, and
+    # `strptime` will not match that against a plain space in the format.
+    text = cell.replace("\u202f", " ").replace("\xa0", " ")
+
+    match = HTML_DATE.search(text)
+    if not match:
+        return ""
+
+    stamp = re.sub(r"\s+", " ", match.group(1)).strip()
+    for fmt in HTML_DATE_FORMATS:
+        try:
+            return datetime.strptime(stamp, fmt).isoformat(timespec="seconds")
+        except ValueError:
+            continue
+    return ""
+
+
 def parse_watch_history_html(text: str, limit: int = HISTORY_LIMIT) -> list[Watched]:
     """The HTML watch history export, for anyone who forgot to pick JSON."""
     watched: list[Watched] = []
@@ -161,6 +199,7 @@ def parse_watch_history_html(text: str, limit: int = HISTORY_LIMIT) -> list[Watc
             title=_clean_title(video_title),
             channel=channel.strip(),
             channel_id=channel_id,
+            at=_html_date(cell),
         ))
         if len(watched) >= limit:
             break

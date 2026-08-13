@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QMenu,
     QPushButton,
     QScrollArea,
     QSlider,
@@ -41,9 +43,33 @@ from rose_bouquet.ui.preferences import (
     save_credentials,
 )
 from rose_bouquet.ui.theme import Appearance, list_style_names, list_theme_names
-from rose_bouquet.ui.visualizer import Shape
+from rose_bouquet.ui.visualizer import (
+    DEFAULT_COLOURS,
+    MAX_COLOURS,
+    MAX_SCALE,
+    MIN_COLOURS,
+    MIN_SCALE,
+    ColourMode,
+    ColourMotion,
+    Shape,
+)
 
 APPLY_DELAY_MS = 40
+
+
+class _StayOpenMenu(QMenu):
+    """A menu that stays open while tick boxes are being ticked.
+
+    Qt closes a menu the moment any action is triggered, which for a
+    multiple-choice menu means reopening it for every single choice.
+    """
+
+    def mouseReleaseEvent(self, event) -> None:
+        action = self.activeAction()
+        if action is not None and action.isCheckable() and action.isEnabled():
+            action.trigger()
+            return
+        super().mouseReleaseEvent(event)
 
 
 class SettingsDialog(QDialog):
@@ -53,10 +79,17 @@ class SettingsDialog(QDialog):
     library_changed = Signal()
     visualizer_changed = Signal()
     server_changed = Signal()
+    interests_changed = Signal()
 
-    def __init__(self, preferences: Preferences, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, preferences: Preferences, tastes=None,
+                 parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.preferences = preferences
+        #: The taste profile, for the Interests tab. Optional so the dialog
+        #: can still be built without one.
+        from rose_bouquet.core.tastes import Tastes
+
+        self.tastes = tastes if tastes is not None else Tastes()
         self.appearance = preferences.appearance()
 
         self.setWindowTitle(f"{APP_NAME} — Settings")
@@ -74,6 +107,7 @@ class SettingsDialog(QDialog):
         tabs = QTabWidget()
         tabs.addTab(self._appearance_tab(), "Appearance")
         tabs.addTab(self._visualizer_tab(), "Visualiser")
+        tabs.addTab(self._interests_tab(), "Interests")
         tabs.addTab(self._library_tab(), "Library")
         tabs.addTab(self._downloads_tab(), "Downloads")
         tabs.addTab(self._server_tab(), "Serving")
@@ -180,6 +214,116 @@ class SettingsDialog(QDialog):
 
         return None
 
+    # ── Interests ─────────────────────────────────────────────────
+
+    def _interests_tab(self) -> QWidget:
+        """What the feeds should look for, and what they must never show."""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(10)
+
+        note = QLabel(
+            "The feeds work out what you like from what you watch. This is "
+            "where you say it outright.\n\n"
+            "Anything you type here outranks anything worked out for you — "
+            "you know what you want and the guessing does not. Blocked topics "
+            "are removed entirely rather than merely shown less."
+        )
+        note.setObjectName("Subtle")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        self.wanted_list, wanted_box = self._topic_editor(
+            "Show me more of", "a topic — 'guitar pedals', 'speedruns'")
+        layout.addWidget(wanted_box)
+
+        self.blocked_list, blocked_box = self._topic_editor(
+            "Never show me", "a topic to block — 'politics', 'gambling'")
+        layout.addWidget(blocked_box)
+
+        self.blocked_channels_list, channels_box = self._topic_editor(
+            "Never show these channels", "a channel name")
+        layout.addWidget(channels_box)
+
+        derived = QLabel()
+        derived.setObjectName("Subtle")
+        derived.setWordWrap(True)
+        self.derived_label = derived
+        layout.addWidget(derived)
+        self._show_derived()
+
+        layout.addStretch(1)
+        return page
+
+    def _topic_editor(self, title: str, placeholder: str):
+        """A labelled list you can add to and remove from."""
+        box = QWidget()
+        outer = QVBoxLayout(box)
+        outer.setContentsMargins(0, 4, 0, 4)
+        outer.setSpacing(4)
+
+        heading = QLabel(title)
+        heading.setStyleSheet("font-weight: 600;")
+        outer.addWidget(heading)
+
+        listing = QListWidget()
+        listing.setMaximumHeight(84)
+        outer.addWidget(listing)
+
+        row = QHBoxLayout()
+        field = QLineEdit()
+        field.setPlaceholderText(placeholder)
+        row.addWidget(field, 1)
+
+        add = QPushButton("Add")
+        row.addWidget(add)
+        remove = QPushButton("Remove")
+        remove.setObjectName("Quiet")
+        row.addWidget(remove)
+        outer.addLayout(row)
+
+        def add_one() -> None:
+            text = field.text().strip()
+            if text and not listing.findItems(text, Qt.MatchFlag.MatchFixedString):
+                listing.addItem(text)
+                field.clear()
+                self._save_interests()
+
+        def remove_one() -> None:
+            for item in listing.selectedItems():
+                listing.takeItem(listing.row(item))
+            self._save_interests()
+
+        add.clicked.connect(add_one)
+        field.returnPressed.connect(add_one)
+        remove.clicked.connect(remove_one)
+        return listing, box
+
+    def _show_derived(self) -> None:
+        """What it worked out on its own, so the guessing is visible."""
+        from rose_bouquet.core.interests import derive_topics
+
+        topics = [word for word, _ in derive_topics(self.tastes)[:12]]
+        self.derived_label.setText(
+            "Worked out from what you watch: " + ", ".join(topics)
+            if topics else
+            "Nothing worked out yet — watch a few things and this fills in."
+        )
+
+    def _save_interests(self) -> None:
+        from rose_bouquet.core.interests import Interests
+
+        def items(listing) -> list:
+            return [listing.item(i).text() for i in range(listing.count())]
+
+        self.tastes.interests = Interests(
+            wanted=items(self.wanted_list),
+            blocked=items(self.blocked_list),
+            blocked_channels=items(self.blocked_channels_list),
+        )
+        self.tastes.save()
+        self.interests_changed.emit()
+
     # ── Visualiser ────────────────────────────────────────────────
 
     def _visualizer_tab(self) -> QWidget:
@@ -201,6 +345,89 @@ class SettingsDialog(QDialog):
         self.shape_picker.currentIndexChanged.connect(self._on_visualizer_changed)
         form.addRow("Shape", self.shape_picker)
 
+        self.fullscreen_shape_picker = QComboBox()
+        for shape in Shape:
+            self.fullscreen_shape_picker.addItem(shape.label, shape.value)
+        self._select(self.fullscreen_shape_picker,
+                     self.preferences.visualizer_fullscreen_shape)
+        self.fullscreen_shape_picker.currentIndexChanged.connect(self._on_visualizer_changed)
+        form.addRow("Full screen shape", self.fullscreen_shape_picker)
+
+        # Layers. Ticking nothing leaves the single shapes above in charge,
+        # which is what makes this an addition rather than a replacement —
+        # nobody has to learn a new control to keep what they had.
+        self.layer_list = self._layer_menu(self.preferences.visualizer_layers)
+        form.addRow("Stack (bar)", self.layer_list)
+
+        self.fullscreen_layer_list = self._layer_menu(
+            self.preferences.visualizer_fullscreen_layers)
+        form.addRow("Stack (full screen)", self.fullscreen_layer_list)
+
+        # ── Scale ─────────────────────────────────────────────
+        # One size per shape rather than one for everything: a radial figure
+        # and a row of bars want completely different numbers, and a stack of
+        # both needs each set on its own.
+        self.scale_shape = QComboBox()
+        for shape in Shape:
+            group = "Radial" if shape.radial else "Straight"
+            self.scale_shape.addItem(f"{shape.label}  ({group})", shape.value)
+        self.scale_shape.currentIndexChanged.connect(self._load_scale)
+        form.addRow("Scale", self.scale_shape)
+
+        scale_row = QHBoxLayout()
+        self.scale = QSlider(Qt.Orientation.Horizontal)
+        self.scale.setRange(MIN_SCALE, MAX_SCALE)
+        self.scale.setSingleStep(5)
+        self.scale.valueChanged.connect(self._on_scale)
+        scale_row.addWidget(self.scale, 1)
+
+        self.scale_label = QLabel()
+        self.scale_label.setObjectName("Subtle")
+        self.scale_label.setFixedWidth(52)
+        scale_row.addWidget(self.scale_label)
+
+        reset_scale = QPushButton("Reset")
+        reset_scale.setObjectName("Quiet")
+        reset_scale.clicked.connect(lambda: self.scale.setValue(100))
+        scale_row.addWidget(reset_scale)
+        form.addRow("", scale_row)
+        self._load_scale()
+
+        layers_note = QLabel(
+            "Tick several to draw them on top of each other — a turntable "
+            "under radial bars, say. Nothing ticked uses the single shape."
+        )
+        layers_note.setObjectName("Subtle")
+        layers_note.setWordWrap(True)
+        form.addRow("", layers_note)
+
+        # Intensity: a slider rather than a number, because the only way to
+        # choose it is to watch it move and stop when it looks right.
+        intensity_row = QHBoxLayout()
+        self.intensity = QSlider(Qt.Orientation.Horizontal)
+        self.intensity.setRange(20, 400)
+        self.intensity.setSingleStep(5)
+        self.intensity.setValue(self.preferences.visualizer_intensity)
+        self.intensity.valueChanged.connect(self._on_visualizer_changed)
+        intensity_row.addWidget(self.intensity, 1)
+
+        self.intensity_label = QLabel(f"{self.preferences.visualizer_intensity}%")
+        self.intensity_label.setObjectName("Subtle")
+        self.intensity_label.setFixedWidth(52)
+        intensity_row.addWidget(self.intensity_label)
+        form.addRow("Reacts to sound", intensity_row)
+
+        self.fps = QSpinBox()
+        self.fps.setRange(cava.MIN_FRAMERATE, cava.MAX_FRAMERATE)
+        self.fps.setSuffix(" fps")
+        self.fps.setValue(self.preferences.visualizer_fps)
+        self.fps.setToolTip(
+            "Lower this if the visualiser costs too much. It sets cava's rate "
+            "as well as the redraw rate, so 30 really is half the work of 60."
+        )
+        self.fps.valueChanged.connect(self._on_visualizer_changed)
+        form.addRow("Frame rate", self.fps)
+
         self.alpha = QSpinBox()
         self.alpha.setRange(2, 60)
         self.alpha.setSuffix(" %")
@@ -208,16 +435,47 @@ class SettingsDialog(QDialog):
         self.alpha.valueChanged.connect(self._on_visualizer_changed)
         form.addRow("Fill opacity", self.alpha)
 
-        self.blur = QCheckBox("Blur it, like the one in the bar")
+        # ── Colour ────────────────────────────────────────────
+        self.colour_mode = QComboBox()
+        for mode in ColourMode:
+            self.colour_mode.addItem(mode.label, mode.value)
+        self._select(self.colour_mode, self.preferences.visualizer_colour_mode)
+        self.colour_mode.currentIndexChanged.connect(self._on_colour_mode)
+        form.addRow("Colour", self.colour_mode)
+
+        self.colour_motion = QComboBox()
+        for motion in ColourMotion:
+            self.colour_motion.addItem(motion.label, motion.value)
+        self._select(self.colour_motion, self.preferences.visualizer_colour_motion)
+        self.colour_motion.currentIndexChanged.connect(self._on_visualizer_changed)
+        form.addRow("Colour movement", self.colour_motion)
+
+        self.colour_count = QSpinBox()
+        self.colour_count.setRange(MIN_COLOURS, MAX_COLOURS)
+        self.colour_count.setValue(max(MIN_COLOURS, len(self.preferences.visualizer_colours)))
+        self.colour_count.valueChanged.connect(self._on_colour_count)
+        self.colour_count_row = self.colour_count
+        form.addRow("How many colours", self.colour_count)
+
+        self.swatches = QWidget()
+        self.swatch_row = QHBoxLayout(self.swatches)
+        self.swatch_row.setContentsMargins(0, 0, 0, 0)
+        self.swatch_row.setSpacing(6)
+        form.addRow("Colours", self.swatches)
+        self._draw_swatches()
+        self._on_colour_mode()
+
+        self.blur = QCheckBox("Blur")
+        self.blur.setToolTip("Ignored for shapes built from hard edges — "
+                             "bars, blocks and dots.")
         self.blur.setChecked(self.preferences.visualizer_blur)
         self.blur.toggled.connect(self._on_visualizer_changed)
         form.addRow("", self.blur)
 
         note = QLabel(
-            "The visualiser reads cava with the same settings as your Quickshell "
-            "config — waves mode, 50 bars, 60fps — so the player and the bar draw "
-            "the same numbers. It reads system audio, so it also reacts to "
-            "anything else playing."
+            "The visualiser reads cava — waves mode, 50 bars, 60fps. A desktop "
+            "bar set up the same way will draw the same numbers. It reads system "
+            "audio, so it also reacts to anything else playing."
             if cava.available() else
             "cava is not installed, so the visualiser will stay flat. "
             "Install it with your package manager and it will start working."
@@ -228,11 +486,171 @@ class SettingsDialog(QDialog):
 
         return page
 
+    def _layer_menu(self, chosen: list) -> QPushButton:
+        """A drop-down of tick boxes, one per shape.
+
+        A menu rather than a list widget: a list of sixteen shapes either eats
+        a third of the dialog or gets a scrollbar, and scrolling a box to find
+        a tick box is a miserable way to choose anything.
+        """
+        button = QPushButton()
+        button.setObjectName("Quiet")
+
+        menu = _StayOpenMenu(button)
+        button.setMenu(menu)
+        button.shape_actions = []
+
+        for shape in Shape:
+            action = QAction(shape.label, menu)
+            action.setCheckable(True)
+            action.setChecked(shape.value in chosen)
+            action.setData(shape.value)
+            action.toggled.connect(
+                lambda _on, b=button: (self._label_menu(b), self._on_visualizer_changed()))
+            menu.addAction(action)
+            button.shape_actions.append(action)
+
+        menu.addSeparator()
+        clear = QAction("None", menu)
+        clear.triggered.connect(lambda: self._clear_menu(button))
+        menu.addAction(clear)
+
+        self._label_menu(button)
+        return button
+
+    @staticmethod
+    def _label_menu(button: QPushButton) -> None:
+        """Say what is ticked without opening the menu to find out."""
+        chosen = [a.text() for a in button.shape_actions if a.isChecked()]
+        if not chosen:
+            button.setText("Just the shape above  ▾")
+        elif len(chosen) <= 2:
+            button.setText(" + ".join(chosen) + "  ▾")
+        else:
+            button.setText(f"{chosen[0]} + {len(chosen) - 1} more  ▾")
+
+    def _clear_menu(self, button: QPushButton) -> None:
+        for action in button.shape_actions:
+            action.blockSignals(True)
+            action.setChecked(False)
+            action.blockSignals(False)
+        self._label_menu(button)
+        self._on_visualizer_changed()
+
+    @staticmethod
+    def _ticked(button: QPushButton) -> list:
+        return [a.data() for a in button.shape_actions if a.isChecked()]
+
+    def _load_scale(self) -> None:
+        """Show the chosen shape's own size, without saving anything."""
+        shape = self.scale_shape.currentData()
+        value = int(self.preferences.visualizer_scales.get(shape, 100))
+
+        self.scale.blockSignals(True)
+        self.scale.setValue(max(MIN_SCALE, min(MAX_SCALE, value)))
+        self.scale.blockSignals(False)
+        self.scale_label.setText(f"{self.scale.value()}%")
+
+    def _on_scale(self, value: int) -> None:
+        shape = self.scale_shape.currentData()
+        scales = dict(self.preferences.visualizer_scales)
+
+        if value == 100:
+            # Natural size is the absence of a setting, so the file does not
+            # fill up with entries that say "leave this alone".
+            scales.pop(shape, None)
+        else:
+            scales[shape] = value
+
+        self.preferences.visualizer_scales = scales
+        self.scale_label.setText(f"{value}%")
+        self._on_visualizer_changed()
+
+    def _on_colour_mode(self) -> None:
+        """Only show the controls the chosen mode actually uses."""
+        mode = self.colour_mode.currentData()
+        several = mode == ColourMode.MULTI.value
+        chooses = mode in (ColourMode.MULTI.value, ColourMode.SOLID.value)
+
+        self.colour_count.setVisible(several)
+        self.swatches.setVisible(chooses)
+        self._draw_swatches()
+
+        # This runs once while the tab is still being built, before the rest of
+        # the controls exist. Applying then would read half a form.
+        if hasattr(self, "blur"):
+            self._on_visualizer_changed()
+
+    def _on_colour_count(self, count: int) -> None:
+        colours = list(self.preferences.visualizer_colours)
+        while len(colours) < count:
+            # New slots start from the palette rather than from black, so
+            # adding one never makes the visualiser briefly disappear.
+            colours.append(DEFAULT_COLOURS[len(colours) % len(DEFAULT_COLOURS)])
+        self.preferences.visualizer_colours = colours[:count]
+        self._draw_swatches()
+        self._on_visualizer_changed()
+
+    def _draw_swatches(self) -> None:
+        while self.swatch_row.count():
+            item = self.swatch_row.takeAt(0)
+            # Held in a name rather than asked for twice: unparenting clears
+            # the layout item's pointer, so the second `item.widget()` comes
+            # back as None and the delete blows up.
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
+        mode = self.colour_mode.currentData()
+        shown = (1 if mode == ColourMode.SOLID.value
+                 else self.colour_count.value())
+
+        for index in range(min(shown, len(self.preferences.visualizer_colours))):
+            colour = self.preferences.visualizer_colours[index]
+            button = QPushButton()
+            button.setFixedSize(30, 24)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setToolTip(f"{colour} — click to change")
+            button.setStyleSheet(
+                f"background-color: {colour}; border: 1px solid #00000040;"
+                f" border-radius: 5px;")
+            button.clicked.connect(lambda _c=False, i=index: self._pick_colour(i))
+            self.swatch_row.addWidget(button)
+
+        self.swatch_row.addStretch(1)
+
+    def _pick_colour(self, index: int) -> None:
+        from PySide6.QtWidgets import QColorDialog
+
+        current = QColor(self.preferences.visualizer_colours[index])
+        chosen = QColorDialog.getColor(current, self, "Pick a colour")
+        if not chosen.isValid():
+            return
+
+        colours = list(self.preferences.visualizer_colours)
+        colours[index] = chosen.name()
+        self.preferences.visualizer_colours = colours
+        self._draw_swatches()
+        self._on_visualizer_changed()
+
     def _on_visualizer_changed(self) -> None:
         self.preferences.visualizer = self.visualizer_on.isChecked()
         self.preferences.visualizer_shape = self.shape_picker.currentData()
+        self.preferences.visualizer_fullscreen_shape = (
+            self.fullscreen_shape_picker.currentData())
         self.preferences.visualizer_alpha = self.alpha.value()
         self.preferences.visualizer_blur = self.blur.isChecked()
+        self.preferences.visualizer_intensity = self.intensity.value()
+        self.preferences.visualizer_fps = self.fps.value()
+        self.preferences.visualizer_colour_mode = self.colour_mode.currentData()
+        self.preferences.visualizer_colour_motion = self.colour_motion.currentData()
+        self.preferences.visualizer_layers = self._ticked(self.layer_list)
+        self.preferences.visualizer_fullscreen_layers = self._ticked(
+            self.fullscreen_layer_list)
+
+        self.intensity_label.setText(f"{self.intensity.value()}%")
+
         self.preferences.save()
         self.visualizer_changed.emit()
 

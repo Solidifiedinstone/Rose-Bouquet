@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from rose_bouquet.core import artwork
 from rose_bouquet.core.library import Track
 from rose_bouquet.ui.theme import Appearance
 
@@ -83,7 +84,10 @@ class CoverArt(QLabel):
         self.setStyleSheet("background: transparent;")
 
     def set_track(self, track: Optional[Track]) -> None:
-        path = track.cover if track else ""
+        # Not `track.cover`: that is only art sitting *beside* the file, and
+        # most music keeps its cover inside the tags instead — a library with
+        # no `cover.jpg` anywhere would show placeholders from end to end.
+        path = artwork.local_art(track) if track else ""
         self.setPixmap(cover_pixmap(path, self.size_px, self.appearance))
 
     def apply_appearance(self, appearance: Appearance) -> None:
@@ -140,6 +144,7 @@ class TrackRow(QWidget):
         column.setContentsMargins(0, 0, 0, 0)
 
         self.title = QLabel(track.display_title)
+        self.title.setObjectName("RowTitle")
         column.addWidget(self.title)
 
         subtitle = track.display_artist
@@ -164,22 +169,27 @@ class TrackRow(QWidget):
         self.apply_appearance(appearance)
 
     def apply_appearance(self, appearance: Appearance) -> None:
-        self.appearance = appearance
-        theme = appearance.theme
-        radius = appearance.style.radius
+        """Adopt a palette.
 
-        self.setStyleSheet(
-            f"#TrackRow {{ background-color: transparent; border-radius: {radius}px; }}"
-            f"#TrackRow:hover {{ background-color: {theme.panel}; }}"
-        )
-        self.title.setStyleSheet(
-            f"color: {theme.accent if self.playing else theme.text};"
-            f" font-weight: {600 if self.playing else 400}; background: transparent;"
-        )
+        Nothing to set: every colour in a row comes from the window's
+        stylesheet by object name, and the playing state is a property that
+        stylesheet already selects on. Rows used to write their own two
+        stylesheets here, which is what made a long list slow to draw.
+        """
+        self.appearance = appearance
+        self._mark_playing()
 
     def set_playing(self, playing: bool) -> None:
         self.playing = playing
-        self.apply_appearance(self.appearance)
+        self._mark_playing()
+
+    def _mark_playing(self) -> None:
+        # Qt only re-evaluates property selectors when told to, and the rule
+        # lives on the title rather than the row, so the title is what has to
+        # be re-polished.
+        self.setProperty("playing", "true" if self.playing else "false")
+        self.style().unpolish(self.title)
+        self.style().polish(self.title)
 
     def mouseDoubleClickEvent(self, event) -> None:
         self.play_requested.emit(self.track)

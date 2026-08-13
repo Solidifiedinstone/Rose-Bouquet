@@ -30,6 +30,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
+from rose_bouquet.core.interests import Interests
+
 logger = logging.getLogger(__name__)
 
 #: A play counts as real once this much has gone by. Below it, a skip.
@@ -102,6 +104,10 @@ class Signal:
     kind: str = "play"
     #: For plays: how much of it you listened to, 0.0–1.0.
     completion: float = 1.0
+    #: video | short | music. Kept apart because they are different appetites:
+    #: what somebody flicks through at one in the morning should not decide
+    #: what their video feed shows them tomorrow, and the other way round.
+    form: str = "video"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -119,6 +125,10 @@ class Tastes:
     path: Optional[Path] = None
     channels: dict[str, Channel] = field(default_factory=dict)
     signals: list[Signal] = field(default_factory=list)
+    #: Topics asked for by name, and topics never to show. Kept here rather
+    #: than in preferences because it is part of the taste profile — the same
+    #: file you can read, edit or delete to change what the feeds do.
+    interests: Interests = field(default_factory=Interests)
 
     #: History is capped so the file cannot grow without limit. Twenty thousand
     #: signals is years of listening and still a small file.
@@ -160,7 +170,7 @@ class Tastes:
             self.signals = self.signals[-self.limit:]
 
     def like(self, item_id: str, title: str = "", artist: str = "",
-             channel_id: str = "") -> bool:
+             channel_id: str = "", form: str = "video") -> bool:
         """Like something, or take the like back. Returns whether it is liked now."""
         if self.likes(item_id):
             self.signals = [
@@ -173,7 +183,7 @@ class Tastes:
             s for s in self.signals if not (s.id == item_id and s.kind == "dislike")
         ]
         self.record(Signal(id=item_id, title=title, artist=artist,
-                           channel_id=channel_id, kind="like"))
+                           channel_id=channel_id, kind="like", form=form))
         return True
 
     def dislike(self, item_id: str, title: str = "", artist: str = "",
@@ -191,6 +201,15 @@ class Tastes:
     def dislikes(self, item_id: str) -> bool:
         return any(s.id == item_id and s.kind == "dislike" for s in self.signals)
 
+    def of_form(self, *forms: str) -> list[Signal]:
+        """Signals of a given kind of thing — videos, shorts, music.
+
+        Anything recorded before this field existed reads as a video, which is
+        what nearly all of it was.
+        """
+        wanted = set(forms)
+        return [s for s in self.signals if (s.form or "video") in wanted]
+
     def liked(self) -> list[Signal]:
         """Everything liked, most recent first."""
         return sorted(
@@ -199,7 +218,8 @@ class Tastes:
         )
 
     def note_play(self, item_id: str, title: str = "", artist: str = "",
-                  channel_id: str = "", completion: float = 1.0) -> None:
+                  channel_id: str = "", completion: float = 1.0,
+                  form: str = "video") -> None:
         """Record a play — or a skip, which is just as informative.
 
         A skip is kept rather than ignored. "Played it and bailed after ten
@@ -210,6 +230,7 @@ class Tastes:
             id=item_id, title=title, artist=artist, channel_id=channel_id,
             kind="play" if completion >= FINISHED_FRACTION else "skip",
             completion=max(0.0, min(1.0, completion)),
+            form=form,
         ))
 
     def play_count(self, item_id: str) -> int:
@@ -248,6 +269,7 @@ class Tastes:
             "version": 1,
             "channels": [c.to_dict() for c in self.channels.values()],
             "signals": [s.to_dict() for s in self.signals],
+            "interests": self.interests.to_dict(),
         }
 
     @classmethod
@@ -265,6 +287,7 @@ class Tastes:
                 if signal.id:
                     tastes.signals.append(signal)
 
+        tastes.interests = Interests.from_dict(data.get("interests") or {})
         return tastes
 
     @classmethod
