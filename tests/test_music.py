@@ -490,3 +490,50 @@ def test_exactly_one_page_is_flagged_as_probably_truncated():
     hundred = [spotify.SpotifyTrack(title=f"T{i}") for i in range(100)]
     assert spotify.looks_truncated(hundred)
     assert not spotify.looks_truncated(hundred[:99])
+
+
+# ── Readability ───────────────────────────────────────────────────
+
+def test_every_theme_is_readable():
+    """No theme may ship with text you cannot read.
+
+    The palettes come from other people — Dracula, Solarized, Catppuccin — and
+    their dim colours are chosen for their own background, not for the panels
+    and hover rows this app also draws them on. Rather than editing someone
+    else's palette, the stylesheet nudges the colour just far enough to clear
+    the WCAG bar; this test is what stops that quietly regressing.
+    """
+    from rose_bouquet.ui.theme import THEMES, contrast, luminance, readable
+
+    unreadable = []
+    for theme in THEMES.values():
+        surfaces = (theme.background, theme.panel, theme.elevated)
+
+        hardest_dim = min(surfaces, key=lambda s: contrast(theme.text_dim, s))
+        dim = readable(theme.text_dim, hardest_dim, toward=theme.text, target=3.0)
+
+        hardest_text = min(surfaces, key=lambda s: contrast(theme.text, s))
+        away = "#ffffff" if luminance(theme.text) >= luminance(hardest_text) else "#000000"
+        body = readable(theme.text, hardest_text, toward=away, target=4.5)
+
+        for surface in surfaces:
+            if contrast(dim, surface) < 3.0:
+                unreadable.append(f"{theme.name}: dim {contrast(dim, surface):.1f}:1")
+            if contrast(body, surface) < 4.5:
+                unreadable.append(f"{theme.name}: text {contrast(body, surface):.1f}:1")
+
+    assert not unreadable, "; ".join(unreadable)
+
+
+def test_a_colour_that_already_passes_is_left_alone():
+    """A carefully drawn theme must come out exactly as its author drew it."""
+    from rose_bouquet.ui.theme import readable
+
+    assert readable("#ffffff", "#000000", toward="#000000", target=4.5) == "#ffffff"
+
+
+def test_contrast_matches_the_wcag_extremes():
+    from rose_bouquet.ui.theme import contrast
+
+    assert contrast("#000000", "#ffffff") == pytest.approx(21.0, abs=0.1)
+    assert contrast("#777777", "#777777") == pytest.approx(1.0, abs=0.01)

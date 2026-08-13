@@ -528,6 +528,68 @@ def list_style_names() -> list[tuple[str, str]]:
     return [(key, style.name) for key, style in STYLES.items()]
 
 
+# ── Readability ───────────────────────────────────────────────────
+#
+# A palette's "dim" colour is chosen by its author to sit on that palette's
+# background. Rose Bouquet also puts it on panels and raised rows, which are
+# lighter — and on a dozen of the built-in themes that drops subtitles below
+# the 3:1 the WCAG asks for, which is the difference between quiet and unreadable.
+#
+# Rather than editing other people's palettes — a Dracula that is not Dracula's
+# colours is not Dracula — the colour is nudged toward the foreground only as
+# far as it takes to be legible on the surface it is actually drawn on.
+
+def _channels(colour: str) -> tuple[float, float, float]:
+    colour = colour.lstrip("#")
+    if len(colour) == 3:
+        colour = "".join(c * 2 for c in colour)
+    return tuple(int(colour[i:i + 2], 16) / 255 for i in (0, 2, 4))
+
+
+def luminance(colour: str) -> float:
+    """Relative luminance, as the WCAG defines it."""
+    linear = [
+        c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+        for c in _channels(colour)
+    ]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def contrast(one: str, two: str) -> float:
+    """The contrast ratio between two colours, 1.0 to 21.0."""
+    try:
+        first, second = luminance(one), luminance(two)
+    except (ValueError, IndexError):
+        return 21.0
+    lighter, darker = max(first, second), min(first, second)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def _mix(colour: str, other: str, amount: float) -> str:
+    a, b = _channels(colour), _channels(other)
+    blended = [round(255 * (x + (y - x) * amount)) for x, y in zip(a, b)]
+    return "#{:02x}{:02x}{:02x}".format(*blended)
+
+
+def readable(colour: str, background: str, *, toward: str, target: float = 3.0) -> str:
+    """`colour`, nudged toward `toward` until it is legible on `background`.
+
+    Returns the original when it already passes, so a theme that was designed
+    carefully is left exactly as its author drew it.
+    """
+    try:
+        if contrast(colour, background) >= target:
+            return colour
+
+        for step in range(1, 21):
+            candidate = _mix(colour, toward, step / 20)
+            if contrast(candidate, background) >= target:
+                return candidate
+        return toward
+    except (ValueError, IndexError):
+        return colour
+
+
 # ── Stylesheet ────────────────────────────────────────────────────
 
 def stylesheet(theme: Theme, style: Optional[Style] = None) -> str:
@@ -554,10 +616,25 @@ def stylesheet(theme: Theme, style: Optional[Style] = None) -> str:
     RADIUS = style.radius
     RADIUS_SMALL = style.radius_small
 
+    # Dim text lands on the window, on panels, and on rows that lighten under
+    # the pointer. It has to clear the bar against the hardest of the three,
+    # not just the one it was designed for.
+    surfaces = (theme.background, panel_bg, theme.elevated)
+    hardest = min(surfaces, key=lambda surface: contrast(theme.text_dim, surface))
+    dim = readable(theme.text_dim, hardest, toward=theme.text, target=3.0)
+
+    # Body text gets the same guarantee, nudged away from the surface it is
+    # hardest to read on rather than toward an arbitrary black or white.
+    hardest_for_text = min(surfaces, key=lambda surface: contrast(theme.text, surface))
+    # Push the text further in the direction it already sits: lighter on a dark
+    # surface, darker on a light one. Getting this backwards makes it worse.
+    away = "#ffffff" if luminance(theme.text) >= luminance(hardest_for_text) else "#000000"
+    body = readable(theme.text, hardest_for_text, toward=away, target=4.5)
+
     return f"""
     QWidget {{
         background-color: {theme.background};
-        color: {theme.text};
+        color: {body};
         font-size: {style.font_size}px;
     }}
 
@@ -809,7 +886,7 @@ def stylesheet(theme: Theme, style: Optional[Style] = None) -> str:
     }}
 
     QLabel#Subtle {{
-        color: {theme.text_dim};
+        color: {dim};
     }}
 
     QTabWidget::pane {{
