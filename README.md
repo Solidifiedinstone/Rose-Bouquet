@@ -36,7 +36,7 @@ YouTube through a feed built on your phone from what you actually watch.
 ## ⚠️ Vibecoders begone
 
 Yes, this is a vibecoded project. I'm new to programming and still learning
-Python - I couldn't have written all of this myself yet, so I leaned on my Local LLM
+Languages - I couldn't have written all of this myself yet, so I leaned on my Local LLM
 for assistance to get a working prototype off the ground. This is a starting
 point, not a finished, "proper" codebase.
 
