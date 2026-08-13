@@ -332,10 +332,13 @@ None of them touch the network or need an optical drive.
 
 ## Android
 
-`android/` holds a Kotlin/Compose client that speaks the same Subsonic API —
-the client, the Media3 playback service, the settings store and the Rose
-palettes are written; the Compose screens are not finished. It needs JDK 21
-(`sudo pacman -S jdk21-openjdk`) since Android Gradle cannot use JDK 26.
+Rose Bouquet has a native Android client of its own, in a separate repository:
+**[Rose-Bouquet-Android](https://github.com/Solidifiedinstone/Rose-Bouquet-Android)**.
+
+It is a client rather than a second copy of this app — it connects to servers
+instead of being one. Turn on **Serve** here and the phone plays your library
+over the network, and because it speaks plain Subsonic it works just as well
+against Navidrome, Airsonic or Gonic, and against several of them at once.
 
 ## Credits
 
