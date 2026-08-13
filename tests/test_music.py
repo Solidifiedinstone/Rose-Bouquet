@@ -678,3 +678,39 @@ def test_the_wait_can_be_overridden_after_changing_network():
 
     job.blocked_until = ""            # what "Try now" does
     assert job.wait_remaining() == 0
+
+
+def test_the_login_entry_names_an_absolute_command(tmp_path, monkeypatch):
+    """A desktop entry does not inherit a shell's PATH.
+
+    A bare command name works when tested from a terminal and then silently
+    fails at login, which is the trap the app's own desktop entry documents.
+    """
+    from rose_bouquet.core import autostart
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert not autostart.enabled()
+
+    written = autostart.enable()
+    assert written.exists()
+    assert autostart.enabled()
+
+    body = written.read_text()
+    exec_line = next(line for line in body.splitlines() if line.startswith("Exec="))
+    command = exec_line.removeprefix("Exec=").split()[0]
+    assert command.startswith("/"), exec_line
+    assert "--serve-only" in exec_line
+    # No window: it must not turn up in a dock or a task switcher.
+    assert "NoDisplay=true" in body
+
+    autostart.disable()
+    assert not autostart.enabled()
+    assert not written.exists()
+
+
+def test_turning_the_login_entry_off_twice_is_not_an_error(tmp_path, monkeypatch):
+    from rose_bouquet.core import autostart
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    autostart.disable()
+    autostart.disable()

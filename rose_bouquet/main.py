@@ -19,6 +19,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                                           "downloads, disc, server")
     parser.add_argument("--serve", action="store_true",
                         help="start the network server on launch")
+    parser.add_argument("--serve-only", action="store_true",
+                        help="serve the library with no window, and nothing else")
     parser.add_argument("--theme", help="start with this theme, ignoring the saved one")
     parser.add_argument("--style", help="start with this style, ignoring the saved one")
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
@@ -117,6 +119,55 @@ def _log_crashes() -> None:
     # own escapes — which is what was actually needed — costs none of that.
 
 
+def _serve_only(args) -> int:
+    """Serve the library, with no interface at all.
+
+    What the login entry runs. No QApplication is created: a headless server
+    has no windows, and constructing a GUI toolkit to avoid using it would tie
+    this to a graphical session it does not need — the point is that it comes
+    up after a reboot on its own.
+
+    It blocks until killed, which is what an autostarted service should do.
+    """
+    import signal
+    import threading
+
+    from rose_bouquet.core.library import Library
+    from rose_bouquet.core.server import MusicServer
+    from rose_bouquet.ui.preferences import Preferences
+
+    log = logging.getLogger("rose_bouquet")
+
+    preferences = Preferences.load()
+    folders = [Path(f) for f in (args.music_dir or preferences.folders)]
+
+    library = Library.load()
+    if not library.tracks:
+        # A cold start after a reboot has no cached library to serve, and a
+        # server with nothing in it looks broken from the phone.
+        log.info("no cached library; scanning %d folder(s)", len(folders))
+        library.scan(folders)
+        library.save()
+
+    config = preferences.server_config()
+    config.enabled = True
+    server = MusicServer(library, config)
+    server.start()
+
+    log.info("serving %d tracks on port %d", len(library.tracks), config.port)
+    print(f"Serving {len(library.tracks)} tracks on port {config.port}. Ctrl-C to stop.")
+
+    stop = threading.Event()
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    signal.signal(signal.SIGINT, lambda *_: stop.set())
+    try:
+        stop.wait()
+    finally:
+        server.stop()
+        log.info("stopped serving")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     logging.basicConfig(
@@ -125,6 +176,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     _log_to_file(logging.DEBUG if args.verbose else logging.INFO)
     _log_crashes()
+
+    if args.serve_only:
+        return _serve_only(args)
 
     from PySide6.QtWidgets import QApplication
 

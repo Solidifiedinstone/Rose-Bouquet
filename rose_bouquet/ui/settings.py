@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from rose_bouquet.core import autostart
 from rose_bouquet.core.library import music_dir
 from rose_bouquet.core.server import DEFAULT_PORT, new_password
 from rose_bouquet.ui.branding import APP_NAME, APP_TAGLINE, ORGANISATION, rose_widget
@@ -805,6 +806,34 @@ class SettingsDialog(QDialog):
 
     # ── Serving ───────────────────────────────────────────────────
 
+    def _autostart_note(self) -> str:
+        if not autostart.enabled():
+            return ("Runs the server on its own at login — no window, no player. "
+                    "The library is scanned first if there is no cached copy.")
+        return f"Runs at login: {autostart.launcher()}"
+
+    def _on_autostart_toggled(self, on: bool) -> None:
+        """Write or remove the login entry, and say what happened.
+
+        Reported rather than assumed: this writes a file into another
+        program's directory, and a checkbox that silently did nothing — because
+        the desktop ignores XDG autostart, or the directory is not writable —
+        would be indistinguishable from one that worked.
+        """
+        try:
+            if on:
+                autostart.enable()
+            else:
+                autostart.disable()
+        except OSError as error:
+            self.server_autostart.blockSignals(True)
+            self.server_autostart.setChecked(autostart.enabled())
+            self.server_autostart.blockSignals(False)
+            self.autostart_note.setText(f"Could not change that: {error}")
+            return
+
+        self.autostart_note.setText(self._autostart_note())
+
     def _server_tab(self) -> QWidget:
         page = QWidget()
         form = QFormLayout(page)
@@ -816,6 +845,19 @@ class SettingsDialog(QDialog):
         self.server_enabled.setChecked(config.enabled)
         self.server_enabled.toggled.connect(self._on_server_changed)
         form.addRow("", self.server_enabled)
+
+        # Serving is the one thing here somebody wants running whether or not
+        # they are sitting at the machine: the phone should find the library
+        # after a reboot without anybody opening a music player first.
+        self.server_autostart = QCheckBox("Start serving when I log in, without opening the app")
+        self.server_autostart.setChecked(autostart.enabled())
+        self.server_autostart.toggled.connect(self._on_autostart_toggled)
+        form.addRow("", self.server_autostart)
+
+        self.autostart_note = QLabel(self._autostart_note())
+        self.autostart_note.setWordWrap(True)
+        self.autostart_note.setProperty("role", "hint")
+        form.addRow("", self.autostart_note)
 
         self.port = QSpinBox()
         self.port.setRange(1024, 65535)

@@ -1518,10 +1518,14 @@ class MainWindow(QMainWindow):
         from rose_bouquet.core.interests import search_terms
 
         interests = self.tastes.interests
-        terms = search_terms(self.tastes, interests, limit=5)
 
-        artists = [name for name, _ in top_artists(self.tastes, limit=3)]
-        terms = [t for t in terms if t] + [a for a in artists if a]
+        # Artists first, topics second. Browse is the *music* tab, and the
+        # topics are derived from a watch history that is mostly video — asking
+        # YouTube Music about them fills a music shelf with whatever video
+        # subject happened to recur, which is not browsing music.
+        artists = [name for name, _ in top_artists(self.tastes, limit=6)]
+        topics = [t for t in search_terms(self.tastes, interests, limit=3) if t]
+        terms = [a for a in artists if a] + topics
 
         if not terms:
             self.notify("Play something first, or add interests in Settings",
@@ -1537,7 +1541,11 @@ class MainWindow(QMainWindow):
 
             shelves = []
             with ThreadPoolExecutor(max_workers=4) as pool:
-                jobs = {pool.submit(self.ytmusic.search, term, None, 10): term
+                # "songs" rather than no filter. Unfiltered, YouTube Music
+                # returns songs, videos, albums and playlists mixed together,
+                # which is why this tab was full of videos — Watch is the tab
+                # for those.
+                jobs = {pool.submit(self.ytmusic.search, term, "songs", 10): term
                         for term in terms[:6]}
                 for job in as_completed(jobs):
                     term = jobs[job]
@@ -1566,7 +1574,7 @@ class MainWindow(QMainWindow):
         self.show_section("browse")
 
         tasks.run(
-            lambda: self.ytmusic.search(query, None, 30),
+            lambda: self.ytmusic.search(query, "songs", 30),
             on_done=lambda results: view.show_shelves(
                 [(f"Results for “{query}”", results)] if results else []),
             on_error=lambda m: (view.show_shelves([]),
