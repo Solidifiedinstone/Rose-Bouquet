@@ -91,6 +91,10 @@ class ImportJob:
     next_offset: Optional[int] = None
     #: How many tracks the source says the playlist has.
     expected_total: int = 0
+    #: When Spotify will accept requests again, if it has told us to wait.
+    #: Written down so the app can say "in about six hours" rather than
+    #: failing repeatedly and looking broken.
+    blocked_until: str = ""
     path: Optional[Path] = None
 
     # ── Progress ──────────────────────────────────────────────────
@@ -109,6 +113,22 @@ class ImportJob:
             return False
         return not any(e.state in (PENDING, MATCHED) for e in self.entries)
 
+    def wait_remaining(self, now: Optional[datetime] = None) -> int:
+        """Seconds until the source will talk to us again. 0 when it will."""
+        if not self.blocked_until:
+            return 0
+        try:
+            until = datetime.fromisoformat(self.blocked_until)
+        except ValueError:
+            return 0
+        return max(0, int((until - (now or datetime.now())).total_seconds()))
+
+    def block_for(self, seconds: int) -> None:
+        from datetime import timedelta
+
+        self.blocked_until = (datetime.now() + timedelta(seconds=max(0, seconds))).isoformat(
+            timespec="seconds")
+
     @property
     def fully_read(self) -> bool:
         """Whether the whole playlist has been read from the source yet."""
@@ -120,10 +140,17 @@ class ImportJob:
         left = self.total - done - missing - failed
 
         parts = [f"{done} of {self.total} downloaded"]
+
         if not self.fully_read:
             remaining = max(0, self.expected_total - self.total) if self.expected_total else 0
             parts.insert(0, f"{remaining} still to read from Spotify"
                          if remaining else "more still to read from Spotify")
+
+        # The thing stopping progress goes first, because it is the thing the
+        # user needs to know.
+        wait = self.wait_remaining()
+        if wait:
+            parts.insert(0, f"Spotify is rate-limiting this connection for another {_plainly(wait)}")
         if left:
             parts.append(f"{left} to go")
         if missing:
@@ -221,6 +248,7 @@ class ImportJob:
             "partial": self.partial,
             "next_offset": self.next_offset,
             "expected_total": self.expected_total,
+            "blocked_until": self.blocked_until,
             "entries": [e.to_dict() for e in self.entries],
         }
 
@@ -232,6 +260,7 @@ class ImportJob:
             started=str(data.get("started") or ""),
             partial=bool(data.get("partial")),
         )
+        job.blocked_until = str(data.get("blocked_until") or "")
         offset = data.get("next_offset")
         job.next_offset = int(offset) if isinstance(offset, int) else None
         try:
@@ -289,6 +318,15 @@ class ImportJob:
                 return existing
 
         return cls(title=title or "Imported playlist", link=link)
+
+
+def _plainly(seconds: int) -> str:
+    """A wait, in words someone can act on."""
+    hours, remainder = divmod(seconds, 3600)
+    minutes = remainder // 60
+    if hours:
+        return f"{hours}h {minutes}m" if minutes else f"{hours} hours"
+    return f"{minutes} minutes" if minutes else "under a minute"
 
 
 def unfinished(folder: Optional[Path] = None, *, include_finished: bool = False) -> list[ImportJob]:

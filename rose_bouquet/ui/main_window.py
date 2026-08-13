@@ -899,7 +899,7 @@ class MainWindow(QMainWindow):
         def work(report) -> tuple:
             report("Reading the playlist…")
 
-            title, tracks, next_offset, total, problem = "", [], None, 0, ""
+            title, tracks, next_offset, total, problem, wait = "", [], None, 0, "", 0
 
             if link:
                 page = spotify.read_all(
@@ -911,6 +911,7 @@ class MainWindow(QMainWindow):
                 )
                 tracks, next_offset, total = page.tracks, page.next_offset, page.total
                 problem = page.error
+                wait = page.retry_after
 
                 if not tracks and not problem:
                     # Nothing from the API route; the embed still gives the
@@ -923,7 +924,7 @@ class MainWindow(QMainWindow):
                 next_offset = None
 
             if not tracks:
-                return "", spotify.ImportReport(), next_offset, total, problem
+                return "", spotify.ImportReport(), next_offset, total, problem, wait
 
             report(f"Matching {len(tracks)} tracks on YouTube Music")
 
@@ -932,7 +933,7 @@ class MainWindow(QMainWindow):
 
             found = spotify.match_all(tracks, self.ytmusic.best_match, progress=progress)
             found.title = title or (job.title if job else "") or "Imported playlist"
-            return title, found, next_offset, total, problem
+            return title, found, next_offset, total, problem, wait
 
         importer.show_progress("Reading the playlist…")
         tasks.run(
@@ -945,7 +946,7 @@ class MainWindow(QMainWindow):
         )
 
     def _imported(self, outcome, download: bool, job=None) -> None:
-        _title, report, next_offset, expected, problem = outcome
+        _title, report, next_offset, expected, problem, wait = outcome
         importer = self.views["import"]
         importer.show_report(report)
 
@@ -959,6 +960,8 @@ class MainWindow(QMainWindow):
         job.next_offset = next_offset
         job.expected_total = expected or job.expected_total
         job.partial = next_offset is not None
+        if wait:
+            job.block_for(wait)
         job.add_tracks([source for source, _found in report.matched] + report.missed)
 
         for source, found in report.matched:
@@ -1058,6 +1061,15 @@ class MainWindow(QMainWindow):
 
         if skipped:
             self.notify(f"{skipped} were already in your library", "info")
+
+        waiting = job.wait_remaining()
+        if waiting and not job.fully_read:
+            # Asking again inside the window just makes the block longer.
+            self.notify(
+                f"Spotify will not answer for another {imports._plainly(waiting)}. "
+                f"The {job.total} already matched can still download.", "warning")
+            self.download_pending(job)
+            return
 
         if not job.fully_read and job.link:
             # There is more playlist to read. Carry on from the exact offset,

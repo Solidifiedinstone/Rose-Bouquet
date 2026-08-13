@@ -630,3 +630,27 @@ def test_a_fully_read_playlist_is_finished_once_downloaded(tmp_path):
     job.note_done("vid", "/music/a.mp3")
 
     assert job.fully_read and job.finished
+
+
+def test_a_rate_limit_window_is_remembered_and_explained(tmp_path):
+    """Being told to come back in a day must read as a wait, not a failure."""
+    from datetime import datetime, timedelta
+
+    from rose_bouquet.core.imports import ImportJob
+
+    job = ImportJob(title="Long one", link="https://open.spotify.com/playlist/abc")
+    job.add_tracks([spotify.SpotifyTrack(title=f"T{i}") for i in range(100)])
+    job.next_offset = 100
+    job.expected_total = 900
+    job.block_for(6 * 3600)
+
+    assert 5.9 * 3600 < job.wait_remaining() < 6.1 * 3600
+    assert job.summary.startswith("Spotify is rate-limiting this connection")
+    assert "5h 5" in job.summary or "6 hours" in job.summary
+
+    restored = ImportJob.load(job.save(tmp_path))
+    assert restored.wait_remaining() > 0
+
+    # Once the window passes it is simply gone.
+    restored.blocked_until = (datetime.now() - timedelta(minutes=1)).isoformat(timespec="seconds")
+    assert restored.wait_remaining() == 0
