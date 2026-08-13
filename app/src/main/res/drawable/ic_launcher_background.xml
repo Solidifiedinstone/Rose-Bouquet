@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The red tile from the desktop icon, full-bleed.
+
+    An adaptive icon's background must fill the whole 108dp square: the
+    launcher masks it to whatever shape the device uses, so the rounded corners
+    and the border stroke from the SVG are left off here — drawing them would
+    put a rounded rectangle inside the launcher's own circle.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path android:pathData="M0,0h108v108h-108z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="0" android:startY="0"
+                android:endX="108" android:endY="108">
+                <item android:offset="0" android:color="#FF5C1420" />
+                <item android:offset="1" android:color="#FF1A0507" />
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>

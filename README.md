@@ -16,9 +16,10 @@
                 \|
 ```
 
-# Rose Bouquet for Android
+# Bouquet
 
-**Your own music server in your pocket, and YouTube without the algorithm.**
+**Rose Bouquet for Android.** Your own music server in your pocket, and
+YouTube without the algorithm.
 
 A native Android client for [Rose Bouquet](https://github.com/Solidifiedinstone/Rose-Bouquet)
 — and for Navidrome, Airsonic, Gonic or anything else that speaks Subsonic.
@@ -90,6 +91,16 @@ you never want to see, by topic or by channel. Blocking removes; it does not
 "reduce". There is also a filter for engagement bait and AI slop, on by
 default, which matches on word boundaries so it catches `(AI COVER)` without
 eating a Sorabji piano recital.
+
+**The visualiser**, with the desktop's 21 shapes — waves, bars, mirrored, the
+radial family, the turntable — layerable over each other, with the four colour
+modes, five motions and a reactivity slider. Driven by Android's own audio
+spectrum rather than cava, from the same shape of data, so the shapes look the
+same.
+
+**Import your history.** A recommender with no history has nothing to work
+from, so Import takes a Google Takeout `.zip` straight from Google — no
+unpacking needed — and a Spotify playlist link or Exportify CSV.
 
 **All 25 Rose themes and 11 styles**, generated from the desktop app's own
 palette data so a theme looks the same on the phone as on the desktop.
@@ -181,9 +192,11 @@ storage, which is as far as the protocol allows.
 Stated plainly rather than left to be discovered:
 
 - **No device testing.** It builds, installs and the logic is unit-tested, but
-  it has not been run against a phone. Playback, the reel and the notification
-  are the parts most likely to need work.
-- **Artists tab.** Albums and playlists are there; browsing by artist is not.
+  it has not been run against a phone. Playback, the reel, the visualiser and
+  the notification are the parts most likely to need work.
+- **Spotify playlist import reads the track list but does not yet match each
+  track to your library or to YouTube Music.** It reports what it found. The
+  Exportify CSV path has the same limit.
 - **No transcoding control.** It plays whatever the server sends. Fine on wifi,
   possibly expensive on mobile data.
 - **Release builds are unminified.** NewPipeExtractor reflects over its own

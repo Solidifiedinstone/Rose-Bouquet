@@ -9,6 +9,10 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import dev.rose.bouquet.ui.screens.ColourMode
+import dev.rose.bouquet.ui.screens.ColourMotion
+import dev.rose.bouquet.ui.screens.Layer
+import dev.rose.bouquet.ui.screens.Shape
 import dev.rose.bouquet.ui.theme.SYSTEM_THEME
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -44,6 +48,10 @@ data class Settings(
     val blockedChannels: Set<String> = emptySet(),
     /** Keep the video half of the app out of the way entirely. */
     val musicOnly: Boolean = false,
+    /** Visualiser shapes, drawn back to front. Empty means nothing is drawn. */
+    val visualiserLayers: List<Layer> = listOf(Layer(Shape.Bars)),
+    /** How hard the visualiser reacts. 1 is unity. */
+    val visualiserIntensity: Float = 1f,
 )
 
 class SettingsStore(private val context: Context) {
@@ -60,6 +68,9 @@ class SettingsStore(private val context: Context) {
         val blocked = stringSetPreferencesKey("blocked")
         val blockedChannels = stringSetPreferencesKey("blocked_channels")
         val musicOnly = booleanPreferencesKey("music_only")
+        val visualiserLayers = stringPreferencesKey("visualiser_layers")
+        val visualiserIntensity = androidx.datastore.preferences.core.floatPreferencesKey(
+            "visualiser_intensity")
     }
 
     val settings: Flow<Settings> = context.settingsDataStore.data.map { p ->
@@ -76,6 +87,9 @@ class SettingsStore(private val context: Context) {
             blocked = p[Keys.blocked] ?: defaults.blocked,
             blockedChannels = p[Keys.blockedChannels] ?: defaults.blockedChannels,
             musicOnly = p[Keys.musicOnly] ?: defaults.musicOnly,
+            visualiserLayers = p[Keys.visualiserLayers]?.let(::decodeLayers)
+                ?: defaults.visualiserLayers,
+            visualiserIntensity = p[Keys.visualiserIntensity] ?: defaults.visualiserIntensity,
         )
     }
 
@@ -90,8 +104,35 @@ class SettingsStore(private val context: Context) {
     suspend fun setBlocked(values: Set<String>) = put(Keys.blocked, values)
     suspend fun setBlockedChannels(values: Set<String>) = put(Keys.blockedChannels, values)
     suspend fun setMusicOnly(on: Boolean) = put(Keys.musicOnly, on)
+    suspend fun setVisualiserIntensity(value: Float) = put(Keys.visualiserIntensity, value)
+    suspend fun setVisualiserLayers(layers: List<Layer>) =
+        put(Keys.visualiserLayers, encodeLayers(layers))
 
     private suspend fun <T> put(key: Preferences.Key<T>, value: T) {
         context.settingsDataStore.edit { it[key] = value }
     }
+}
+
+/**
+ * Layers as one string, `shape:scale:mode:motion` per layer.
+ *
+ * A tiny format rather than JSON because DataStore stores strings and the
+ * alternative is a serialiser for four enums. Anything unparseable is dropped
+ * rather than throwing: a settings file from a newer version naming a shape
+ * this one has never heard of should cost that layer, not the whole app.
+ */
+private fun encodeLayers(layers: List<Layer>): String = layers.joinToString(";") {
+    "${it.shape.key}:${it.scale}:${it.mode.key}:${it.motion.key}"
+}
+
+private fun decodeLayers(raw: String): List<Layer> = raw.split(";").mapNotNull { part ->
+    val fields = part.split(":")
+    val shape = Shape.entries.firstOrNull { it.key == fields.getOrNull(0) } ?: return@mapNotNull null
+    Layer(
+        shape = shape,
+        scale = fields.getOrNull(1)?.toFloatOrNull() ?: 1f,
+        mode = ColourMode.entries.firstOrNull { it.key == fields.getOrNull(2) } ?: ColourMode.Theme,
+        motion = ColourMotion.entries.firstOrNull { it.key == fields.getOrNull(3) }
+            ?: ColourMotion.Static,
+    )
 }

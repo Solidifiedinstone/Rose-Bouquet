@@ -116,6 +116,7 @@ dependencies {
     ksp(libs.androidx.room.compiler)
 
     implementation(libs.newpipe.extractor)
+    implementation(libs.jsoup)
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 
     testImplementation(libs.junit)

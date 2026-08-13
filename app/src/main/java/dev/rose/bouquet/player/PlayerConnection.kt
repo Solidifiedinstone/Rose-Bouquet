@@ -112,6 +112,34 @@ class PlayerConnection(private val context: Context) {
         player.play()
     }
 
+    /**
+     * Play one arbitrary stream — a YouTube track rather than a library song.
+     *
+     * The queue is cleared rather than appended to, because a YouTube result
+     * and a library album are not the same list and interleaving them makes
+     * "next" mean nothing in particular.
+     */
+    fun playUrl(url: String, title: String, artist: String) {
+        val player = controller ?: return
+        queue = emptyList()
+        player.setMediaItem(
+            MediaItem.Builder()
+                .setMediaId(url)
+                .setUri(url)
+                .setMediaMetadata(
+                    MediaMetadata.Builder()
+                        .setTitle(title)
+                        .setArtist(artist)
+                        .setIsBrowsable(false)
+                        .setIsPlayable(true)
+                        .build()
+                )
+                .build()
+        )
+        player.prepare()
+        player.play()
+    }
+
     fun playPause() {
         val player = controller ?: return
         if (player.isPlaying) player.pause() else player.play()

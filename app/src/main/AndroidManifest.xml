@@ -9,6 +9,11 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Only to show the playback notification on Android 13 and later. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- The visualiser. Android classes reading this app's own audio output as
+         recording, so there is no narrower permission to ask for. Requested
+         only when the visualiser is first opened, and refusing costs the
+         visualiser and nothing else. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
         android:name=".RoseApp"

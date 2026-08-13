@@ -14,6 +14,7 @@ datastore = "1.1.4"
 room = "2.6.1"
 coil = "2.7.0"
 newpipe = "v0.24.6"
+jsoup = "1.19.1"
 junit = "4.13.2"
 androidxJunit = "1.2.1"
 espresso = "3.6.1"
@@ -50,6 +51,9 @@ androidx-room-compiler = { group = "androidx.room", name = "room-compiler", vers
 coil-compose = { group = "io.coil-kt", name = "coil-compose", version.ref = "coil" }
 
 newpipe-extractor = { group = "com.github.TeamNewPipe", name = "NewPipeExtractor", version.ref = "newpipe" }
+# Declared explicitly rather than leaned on as a NewPipe transitive: it is used
+# directly to parse Takeout exports, and a transitive can vanish in a version bump.
+jsoup = { group = "org.jsoup", name = "jsoup", version.ref = "jsoup" }
 
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxJunit" }

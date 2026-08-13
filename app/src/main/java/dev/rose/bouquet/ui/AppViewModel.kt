@@ -4,6 +4,8 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.util.UnstableApi
+import android.net.Uri
+import dev.rose.bouquet.data.Imports
 import dev.rose.bouquet.data.MusicRepository
 import dev.rose.bouquet.data.Server
 import dev.rose.bouquet.data.ServerStore
@@ -21,7 +23,10 @@ import dev.rose.bouquet.data.db.WatchEntity
 import dev.rose.bouquet.player.DownloadStore
 import dev.rose.bouquet.player.PlaybackState
 import dev.rose.bouquet.player.PlayerConnection
+import dev.rose.bouquet.ui.screens.Layer
 import dev.rose.bouquet.youtube.Interests
+import dev.rose.bouquet.youtube.deriveTopics
+import dev.rose.bouquet.youtube.keep
 import dev.rose.bouquet.youtube.Recommender
 import dev.rose.bouquet.youtube.Video
 import dev.rose.bouquet.youtube.YouTubeSource
@@ -312,6 +317,98 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         settingsStore.setDownloadOnMobile(on)
         DownloadStore.setAllowMobileData(getApplication(), on)
     }
+
+    // ── Browse ────────────────────────────────────────────────────
+
+    /**
+     * Things near what you listen to, from channels you may never have seen.
+     *
+     * Searches outward from the topics in your own history rather than inward
+     * from your subscriptions — the subscription box is what the Watch tab
+     * already does, and a second copy of it would find nothing new.
+     */
+    suspend fun browse(): List<Video> {
+        val history = youtubeDao.recent(shorts = false, limit = 200)
+        val liked = youtubeDao.opinions(liked = true)
+        val topics = deriveTopics(history.map { it.title } + liked.map { it.title })
+        if (topics.isEmpty()) return emptyList()
+
+        val watched = youtubeDao.watchedIds().toSet()
+        val seenChannels = history.mapNotNullTo(mutableSetOf()) { it.channelId }
+
+        val found = topics.take(6)
+            .flatMap { YouTubeSource.search(it, limit = 10) }
+            .filter { it.id !in watched }
+            // The whole point is reach, so anything from a channel already in
+            // the history is dropped rather than merely ranked lower.
+            .filter { it.channelId !in seenChannels }
+            .distinctBy { it.id }
+        return keep(found, interests(), title = { it.title }, channel = { it.channel })
+    }
+
+    // ── YouTube as music ──────────────────────────────────────────
+
+    fun playYouTubeAudio(video: Video) {
+        viewModelScope.launch {
+            _status.value = "Finding audio for ${video.title}…"
+            val playable = YouTubeSource.audioStream(video.url)
+            if (playable == null) {
+                _status.value = "Could not get audio for that"
+                return@launch
+            }
+            player.playUrl(playable.url, video.title, video.channel)
+            _status.value = null
+        }
+    }
+
+    fun downloadYouTubeAudio(video: Video) {
+        val app = getApplication<Application>()
+        viewModelScope.launch {
+            _status.value = "Finding audio for ${video.title}…"
+            val playable = YouTubeSource.audioStream(video.url)
+            if (playable == null) {
+                _status.value = "Could not get audio for that"
+                return@launch
+            }
+            DownloadStore.download(app, "yt:" + video.id, playable.url, video.title)
+            _status.value = "Downloading ${video.title}"
+        }
+    }
+
+    // ── Imports ───────────────────────────────────────────────────
+
+    suspend fun importTakeout(uri: Uri): String {
+        val result = Imports.takeout(getApplication(), uri)
+        // A fresh history is worth nothing until something is built from it.
+        if (result.added > 0) buildFeed(shorts = false)
+        return result.message
+    }
+
+    suspend fun importSpotify(url: String): String {
+        val tracks = Imports.spotifyPlaylist(url)
+        if (tracks.isEmpty()) {
+            return "Nothing came back. Public playlists only, and Spotify refuses " +
+                "anonymous reads past 100 tracks — try an Exportify CSV."
+        }
+        val capped = if (tracks.size >= 100)
+            " That is Spotify's anonymous limit, so the playlist may be longer — " +
+                "an Exportify CSV imports all of it." else ""
+        return "Found ${tracks.size} tracks." + capped
+    }
+
+    suspend fun importExportify(uri: Uri): String {
+        val tracks = Imports.exportifyCsv(getApplication(), uri)
+        return if (tracks.isEmpty()) "No tracks in that CSV — is it an Exportify export?"
+        else "Read ${tracks.size} tracks from that CSV."
+    }
+
+    // ── Visualiser ────────────────────────────────────────────────
+
+    fun setVisualiserLayers(layers: List<Layer>) =
+        viewModelScope.launch { settingsStore.setVisualiserLayers(layers) }
+
+    fun setVisualiserIntensity(value: Float) =
+        viewModelScope.launch { settingsStore.setVisualiserIntensity(value) }
 
     fun clearStatus() { _status.value = null }
 }

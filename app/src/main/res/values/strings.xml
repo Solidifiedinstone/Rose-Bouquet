@@ -1,3 +1,5 @@
 <resources>
-    <string name="app_name">Rose Bouquet</string>
+    <!-- The launcher label. Short on purpose: "Rose Bouquet for Android" is
+         what the project is called, "Bouquet" is what fits under an icon. -->
+    <string name="app_name">Bouquet</string>
 </resources>
