@@ -7,6 +7,7 @@ import androidx.media3.common.util.UnstableApi
 import android.net.Uri
 import dev.rose.bouquet.data.Imports
 import dev.rose.bouquet.data.MusicRepository
+import dev.rose.bouquet.data.Network
 import dev.rose.bouquet.data.Server
 import dev.rose.bouquet.data.ServerStore
 import dev.rose.bouquet.data.Settings
@@ -199,13 +200,45 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun play(songs: List<SongEntity>, startAt: Int = 0) {
         val server = activeServer.value ?: return
-        player.play(server, songs, startAt) { repository.streamUrl(server, it.id) }
-        if (settings.value.scrobble) {
+        val current = settings.value
+        val metered = !Network.unmetered(getApplication())
+
+        // Streaming on mobile data when the user asked us not to. Downloaded
+        // tracks still play — they cost nothing — so the queue is narrowed to
+        // those rather than refusing outright.
+        if (current.wifiOnlyStreaming && metered) {
+            val offline = songs.filter { it.downloaded }
+            if (offline.isEmpty()) {
+                _status.value = "Streaming is set to wifi only, and none of this is downloaded"
+                return
+            }
+            val start = offline.indexOfFirst { it.id == songs.getOrNull(startAt)?.id }
+            _status.value = "Wifi only — playing the ${offline.size} downloaded of these"
+            player.play(server, offline, start.coerceAtLeast(0)) {
+                repository.streamUrl(server, it.id, bitrateFor(current, metered))
+            }
+            return
+        }
+
+        player.play(server, songs, startAt) {
+            repository.streamUrl(server, it.id, bitrateFor(current, metered))
+        }
+        if (current.scrobble) {
             songs.getOrNull(startAt)?.let { song ->
                 viewModelScope.launch { repository.scrobble(server, song.id) }
             }
         }
     }
+
+    /**
+     * The bitrate ceiling to ask the server for.
+     *
+     * Only applied on a metered connection. On wifi there is no reason to ask
+     * for a worse copy of music you already own, and a ceiling that applied
+     * everywhere would quietly degrade the case it was never meant to affect.
+     */
+    private fun bitrateFor(current: Settings, metered: Boolean) =
+        if (metered) current.maxBitrate else 0
 
     fun coverUrl(coverArt: String?, size: Int = 512): String? =
         activeServer.value?.let { repository.coverUrl(it, coverArt, size) }
@@ -308,6 +341,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun setScrobble(on: Boolean) = viewModelScope.launch { settingsStore.setScrobble(on) }
     fun setFilterSlop(on: Boolean) = viewModelScope.launch { settingsStore.setFilterSlop(on) }
     fun setMusicOnly(on: Boolean) = viewModelScope.launch { settingsStore.setMusicOnly(on) }
+    fun setMaxBitrate(kbps: Int) = viewModelScope.launch { settingsStore.setMaxBitrate(kbps) }
+    fun setWifiOnlyStreaming(on: Boolean) =
+        viewModelScope.launch { settingsStore.setWifiOnlyStreaming(on) }
     fun setInterests(values: Set<String>) = viewModelScope.launch { settingsStore.setInterests(values) }
     fun setBlocked(values: Set<String>) = viewModelScope.launch { settingsStore.setBlocked(values) }
     fun setBlockedChannels(values: Set<String>) =
@@ -393,13 +429,78 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val capped = if (tracks.size >= 100)
             " That is Spotify's anonymous limit, so the playlist may be longer — " +
                 "an Exportify CSV imports all of it." else ""
-        return "Found ${tracks.size} tracks." + capped
+        return resolve(tracks) + capped
     }
 
     suspend fun importExportify(uri: Uri): String {
         val tracks = Imports.exportifyCsv(getApplication(), uri)
-        return if (tracks.isEmpty()) "No tracks in that CSV — is it an Exportify export?"
-        else "Read ${tracks.size} tracks from that CSV."
+        if (tracks.isEmpty()) return "No tracks in that CSV — is it an Exportify export?"
+        return resolve(tracks)
+    }
+
+    /**
+     * Find each imported track and download it.
+     *
+     * The library on your server is tried first, because a track you already
+     * own should not be fetched off YouTube — and matching there is reliable,
+     * since the server has real tags. Anything missing falls through to
+     * YouTube Music.
+     *
+     * **What it could not find is listed rather than dropped.** An importer
+     * that quietly loses a tenth of a playlist is worse than one that fails
+     * loudly, because you find out months later when the song does not play.
+     */
+    private suspend fun resolve(tracks: List<Imports.Track>): String {
+        val app = getApplication<Application>()
+        val server = activeServer.value
+
+        var owned = 0
+        var fetched = 0
+        val missing = mutableListOf<String>()
+
+        tracks.forEach { track ->
+            _status.value = "Finding ${track.title}…"
+            val query = listOf(track.artist, track.title).filter { it.isNotBlank() }
+                .joinToString(" ")
+
+            // Already on the server?
+            val local = server?.let {
+                runCatching { repository.searchLocal(it, track.title) }.getOrDefault(emptyList())
+            }.orEmpty().firstOrNull { candidate ->
+                track.artist.isBlank() ||
+                    candidate.artist.contains(track.artist, ignoreCase = true) ||
+                    track.artist.contains(candidate.artist, ignoreCase = true)
+            }
+            if (local != null) {
+                owned++
+                return@forEach
+            }
+
+            val match = YouTubeSource.search(query, limit = 1).firstOrNull()
+            if (match == null) {
+                missing += query
+                return@forEach
+            }
+
+            val playable = YouTubeSource.audioStream(match.url)
+            if (playable == null) {
+                missing += query
+            } else {
+                DownloadStore.download(app, "yt:" + match.id, playable.url, match.title)
+                fetched++
+            }
+        }
+
+        _status.value = null
+        return buildString {
+            append("$owned already in your library, $fetched downloaded")
+            if (missing.isNotEmpty()) {
+                append(", ${missing.size} not found:\n")
+                append(missing.take(10).joinToString("\n") { "· $it" })
+                if (missing.size > 10) append("\n…and ${missing.size - 10} more")
+            }
+            append(".")
+        }
     }
 
     // ── Visualiser ────────────────────────────────────────────────

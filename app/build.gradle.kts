@@ -47,12 +47,13 @@ android {
     buildTypes {
         release {
             signingConfig = signingConfigs.getByName("roseRelease")
-            // Off for now. NewPipeExtractor reflects over its own service
-            // classes, so enabling shrinking without the matching keep rules
-            // produces a build that installs and then fails only on YouTube —
-            // the worst kind of failure to ship. Turned on with rules once
-            // there is a device to verify it on.
-            isMinifyEnabled = false
+            // On, with the keep rules in proguard-rules.pro. NewPipeExtractor
+            // and Rhino both resolve classes by name, so shrinking without
+            // those rules yields a build that installs, plays music, and fails
+            // only on YouTube. The rules are what make this safe; check the
+            // Watch tab after any dependency bump.
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
         debug {

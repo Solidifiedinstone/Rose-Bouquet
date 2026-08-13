@@ -9,6 +9,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -211,12 +212,89 @@ object Imports {
             OkHttpClient().newCall(request).execute().use { it.body?.string() }
         }.getOrNull() ?: return@withContext emptyList()
 
-        // The track list is embedded in the page as JSON-LD.
-        val document = Jsoup.parse(body)
-        document.select("meta[name=music:song]").mapNotNull { meta ->
-            val songUrl = meta.attr("content")
-            songUrl.takeIf { it.isNotBlank() }?.let { Track(it.substringAfterLast('/'), "") }
+        parsePlaylistPage(body)
+    }
+
+    /**
+     * Pull titles and artists out of a playlist page.
+     *
+     * Spotify embeds the playlist in a `<script id="__NEXT_DATA__">` blob, and
+     * also emits `music:song` meta tags. The blob carries titles and artists;
+     * the meta tags carry only ids, which are useless for finding the same song
+     * elsewhere. So the blob is tried first and the meta tags are the fallback
+     * that at least reports how long the playlist is.
+     */
+    internal fun parsePlaylistPage(html: String): List<Track> {
+        val document = runCatching { Jsoup.parse(html) }.getOrNull() ?: return emptyList()
+
+        val blob = document.select("script#__NEXT_DATA__").firstOrNull()?.data()
+        if (!blob.isNullOrBlank()) {
+            val tracks = runCatching { parseNextData(blob) }.getOrDefault(emptyList())
+            if (tracks.isNotEmpty()) return tracks
         }
+
+        // Nothing usable in the blob. The meta tags prove the playlist exists
+        // and how big it is, which is worth reporting even without titles.
+        return document.select("meta[name=music:song]").mapNotNull {
+            it.attr("content").takeIf { url -> url.isNotBlank() }
+                ?.let { url -> Track(url.substringAfterLast('/'), "") }
+        }
+    }
+
+    /**
+     * Walk the embedded JSON for anything shaped like a track.
+     *
+     * Deliberately structural rather than following a fixed path: Spotify
+     * reshapes this blob regularly, and a hardcoded path breaks on their
+     * schedule. Any object with a name and an artists list is a track, wherever
+     * it happens to be nested this month.
+     */
+    private fun parseNextData(blob: String): List<Track> {
+        val json = Json { ignoreUnknownKeys = true }
+        val root = json.parseToJsonElement(blob)
+        val found = mutableListOf<Track>()
+
+        fun walk(element: kotlinx.serialization.json.JsonElement) {
+            when (element) {
+                is kotlinx.serialization.json.JsonObject -> {
+                    val name = element["name"]?.jsonPrimitive?.contentOrNull
+                    val artists = element["artists"]
+                    if (!name.isNullOrBlank() && artists != null) {
+                        firstArtistName(artists)?.let { found += Track(name, it) }
+                    }
+                    element.values.forEach(::walk)
+                }
+                is kotlinx.serialization.json.JsonArray -> element.forEach(::walk)
+                else -> Unit
+            }
+        }
+
+        walk(root)
+        return found.distinctBy { it.title.lowercase() to it.artist.lowercase() }
+    }
+
+    /**
+     * The first artist name, from either shape Spotify uses.
+     *
+     * `artists` is sometimes `{"items":[…]}` and sometimes a bare array, and
+     * each entry carries its name either directly or under `profile`. Branching
+     * on the actual type rather than catching the cast failure, because a
+     * runCatching around the whole expression swallows the first shape's
+     * failure *and* skips the fallback — which is how this only ever parsed
+     * Spotify's current layout and silently returned nothing for the other.
+     */
+    private fun firstArtistName(artists: kotlinx.serialization.json.JsonElement): String? {
+        val list = when (artists) {
+            is kotlinx.serialization.json.JsonArray -> artists
+            is kotlinx.serialization.json.JsonObject ->
+                artists["items"] as? kotlinx.serialization.json.JsonArray
+            else -> null
+        } ?: return null
+
+        val entry = list.firstOrNull() as? kotlinx.serialization.json.JsonObject ?: return null
+        val profile = entry["profile"] as? kotlinx.serialization.json.JsonObject
+        return profile?.get("name")?.jsonPrimitive?.contentOrNull
+            ?: entry["name"]?.jsonPrimitive?.contentOrNull
     }
 
     /**

@@ -30,9 +30,9 @@ YouTube through a feed built on your phone from what you actually watch.
 
 ---
 
-> **Status: alpha.** Everything here builds, and the logic that decides what you
-> see is covered by tests. What it has *not* had is months on a real phone
-> against a real server. Expect rough edges and please report them.
+> **Status: alpha.** It builds, installs and runs on a phone, and the logic that
+> decides what you see is covered by tests. What it has not had is months of
+> real use across many devices. Expect rough edges and please report them.
 
 ## ⚠️ Vibecoders begone
 
@@ -98,9 +98,16 @@ modes, five motions and a reactivity slider. Driven by Android's own audio
 spectrum rather than cava, from the same shape of data, so the shapes look the
 same.
 
-**Import your history.** A recommender with no history has nothing to work
-from, so Import takes a Google Takeout `.zip` straight from Google — no
-unpacking needed — and a Spotify playlist link or Exportify CSV.
+**Import your history and your playlists.** A recommender with no history has
+nothing to work from, so Import takes a Google Takeout `.zip` straight from
+Google — no unpacking needed, both the JSON and HTML formats. Spotify playlists
+and Exportify CSVs are matched against your own library first and fetched from
+YouTube Music only where you do not already own the track, and whatever could
+not be found is listed rather than quietly dropped.
+
+**Sensible about mobile data.** Stream on wifi only, and cap the quality the
+server sends when you are not on wifi — both off by default, and neither
+touches what you get on wifi.
 
 **All 25 Rose themes and 11 styles**, generated from the desktop app's own
 palette data so a theme looks the same on the phone as on the desktop.
@@ -191,19 +198,17 @@ storage, which is as far as the protocol allows.
 
 Stated plainly rather than left to be discovered:
 
-- **No device testing.** It builds, installs and the logic is unit-tested, but
-  it has not been run against a phone. Playback, the reel, the visualiser and
-  the notification are the parts most likely to need work.
-- **Spotify playlist import reads the track list but does not yet match each
-  track to your library or to YouTube Music.** It reports what it found. The
-  Exportify CSV path has the same limit.
-- **No transcoding control.** It plays whatever the server sends. Fine on wifi,
-  possibly expensive on mobile data.
-- **Release builds are unminified.** NewPipeExtractor reflects over its own
-  classes, and shipping shrinking without verified keep rules produces a build
-  that installs and then fails only on YouTube — the worst kind of failure.
 - **YouTube will break this periodically.** It is scraped, not an API. When
   YouTube changes a page, extraction fails until NewPipeExtractor is updated.
+  This is inherent to the approach rather than a bug to be fixed.
+- **The visualiser needs `RECORD_AUDIO`,** because Android classes reading an
+  app's own output as recording and offers nothing narrower. It is asked for
+  only when you open the visualiser, and refusing costs the visualiser alone.
+  Some devices and some Bluetooth routes refuse to attach it at all; the screen
+  says so rather than sitting there flat with no explanation.
+- **Release builds are shrunk,** with keep rules for NewPipeExtractor, Rhino
+  and jsoup — all three resolve classes by name. Check the Watch tab after any
+  dependency bump: shrinking is the change that fails only on YouTube.
 
 ## Credits
 

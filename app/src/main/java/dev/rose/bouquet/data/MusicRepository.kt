@@ -138,7 +138,8 @@ class MusicRepository(
 
     // ── URLs ──────────────────────────────────────────────────────
 
-    fun streamUrl(server: Server, songId: String) = client.streamUrl(server, songId)
+    fun streamUrl(server: Server, songId: String, maxBitrateKbps: Int = 0) =
+        client.streamUrl(server, songId, maxBitrateKbps)
     fun downloadUrl(server: Server, songId: String) = client.downloadUrl(server, songId)
     fun coverUrl(server: Server, coverArt: String?, size: Int = 512) =
         client.coverUrl(server, coverArt, size)

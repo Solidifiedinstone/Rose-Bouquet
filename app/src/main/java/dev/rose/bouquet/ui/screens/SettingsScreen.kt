@@ -179,6 +179,16 @@ fun SettingsScreen(model: AppViewModel) {
         }
         item {
             Toggle(
+                "Stream on wifi only",
+                "On mobile data, only downloaded music plays. Nothing is streamed.",
+                settings.wifiOnlyStreaming, model::setWifiOnlyStreaming,
+            )
+        }
+        item {
+            BitrateChoice(settings.maxBitrate, model::setMaxBitrate)
+        }
+        item {
+            Toggle(
                 "Music only",
                 "Hides the Watch and Shorts tabs entirely.",
                 settings.musicOnly, model::setMusicOnly,
@@ -199,6 +209,46 @@ fun SettingsScreen(model: AppViewModel) {
         AddServerDialog(model) { addingServer = false }
     }
 }
+
+/**
+ * The bitrate ceiling asked of the server on mobile data.
+ *
+ * Only on mobile data, which is why the caption says so: a ceiling that applied
+ * on wifi too would quietly hand you a worse copy of music you already own.
+ * A server that cannot transcode ignores it, and then there was never a cheaper
+ * version to be had.
+ */
+@Composable
+private fun BitrateChoice(current: Int, onChange: (Int) -> Unit) {
+    val theme = LocalRoseTheme.current
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+        Text("Quality on mobile data", color = theme.text,
+            style = MaterialTheme.typography.bodyLarge)
+        Text(
+            "Asks the server to transcode down. Only applies on mobile data — " +
+                "wifi always gets the original.",
+            color = theme.textDim, style = MaterialTheme.typography.bodySmall,
+        )
+        Spacer(Modifier.size(8.dp))
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(BITRATES) { (kbps, label) ->
+                FilterChip(
+                    selected = current == kbps,
+                    onClick = { onChange(kbps) },
+                    label = { Text(label) },
+                )
+            }
+        }
+    }
+}
+
+private val BITRATES = listOf(
+    0 to "Original",
+    320 to "320k",
+    192 to "192k",
+    128 to "128k",
+    96 to "96k",
+)
 
 @Composable
 private fun Toggle(title: String, detail: String, value: Boolean, onChange: (Boolean) -> Unit) {

@@ -312,8 +312,27 @@ class SubsonicClient(
 
     // ── URLs handed to the player and the image loader ────────────
 
-    fun streamUrl(server: Server, songId: String): String =
-        endpoint(server, "stream", mapOf("id" to songId)).toString()
+    /**
+     * A URL to stream from.
+     *
+     * [maxBitrateKbps] asks the server to transcode down, which is the whole
+     * point on mobile data: a FLAC rip is perhaps 900 kbps and nobody wants to
+     * spend that on a phone. 0 means "send what you have" — and a server that
+     * cannot transcode ignores the parameter, which is fine, because then
+     * there was never a cheaper version to be had.
+     */
+    fun streamUrl(server: Server, songId: String, maxBitrateKbps: Int = 0): String {
+        val params = buildMap {
+            put("id", songId)
+            if (maxBitrateKbps > 0) {
+                put("maxBitRate", "$maxBitrateKbps")
+                // Naming a container as well, because several servers only
+                // transcode when they know what to transcode *to*.
+                put("format", "mp3")
+            }
+        }
+        return endpoint(server, "stream", params).toString()
+    }
 
     fun downloadUrl(server: Server, songId: String): String =
         endpoint(server, "download", mapOf("id" to songId)).toString()
