@@ -28,9 +28,9 @@ you what it is doing.
 
 ---
 
-> **Status: alpha.** The core works and is tested; some of it has had very
-> little real-world use. Nothing below is a placeholder pretending to be
-> finished — where something only half works, it says so.
+> **In testing — not fully functional.** This is early software under
+> active development. Expect things to be broken or missing, and please
+> report anything that goes wrong.
 
 ## Expect bugs
 
