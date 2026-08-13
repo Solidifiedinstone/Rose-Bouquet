@@ -32,6 +32,9 @@ import dev.rose.bouquet.youtube.Recommender
 import dev.rose.bouquet.youtube.Video
 import dev.rose.bouquet.youtube.YouTubeSource
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -371,29 +374,53 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // ── Browse ────────────────────────────────────────────────────
 
     /**
-     * Things near what you listen to, from channels you may never have seen.
+     * Music near what you already listen to. A shelf per reason.
      *
-     * Searches outward from the topics in your own history rather than inward
-     * from your subscriptions — the subscription box is what the Watch tab
-     * already does, and a second copy of it would find nothing new.
+     * **Music, not video.** Watch is the tab for video; a second one showing
+     * the same thing under a different name is worth nothing. So this asks
+     * about the artists in your own library first and searches for songs by
+     * them, and only falls back to watch-history topics when there is no
+     * library to go on.
      */
-    suspend fun browse(): List<Video> {
-        val history = youtubeDao.recent(shorts = false, limit = 200)
-        val liked = youtubeDao.opinions(liked = true)
-        val topics = deriveTopics(history.map { it.title } + liked.map { it.title })
-        if (topics.isEmpty()) return emptyList()
+    suspend fun browse(): List<Pair<String, List<Video>>> {
+        val artists = songs.value
+            .groupingBy { it.artist }
+            .eachCount()
+            .entries
+            .sortedByDescending { it.value }
+            .map { it.key }
+            .filter { it.isNotBlank() && !it.equals("Unknown artist", ignoreCase = true) }
+            .take(6)
 
-        val watched = youtubeDao.watchedIds().toSet()
-        val seenChannels = history.mapNotNullTo(mutableSetOf()) { it.channelId }
+        val terms: List<Pair<String, String>> =
+            if (artists.isNotEmpty()) {
+                artists.map { it to "More from $it" }
+            } else {
+                // No library yet. Topics are a poorer seed for music — they
+                // come from a watch history that is mostly video — but an
+                // empty shelf is worse.
+                val history = youtubeDao.recent(shorts = false, limit = 200)
+                deriveTopics(history.map { it.title }).take(4)
+                    .map { it to "Because you watch about $it" }
+            }
+        if (terms.isEmpty()) return emptyList()
 
-        val found = topics.take(6)
-            .flatMap { YouTubeSource.search(it, limit = 10) }
-            .filter { it.id !in watched }
-            // The whole point is reach, so anything from a channel already in
-            // the history is dropped rather than merely ranked lower.
-            .filter { it.channelId !in seenChannels }
-            .distinctBy { it.id }
-        return keep(found, interests(), title = { it.title }, channel = { it.channel })
+        return coroutineScope {
+            terms.map { (term, heading) ->
+                async {
+                    // "song" narrows YouTube's results towards music. Without
+                    // it, a search returns interviews and reaction videos and
+                    // this stops being a music tab.
+                    val found = YouTubeSource.search("$term song", limit = 12)
+                        .filter { it.durationSeconds in 1..MUSIC_MAX_SECONDS }
+                        .distinctBy { it.title.lowercase() }
+                    heading to keep(
+                        found, interests(),
+                        title = { it.title }, channel = { it.channel },
+                    )
+                }
+            }.awaitAll().filter { it.second.isNotEmpty() }
+        }
     }
 
     // ── YouTube as music ──────────────────────────────────────────
@@ -534,4 +561,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { settingsStore.setVisualiserColours(colours) }
 
     fun clearStatus() { _status.value = null }
+
+    private companion object {
+        /** Longer than this is a set, a mix or a documentary, not a track. */
+        const val MUSIC_MAX_SECONDS = 720L
+    }
 }

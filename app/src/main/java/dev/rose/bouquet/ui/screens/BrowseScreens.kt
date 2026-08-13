@@ -56,27 +56,21 @@ import dev.rose.bouquet.youtube.Video
 @Composable
 fun BrowseScreen(model: AppViewModel) {
     val theme = LocalRoseTheme.current
-    var results by remember { mutableStateOf<List<Video>>(emptyList()) }
+    var shelves by remember { mutableStateOf<List<Pair<String, List<Video>>>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
-    var playing by remember { mutableStateOf<Video?>(null) }
 
     LaunchedEffect(Unit) {
-        if (results.isEmpty()) {
+        if (shelves.isEmpty()) {
             loading = true
-            results = model.browse()
+            shelves = model.browse()
             loading = false
         }
     }
 
-    playing?.let { video ->
-        VideoPlayer(model, video.asFeedItem("From Browse"), onBack = { playing = null })
-        return
-    }
-
     Column(Modifier.fillMaxSize()) {
-        SectionHeading("Browse") {
+        SectionHeading("Browse music") {
             Icon(
-                Icons.Default.Refresh, contentDescription = "Find more",
+                Icons.Default.Refresh, contentDescription = "Look again",
                 tint = if (loading) theme.textDim else theme.accent,
                 modifier = Modifier.size(22.dp).clickable(enabled = !loading) {
                     loading = true
@@ -85,33 +79,87 @@ fun BrowseScreen(model: AppViewModel) {
         }
         LoadingLine(loading)
 
-        if (results.isEmpty() && !loading) {
+        if (shelves.isEmpty() && !loading) {
             Empty(
                 "Nothing to browse yet",
-                "Browse looks outward from the topics in your history. Watch a few things " +
-                    "first and it has somewhere to start.",
+                "Browse looks for music by the artists in your library. Connect a server " +
+                    "and scan it, and this fills in.",
             )
         } else {
             LazyColumn(Modifier.fillMaxSize()) {
-                items(results, key = { it.id }) { video ->
-                    Row(
-                        Modifier.fillMaxWidth().clickable { playing = video }.padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Cover(video.thumbnail, Modifier.width(120.dp).aspectRatio(16f / 9f), corner = 8)
-                        Spacer(Modifier.width(12.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(video.title, color = theme.text,
-                                style = MaterialTheme.typography.bodyMedium,
-                                maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            Text(video.channel, color = theme.textDim,
-                                style = MaterialTheme.typography.bodySmall)
-                            Text("${video.viewCount.asCount()} views · ${video.durationSeconds.asClock()}",
-                                color = theme.textDim, style = MaterialTheme.typography.labelSmall)
+                shelves.forEach { (heading, items) ->
+                    item(key = heading) {
+                        Text(
+                            heading,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = theme.text,
+                            modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp),
+                        )
+                    }
+                    item(key = "$heading-row") {
+                        // A shelf per reason, scrolled sideways — the shape the
+                        // desktop app uses, and the shape a music library wants:
+                        // several small groups you can skim, not one long list.
+                        LazyRow(
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                                horizontal = 12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            items(items, key = { it.id }) { track ->
+                                MusicTile(
+                                    track = track,
+                                    onPlay = { model.playYouTubeAudio(track) },
+                                    onDownload = { model.downloadYouTubeAudio(track) },
+                                )
+                            }
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * One track on a Browse shelf.
+ *
+ * Tapping plays it as audio rather than opening a video, because this is the
+ * music tab — the whole distinction from Watch is that nothing here is
+ * something you sit and look at.
+ */
+@Composable
+private fun MusicTile(track: Video, onPlay: () -> Unit, onDownload: () -> Unit) {
+    val theme = LocalRoseTheme.current
+    Column(
+        Modifier
+            .width(150.dp)
+            .clickable(onClick = onPlay)
+            .padding(8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Cover(track.thumbnail, Modifier.fillMaxWidth().aspectRatio(1f), corner = 10)
+        Text(
+            track.title,
+            style = MaterialTheme.typography.bodySmall,
+            color = theme.text,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                track.channel,
+                style = MaterialTheme.typography.labelSmall,
+                color = theme.textDim,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Icon(
+                Icons.Default.Download,
+                contentDescription = "Download",
+                tint = theme.textDim,
+                modifier = Modifier.size(18.dp).clickable(onClick = onDownload),
+            )
         }
     }
 }
