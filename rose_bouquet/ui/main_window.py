@@ -251,6 +251,8 @@ class MainWindow(QMainWindow):
         importer = ImportView(self.appearance)
         importer.import_requested.connect(self.import_spotify)
         importer.resume_requested.connect(self.resume_import)
+        importer.force_resume_requested.connect(
+            lambda job: self.resume_import(job, ignore_wait=True))
         importer.takeout_requested.connect(self.import_takeout)
         importer.status.connect(self.notify)
         self._register("import", importer)
@@ -1053,14 +1055,22 @@ class MainWindow(QMainWindow):
         tasks.run(work, on_done=done,
                   on_error=lambda message: self.notify(f"Could not read that: {message}", "error"))
 
-    def resume_import(self, job) -> None:
-        """Pick up an import that was cut short — reading as well as downloading."""
+    def resume_import(self, job, *, ignore_wait: bool = False) -> None:
+        """Pick up an import that was cut short — reading as well as downloading.
+
+        `ignore_wait` skips the recorded rate-limit window, which is the right
+        thing to do after changing network: the limit was on the old connection.
+        """
         skipped = job.skip_already_downloaded(self.library)
         job.save()
         self.import_job = job
 
         if skipped:
             self.notify(f"{skipped} were already in your library", "info")
+
+        if ignore_wait:
+            job.blocked_until = ""
+            job.save()
 
         waiting = job.wait_remaining()
         if waiting and not job.fully_read:

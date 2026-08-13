@@ -749,6 +749,7 @@ class ImportView(ScrollingView):
 
     import_requested = Signal(str, str, bool)    # link, pasted text, download?
     resume_requested = Signal(object)            # ImportJob
+    force_resume_requested = Signal(object)      # ImportJob, ignoring the wait
     takeout_requested = Signal(str)              # path to a Takeout export
     status = Signal(str, str)
 
@@ -929,6 +930,20 @@ class ImportView(ScrollingView):
         resume.setToolTip("Download what this import still owes, skipping anything you already have")
         resume.clicked.connect(lambda _c=False, job=job: self.resume_requested.emit(job))
         layout.addWidget(resume)
+
+        # The rate limit belongs to the connection, not to the playlist. If you
+        # have moved to another network — a hotspot, a VPN — our own note about
+        # waiting is the only thing in the way, and it should not be.
+        if job.wait_remaining():
+            anyway = QPushButton("Try now")
+            anyway.setToolTip(
+                "Ignore the wait and ask Spotify again.\n\n"
+                "Worth pressing if you have changed network since — the limit "
+                "is on the connection, not on your account."
+            )
+            anyway.clicked.connect(
+                lambda _c=False, job=job: self.force_resume_requested.emit(job))
+            layout.addWidget(anyway)
 
         return row
 

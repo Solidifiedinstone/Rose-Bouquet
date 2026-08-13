@@ -654,3 +654,15 @@ def test_a_rate_limit_window_is_remembered_and_explained(tmp_path):
     # Once the window passes it is simply gone.
     restored.blocked_until = (datetime.now() - timedelta(minutes=1)).isoformat(timespec="seconds")
     assert restored.wait_remaining() == 0
+
+
+def test_the_wait_can_be_overridden_after_changing_network():
+    """The limit is on the connection, so our note about it must be dismissable."""
+    from rose_bouquet.core.imports import ImportJob
+
+    job = ImportJob(title="Long one")
+    job.block_for(86400)
+    assert job.wait_remaining() > 0
+
+    job.blocked_until = ""            # what "Try now" does
+    assert job.wait_remaining() == 0
