@@ -22,17 +22,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.media3.common.util.UnstableApi
 import dev.rose.bouquet.ui.AppViewModel
 import dev.rose.bouquet.ui.LoadingLine
 import dev.rose.bouquet.ui.SectionHeading
 import dev.rose.bouquet.ui.theme.LocalRoseTheme
-import kotlinx.coroutines.launch
 
 /**
  * Import: bring a history and playlists in from elsewhere.
@@ -44,34 +42,22 @@ import kotlinx.coroutines.launch
 @Composable
 fun ImportScreen(model: AppViewModel) {
     val theme = LocalRoseTheme.current
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
 
-    var working by remember { mutableStateOf(false) }
-    var report by remember { mutableStateOf<String?>(null) }
+    // The import itself belongs to the view model, not to this composition: a
+    // Takeout archive takes minutes to read, and a screen's own scope dies the
+    // moment you look at another tab. Here the screen only shows what is going
+    // on and can be left and come back to.
+    val working by model.importing.collectAsState()
+    val report by model.importReport.collectAsState()
     var spotifyUrl by remember { mutableStateOf("") }
 
     val pickTakeout = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        uri ?: return@rememberLauncherForActivityResult
-        scope.launch {
-            working = true
-            report = model.importTakeout(uri)
-            working = false
-        }
-    }
+    ) { uri -> uri?.let(model::importTakeout) }
 
     val pickCsv = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        uri ?: return@rememberLauncherForActivityResult
-        scope.launch {
-            working = true
-            report = model.importExportify(uri)
-            working = false
-        }
-    }
+    ) { uri -> uri?.let(model::importExportify) }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         LoadingLine(working)
@@ -124,13 +110,7 @@ fun ImportScreen(model: AppViewModel) {
         Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
             Button(
                 enabled = !working && spotifyUrl.isNotBlank(),
-                onClick = {
-                    scope.launch {
-                        working = true
-                        report = model.importSpotify(spotifyUrl)
-                        working = false
-                    }
-                },
+                onClick = { model.importSpotify(spotifyUrl) },
             ) { Text("Import playlist") }
             Spacer(Modifier.width(12.dp))
             OutlinedButton(

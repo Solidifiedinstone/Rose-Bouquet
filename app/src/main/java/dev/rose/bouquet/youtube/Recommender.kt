@@ -82,6 +82,16 @@ class Recommender(
                 builtAt = System.currentTimeMillis(),
             )
         }
+        // An empty build must not replace a feed that is already there.
+        //
+        // Every gather source returns an empty list rather than throwing when
+        // the network is gone, so a refresh with no signal arrives here looking
+        // exactly like a successful build of nothing. Storing that wipes the
+        // one thing the feed is stored for — a cold start that draws
+        // immediately — and leaves the tab emptier than before it was
+        // refreshed, which reads as the app having lost the feed.
+        if (feed.isEmpty() && youtube.feedSize(shorts) > 0) return emptyList()
+
         youtube.replaceFeed(shorts, feed)
         return feed
     }
@@ -152,7 +162,13 @@ class Recommender(
         val watched = youtube.watchedIds().toSet()
         val disliked = youtube.dislikedIds().toSet()
         val followedIds = followed.mapTo(mutableSetOf()) { it.id }
-        val channelPlays = history.groupingBy { it.channelId }.eachCount()
+        // Only real channels count. An imported history is full of entries with
+        // no channel at all — Takeout's HTML export frequently has no channel
+        // link, and the JSON one has none for a deleted video — and grouping
+        // those together made "no channel" look like the most-watched channel
+        // in the history, then handed its affinity to every candidate whose
+        // channel could not be parsed either.
+        val channelPlays = history.mapNotNull { it.channelId }.groupingBy { it }.eachCount()
         val wanted = interests.wanted.map { it.lowercase() }
 
         // Best candidate per video id, so the same video arriving from three
@@ -167,7 +183,7 @@ class Recommender(
 
             var score = WEIGHT_BASE
 
-            channelPlays[video.channelId]?.let { plays ->
+            video.channelId?.let { channelPlays[it] }?.let { plays ->
                 score += WEIGHT_AFFINITY * minOf(plays, AFFINITY_CAP) / AFFINITY_CAP.toDouble()
             }
             if (video.channelId in followedIds) score += WEIGHT_FOLLOWING

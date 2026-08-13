@@ -156,4 +156,56 @@ class TakeoutTest {
     fun `a page with no history cells yields nothing and does not hang`() {
         assertTrue(readHtml("<html><body><p>nothing here</p></body></html>").isEmpty())
     }
+
+    // ── When it was watched ───────────────────────────────────────
+
+    /**
+     * The date is inside the cell, and separated from AM/PM by U+202F.
+     *
+     * Both halves of this were real: reading only the body's own text found no
+     * date at all, and Google's narrow no-break space defeats the ordinary
+     * "h:mm:ss a" pattern. Either one alone stamps the whole imported history
+     * with the moment of the import, which leaves the recommender with three
+     * hundred videos all watched at the same second and no idea what is recent.
+     */
+    @Test
+    fun `an html cell carries the time it was watched`() {
+        val record = readHtml(cell("Mar 4, 2026, 12:34:56\u202fPM PST")).single()
+        assertTrue(
+            "the timestamp was not read; it fell back to the import time",
+            record.watchedAt < System.currentTimeMillis() - 60_000,
+        )
+        assertEquals(2026, yearOf(record.watchedAt))
+    }
+
+    @Test
+    fun `an ordinary space before the marker parses too`() {
+        val record = readHtml(cell("Mar 4, 2026, 12:34:56 PM PST")).single()
+        assertEquals(2026, yearOf(record.watchedAt))
+    }
+
+    @Test
+    fun `a cell with no date falls back to now rather than failing`() {
+        val record = readHtml(cell("")).single()
+        assertTrue(record.watchedAt > System.currentTimeMillis() - 60_000)
+    }
+
+    @Test
+    fun `json timestamps are read`() {
+        val record = readJson("""
+            [{"title":"Watched Something","titleUrl":"https://www.youtube.com/watch?v=abc123",
+              "time":"2021-06-01T09:00:00.000Z"}]
+        """.trimIndent()).single()
+        assertEquals(2021, yearOf(record.watchedAt))
+    }
+
+    private fun cell(date: String) =
+        "<div class=\"content-cell mdl-cell--6-col\">Watched&nbsp;" +
+            "<a href=\"https://www.youtube.com/watch?v=abc123\">Dayvan Cowboy</a><br>" +
+            "<a href=\"https://www.youtube.com/channel/UCxyz\">Boards of Canada</a><br>" +
+            date + "</div>"
+
+    private fun yearOf(millis: Long) = java.util.Calendar.getInstance()
+        .apply { timeInMillis = millis }
+        .get(java.util.Calendar.YEAR)
 }

@@ -3,9 +3,9 @@ package dev.rose.bouquet.data
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.HttpUrl
@@ -96,8 +96,18 @@ class SubsonicClient(
      * [code] is Subsonic's own error code where there was one. 0 means the
      * failure happened before the server got a chance to have an opinion —
      * an unreachable host, a wrong address, a reply that was not Subsonic.
+     *
+     * [unsupported] is the narrow case of a server that answered and said it
+     * does not implement the method. It is a separate flag rather than a code
+     * because Subsonic spends code 0 on *both* "no such method" and "something
+     * went wrong", and only one of those two may be quietly turned into an
+     * empty screen — see [callOptional].
      */
-    class ServerException(message: String, val code: Int = 0) : Exception(message)
+    class ServerException(
+        message: String,
+        val code: Int = 0,
+        val unsupported: Boolean = false,
+    ) : Exception(message)
 
     // ── Making a request ──────────────────────────────────────────
 
@@ -163,7 +173,13 @@ class SubsonicClient(
         val body = try {
             http.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
-                    throw ServerException("The server answered ${response.code}")
+                    // A server without a method usually answers 404 or 501
+                    // rather than a Subsonic error body — Navidrome and gonic
+                    // both do. That is a missing feature, not a broken server.
+                    throw ServerException(
+                        "The server answered ${response.code}",
+                        unsupported = response.code == 404 || response.code == 501,
+                    )
                 }
                 response.body?.string().orEmpty()
             }
@@ -177,9 +193,11 @@ class SubsonicClient(
 
         if (payload["status"]?.jsonPrimitive?.content != "ok") {
             val error = payload["error"]?.jsonObject
+            val code = error?.get("code")?.jsonPrimitive?.content?.toIntOrNull() ?: 0
             throw ServerException(
                 error?.get("message")?.jsonPrimitive?.content ?: "The server refused the request",
-                error?.get("code")?.jsonPrimitive?.content?.toIntOrNull() ?: 0,
+                code,
+                unsupported = code == UNSUPPORTED_METHOD || code == NOT_FOUND,
             )
         }
         payload
@@ -194,6 +212,13 @@ class SubsonicClient(
      * there. Neither is an error worth showing somebody: the screen should say
      * it is empty, not that something went wrong. A real failure — no network,
      * bad credentials, a 500 — still throws.
+     *
+     * Which is why this tests [ServerException.unsupported] and not the code.
+     * A failure that never reached a server also carries code 0, so testing the
+     * code meant a phone off the home network, an HTTPS certificate the phone
+     * would not trust, and a server returning 500 all arrived at the screen as
+     * an empty library — no error, nothing to investigate, and the music that
+     * was downloaded and sitting right there looking like it had been lost.
      */
     private suspend fun callOptional(
         server: Server,
@@ -202,7 +227,7 @@ class SubsonicClient(
     ): JsonObject? = try {
         call(server, method, params)
     } catch (e: ServerException) {
-        if (e.code == UNSUPPORTED_METHOD || e.code == NOT_FOUND) null else throw e
+        if (e.unsupported) null else throw e
     }
 
     /**
@@ -238,8 +263,8 @@ class SubsonicClient(
     suspend fun artists(server: Server): List<Artist> {
         val payload = callOptional(server, "getArtists") ?: return emptyList()
         // Artists arrive bucketed under alphabetical index letters.
-        return payload["artists"]?.jsonObject?.get("index")?.jsonArray.orEmpty()
-            .flatMap { it.jsonObject["artist"]?.jsonArray.orEmpty() }
+        return payload.obj("artists").rows("index")
+            .flatMap { (it as? JsonObject).rows("artist") }
             .map { entry ->
                 val row = entry.jsonObject
                 Artist(
@@ -269,19 +294,18 @@ class SubsonicClient(
             mapOf("type" to type, "size" to "$size", "offset" to "$offset"),
         ) ?: return emptyList()
 
-        return payload["albumList2"]?.jsonObject?.get("album")?.jsonArray.orEmpty()
-            .map { it.toAlbum() }
+        return payload.obj("albumList2").rows("album").map { it.toAlbum() }
     }
 
     suspend fun album(server: Server, albumId: String): Pair<Album, List<Song>>? {
         val payload = callOptional(server, "getAlbum", mapOf("id" to albumId)) ?: return null
-        val row = payload["album"]?.jsonObject ?: return null
-        return row.toAlbum() to row["song"]?.jsonArray.orEmpty().map { it.toSong() }
+        val row = payload.obj("album") ?: return null
+        return row.toAlbum() to row.rows("song").map { it.toSong() }
     }
 
     suspend fun artistAlbums(server: Server, artistId: String): List<Album> {
         val payload = callOptional(server, "getArtist", mapOf("id" to artistId)) ?: return emptyList()
-        return payload["artist"]?.jsonObject?.get("album")?.jsonArray.orEmpty().map { it.toAlbum() }
+        return payload.obj("artist").rows("album").map { it.toAlbum() }
     }
 
     suspend fun search(server: Server, query: String, limit: Int = 100): SearchResults {
@@ -293,11 +317,11 @@ class SubsonicClient(
             ),
         ) ?: return SearchResults(emptyList(), emptyList(), emptyList())
 
-        val result = payload["searchResult3"]?.jsonObject
+        val result = payload.obj("searchResult3")
         return SearchResults(
-            songs = result?.get("song")?.jsonArray.orEmpty().map { it.toSong() },
-            albums = result?.get("album")?.jsonArray.orEmpty().map { it.toAlbum() },
-            artists = result?.get("artist")?.jsonArray.orEmpty().map { entry ->
+            songs = result.rows("song").map { it.toSong() },
+            albums = result.rows("album").map { it.toAlbum() },
+            artists = result.rows("artist").map { entry ->
                 val row = entry.jsonObject
                 Artist(row.str("id"), row.str("name"), row.int("albumCount") ?: 0, row.strOrNull("coverArt"))
             },
@@ -306,7 +330,7 @@ class SubsonicClient(
 
     suspend fun playlists(server: Server): List<Playlist> {
         val payload = callOptional(server, "getPlaylists") ?: return emptyList()
-        return payload["playlists"]?.jsonObject?.get("playlist")?.jsonArray.orEmpty().map { entry ->
+        return payload.obj("playlists").rows("playlist").map { entry ->
             val row = entry.jsonObject
             Playlist(
                 id = row.str("id"),
@@ -321,18 +345,18 @@ class SubsonicClient(
 
     suspend fun playlistSongs(server: Server, playlistId: String): List<Song> {
         val payload = callOptional(server, "getPlaylist", mapOf("id" to playlistId)) ?: return emptyList()
-        return payload["playlist"]?.jsonObject?.get("entry")?.jsonArray.orEmpty().map { it.toSong() }
+        return payload.obj("playlist").rows("entry").map { it.toSong() }
     }
 
     suspend fun randomSongs(server: Server, size: Int = 50): List<Song> {
         val payload = callOptional(server, "getRandomSongs", mapOf("size" to "$size"))
             ?: return emptyList()
-        return payload["randomSongs"]?.jsonObject?.get("song")?.jsonArray.orEmpty().map { it.toSong() }
+        return payload.obj("randomSongs").rows("song").map { it.toSong() }
     }
 
     suspend fun starredSongs(server: Server): List<Song> {
         val payload = callOptional(server, "getStarred2") ?: return emptyList()
-        return payload["starred2"]?.jsonObject?.get("song")?.jsonArray.orEmpty().map { it.toSong() }
+        return payload.obj("starred2").rows("song").map { it.toSong() }
     }
 
     /** Star or unstar. Silently does nothing on a server without the method. */
@@ -386,6 +410,27 @@ class SubsonicClient(
         }
 
     // ── Parsing ───────────────────────────────────────────────────
+
+    /**
+     * The rows under [key], whether they came as a list or as one bare object.
+     *
+     * Servers built on Jackson — original Subsonic, Airsonic, Ampache — unwrap
+     * a single-element list when they render JSON, so an album with one track
+     * sends `"song": {…}` where an album with two sends `"song": […]`. Reading
+     * it as an array throws on the first shape, which turned every one-track
+     * album, one-song playlist and single-artist library into an empty screen
+     * on exactly the servers this client exists to talk to. Navidrome always
+     * sends a list, which is why this never showed up in testing.
+     */
+    private fun JsonObject?.rows(key: String): List<JsonElement> =
+        when (val value = this?.get(key)) {
+            is JsonArray -> value
+            is JsonObject -> listOf(value)
+            else -> emptyList()
+        }
+
+    /** A nested object under [key], or null if it is missing or not an object. */
+    private fun JsonObject?.obj(key: String): JsonObject? = this?.get(key) as? JsonObject
 
     private fun JsonObject.str(key: String) = this[key]?.jsonPrimitive?.content.orEmpty()
     private fun JsonObject.strOrNull(key: String) =

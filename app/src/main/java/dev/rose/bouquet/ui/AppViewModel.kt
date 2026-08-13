@@ -191,12 +191,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }.getOrDefault(local)
     }
 
-    suspend fun playlists() = activeServer.value?.let {
-        runCatching { repository.playlists(it) }.getOrDefault(emptyList())
+    /**
+     * Playlists from the server.
+     *
+     * A failure is reported rather than returned as an empty list. Swallowed,
+     * a server that is unreachable and a server with no playlists look
+     * identical on screen — "No playlists" — and the one that is actually
+     * broken is the one nobody investigates.
+     */
+    suspend fun playlists() = activeServer.value?.let { server ->
+        runCatching { repository.playlists(server) }
+            .onFailure { _status.value = it.message ?: "Could not read playlists" }
+            .getOrDefault(emptyList())
     }.orEmpty()
 
-    suspend fun playlistSongs(playlistId: String) = activeServer.value?.let {
-        runCatching { repository.playlistSongs(it, playlistId) }.getOrDefault(emptyList())
+    suspend fun playlistSongs(playlistId: String) = activeServer.value?.let { server ->
+        runCatching { repository.playlistSongs(server, playlistId) }
+            .onFailure { _status.value = it.message ?: "Could not open that playlist" }
+            .getOrDefault(emptyList())
     }.orEmpty()
 
     // ── Playing ───────────────────────────────────────────────────
@@ -303,6 +315,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _buildingFeed.value = true
             runCatching { recommender.rebuild(shorts, interests()) }
                 .onSuccess { built ->
+                    // Nothing came back. Either there is no history to work
+                    // from yet or the network is gone; both are worth a line,
+                    // because the alternative is a refresh that appears to do
+                    // nothing at all. Whatever feed was already stored is kept
+                    // — see Recommender.rebuild.
+                    if (built.isEmpty()) {
+                        _status.value = "Nothing new for the feed. " +
+                            "Check the connection, or watch a few things first."
+                    }
                     // Resolve the first few now, while the feed is fresh, so
                     // opening the reel is not a cold second of page fetch. The
                     // first short is the one nothing can prefetch ahead of.
@@ -465,7 +486,47 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ── Imports ───────────────────────────────────────────────────
 
-    suspend fun importTakeout(uri: Uri): String {
+    private val _importing = MutableStateFlow(false)
+
+    /** Whether an import is running. Owned here, not by the screen — see [runImport]. */
+    val importing: StateFlow<Boolean> = _importing.asStateFlow()
+
+    private val _importReport = MutableStateFlow<String?>(null)
+    val importReport: StateFlow<String?> = _importReport.asStateFlow()
+
+    /**
+     * Run an import, in a scope that outlives the screen.
+     *
+     * Two things this fixes, both of which a phone hits and a test does not.
+     *
+     * **It no longer dies when you leave the tab.** The screen's own coroutine
+     * scope is cancelled the moment the composition goes away, so switching to
+     * Watch while a 300 MB Takeout was being read abandoned it partway with no
+     * message — and half a history is exactly the state that looks like it
+     * worked.
+     *
+     * **A failure ends the spinner.** The screen set its flag before and after
+     * the call with nothing in between, so anything thrown — an unreadable
+     * file, a revoked document permission, a zip that is not one — left the
+     * progress line running and every button on the screen disabled, with no
+     * way back but killing the app.
+     */
+    private fun runImport(work: suspend () -> String) {
+        if (_importing.value) return
+        _importing.value = true
+        _importReport.value = null
+        viewModelScope.launch {
+            _importReport.value = runCatching { work() }
+                .getOrElse { "That import did not finish: ${it.message ?: "unknown error"}" }
+            _importing.value = false
+        }
+    }
+
+    fun importTakeout(uri: Uri) = runImport { takeout(uri) }
+    fun importSpotify(url: String) = runImport { spotify(url) }
+    fun importExportify(uri: Uri) = runImport { exportify(uri) }
+
+    private suspend fun takeout(uri: Uri): String {
         val result = Imports.takeout(getApplication(), uri)
         // A fresh history is worth nothing until something is built from it —
         // and *both* feeds, because the point of importing is opening the app
@@ -477,7 +538,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return result.message
     }
 
-    suspend fun importSpotify(url: String): String {
+    private suspend fun spotify(url: String): String {
         val tracks = Imports.spotifyPlaylist(url)
         if (tracks.isEmpty()) {
             return "Nothing came back. Public playlists only, and Spotify refuses " +
@@ -489,7 +550,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return resolve(tracks) + capped
     }
 
-    suspend fun importExportify(uri: Uri): String {
+    private suspend fun exportify(uri: Uri): String {
         val tracks = Imports.exportifyCsv(getApplication(), uri)
         if (tracks.isEmpty()) return "No tracks in that CSV — is it an Exportify export?"
         return resolve(tracks)

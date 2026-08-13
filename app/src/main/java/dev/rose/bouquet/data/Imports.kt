@@ -5,6 +5,8 @@ import android.net.Uri
 import dev.rose.bouquet.data.db.RoseDatabase
 import dev.rose.bouquet.data.db.WatchEntity
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -56,58 +58,81 @@ object Imports {
         var added = 0
         var skipped = 0
         var sawHistory = false
+        var ranOut = false
 
         val stream = context.contentResolver.openInputStream(uri)
             ?: return@withContext Result(0, 0, "Could not open that file")
 
-        stream.use { input ->
-            ZipInputStream(BufferedInputStream(input)).use { zip ->
-                while (true) {
-                    val entry = zip.nextEntry ?: break
-                    val name = entry.name.lowercase()
-                    if (entry.isDirectory || !name.contains("watch-history")) continue
-                    sawHistory = true
+        // A Takeout archive is several gigabytes and is very often a partial
+        // download — the zip then ends mid-entry. What was read before that
+        // point is real history and worth keeping, so the failure is reported
+        // alongside the count rather than thrown away with it.
+        try {
+            stream.use { input ->
+                ZipInputStream(BufferedInputStream(input)).use { zip ->
+                    while (true) {
+                        val entry = zip.nextEntry ?: break
+                        val name = entry.name.lowercase()
+                        if (entry.isDirectory || !name.contains("watch-history")) continue
+                        sawHistory = true
 
-                    // Streamed rather than read whole. A heavy user's
-                    // watch-history.html is several hundred megabytes, and
-                    // reading it into a String and then into a DOM is an
-                    // out-of-memory kill on a phone long before it is an
-                    // import. Records come out one at a time and go straight
-                    // into the database in batches.
-                    val batch = mutableListOf<WatchEntity>()
+                        // Streamed rather than read whole. A heavy user's
+                        // watch-history.html is several hundred megabytes, and
+                        // reading it into a String and then into a DOM is an
+                        // out-of-memory kill on a phone long before it is an
+                        // import. Records come out one at a time and go straight
+                        // into the database in batches.
+                        val batch = mutableListOf<WatchEntity>()
 
-                    suspend fun flush() {
-                        if (batch.isEmpty()) return
-                        youtube.watchedAll(batch.toList())
-                        batch.clear()
-                    }
-
-                    val consume: suspend (WatchEntity) -> Unit = { record ->
-                        if (record.videoId in known) {
-                            skipped++
-                        } else {
-                            known += record.videoId
-                            batch += record
-                            added++
-                            if (batch.size >= BATCH) flush()
+                        suspend fun flush() {
+                            if (batch.isEmpty()) return
+                            youtube.watchedAll(batch.toList())
+                            batch.clear()
                         }
+
+                        val consume: suspend (WatchEntity) -> Unit = { record ->
+                            // Cancellation is cooperative, and nothing else in this
+                            // loop suspends when every record is a duplicate — so
+                            // re-importing the same archive read all several hundred
+                            // megabytes of it with no way to stop, including after
+                            // the screen that started it was gone.
+                            currentCoroutineContext().ensureActive()
+
+                            if (record.videoId in known) {
+                                skipped++
+                            } else {
+                                known += record.videoId
+                                batch += record
+                                added++
+                                if (batch.size >= BATCH) flush()
+                            }
+                        }
+
+                        // The reader must not close the zip stream between entries.
+                        val reader = BufferedReader(
+                            InputStreamReader(NonClosing(zip), Charsets.UTF_8), READ_BUFFER)
+
+                        if (name.endsWith(".json")) streamJson(reader, consume)
+                        else streamHtml(reader, consume)
+
+                        flush()
                     }
-
-                    // The reader must not close the zip stream between entries.
-                    val reader = BufferedReader(
-                        InputStreamReader(NonClosing(zip), Charsets.UTF_8), READ_BUFFER)
-
-                    if (name.endsWith(".json")) streamJson(reader, consume)
-                    else streamHtml(reader, consume)
-
-                    flush()
                 }
             }
+        } catch (e: java.io.IOException) {
+            ranOut = true
         }
 
         Result(
             added, skipped,
             when {
+                ranOut && added > 0 ->
+                    "That archive ends part way through — it may be an incomplete " +
+                        "download. Imported the $added it did contain; importing the " +
+                        "full archive later will add the rest."
+                ranOut ->
+                    "That archive ends part way through and nothing was read from it. " +
+                        "It is most likely an incomplete download."
                 !sawHistory ->
                     "No watch-history file in that archive. Ask Takeout for YouTube history " +
                         "specifically — a Takeout of everything else has none."
@@ -215,6 +240,21 @@ object Imports {
         override fun close() = Unit
     }
 
+    /**
+     * One client, with timeouts.
+     *
+     * A fresh `OkHttpClient()` per call brings its own connection pool and
+     * thread, and OkHttp's default read timeout is *none* — so a Spotify page
+     * that accepted the connection and then stopped talking left the import
+     * spinning with nothing to cancel it.
+     */
+    private val http by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+    }
+
     private const val BATCH = 400
     private const val READ_BUFFER = 64 * 1024
     private const val MAX_BUFFER = 4 * 1024 * 1024
@@ -272,9 +312,35 @@ object Imports {
             channel = channelLink?.text().orEmpty(),
             channelId = channelLink?.attr("href")?.substringAfterLast('/'),
             isShort = "/shorts/" in href,
-            watchedAt = parseTime(cell.body().ownText()),
+            watchedAt = parseTime(dateIn(cell.body().text())),
         )
     }
+
+    /**
+     * The timestamp out of a history cell's text.
+     *
+     * The date sits *inside* the cell's div, so `ownText()` on the fragment's
+     * body — which is only the text nodes directly under it — was always empty,
+     * and every HTML-imported entry silently took the time of the import. This
+     * is the same failure the desktop app had, and it matters more than it
+     * looks: a history where everything was watched at the same second is
+     * flat, so "recent" means nothing and the feed is built from an arbitrary
+     * three hundred rows rather than the last three hundred watched.
+     *
+     * Found by pattern rather than by position because the cell's text also
+     * holds the title and the channel, either of which can contain anything.
+     */
+    private fun dateIn(text: String): String = DATE.find(text)?.value ?: text
+
+    private val DATE = Regex(
+        // "Mar 4, 2026, 12:34:56 PM PST" — the space before the marker is a
+        // narrow no-break space in Google's own export, not an ordinary one.
+        """[A-Z][a-z]{2,8} \d{1,2}, \d{4}, \d{1,2}:\d{2}:\d{2}[\s  ]*[AaPp][Mm](?:\s+[A-Z]{2,5})?""" +
+            // "4 Mar 2026, 12:34:56 GMT" — the 24-hour form.
+            """|\d{1,2} [A-Z][a-z]{2,8} \d{4}, \d{2}:\d{2}:\d{2}(?:\s+[A-Z]{2,5})?""" +
+            // An ISO timestamp, in case the HTML ever carries one.
+            """|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?"""
+    )
 
     /**
      * Takeout's timestamps.
@@ -329,7 +395,7 @@ object Imports {
             .build()
 
         val body = runCatching {
-            OkHttpClient().newCall(request).execute().use { it.body?.string() }
+            http.newCall(request).execute().use { it.body?.string() }
         }.getOrNull() ?: return@withContext emptyList()
 
         parsePlaylistPage(body)
