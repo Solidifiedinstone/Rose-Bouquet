@@ -34,20 +34,6 @@ YouTube through a feed built on your phone from what you actually watch.
 > decides what you see is covered by tests. What it has not had is months of
 > real use across many devices. Expect rough edges and please report them.
 
-## ⚠️ Vibecoders begone
-
-Yes, this is a vibecoded project. I'm new to programming and still learning
-Languages - I couldn't have written all of this myself yet, so I leaned on my Local LLM
-for assistance to get a working prototype off the ground. This is a starting
-point, not a finished, "proper" codebase.
-
-**From here on, I want contributions to be human-written.** If you have
-ideas, feature requests, or bug reports, please open an
-[Issue](https://github.com/Solidifiedinstone/Rose-Bouquet-Android/issues) instead of
-sending an AI-generated PR. My goal is to actually learn and own this
-codebase as I keep improving at Python, and eventually replace all of it
-with code written by hand - mine or a human contributor's.
-
 ## Expect bugs
 
 This is early software. It has been built and tested on a desktop against the
