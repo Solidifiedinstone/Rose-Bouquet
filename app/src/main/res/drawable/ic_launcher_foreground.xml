@@ -1,0 +1,18 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- A rose in bloom over a stem: the Rose mark, drawn as paths so it
+         stays crisp at every launcher size. -->
+    <group android:translateX="0" android:translateY="-4">
+        <path android:fillColor="#e0607e"
+            android:pathData="M54,34m-13,0a13,13 0 1,0 26,0a13,13 0 1,0 -26,0" />
+        <path android:fillColor="#8c3d4f"
+            android:pathData="M54,25c5,3 7,7 7,11c0,4 -3,7 -7,7c-4,0 -7,-3 -7,-7C47,32 49,28 54,25z" />
+        <path android:strokeColor="#3fa860" android:strokeWidth="3"
+            android:pathData="M54,47 L54,78" />
+        <path android:fillColor="#3fa860"
+            android:pathData="M54,58c-6,-6 -13,-6 -16,-3c-2,3 2,9 8,10C51,66 54,62 54,58z" />
+        <path android:fillColor="#3fa860"
+            android:pathData="M54,68c6,-6 13,-6 16,-3c2,3 -2,9 -8,10C57,76 54,72 54,68z" />
+    </group>
+</vector>

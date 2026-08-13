@@ -1,0 +1,16 @@
+# Build output
+build/
+.gradle/
+*.apk
+*.aab
+
+# Local machine paths — this names your SDK location, not the project's.
+local.properties
+
+# IDE
+.idea/
+*.iml
+.kotlin/
+
+# OS
+.DS_Store
