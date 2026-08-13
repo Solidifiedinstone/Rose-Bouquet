@@ -1,14 +1,18 @@
 package dev.rose.bouquet.ui.screens
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Pause
@@ -28,6 +32,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -35,6 +40,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -66,6 +73,16 @@ fun NowPlayingSheet(model: AppViewModel, onDismiss: () -> Unit) {
     // this sheet is on screen. A ticker running behind a closed sheet is a
     // wakeup per second for a number nobody is looking at.
     var scrubbing by remember { mutableStateOf<Float?>(null) }
+    var showVisualiser by remember { mutableStateOf(false) }
+    val settings by model.settings.collectAsStateWithLifecycle()
+
+    // Started only while it is on screen and switched on. An audio tap running
+    // behind a closed sheet is a wakeup per frame for something nobody can see.
+    val spectrum = remember { dev.rose.bouquet.player.Spectrum() }
+    DisposableEffect(showVisualiser) {
+        if (showVisualiser) spectrum.start()
+        onDispose { spectrum.stop() }
+    }
     LaunchedEffect(Unit) {
         while (true) {
             model.player.tick()
@@ -83,10 +100,50 @@ fun NowPlayingSheet(model: AppViewModel, onDismiss: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Cover(
-                model.coverUrl(song?.coverArt, size = 800),
+            // The visualiser lives here, in place of the artwork, because
+            // this is the screen somebody is looking at while music plays —
+            // the Visualiser tab is for setting it up, not for watching it.
+            Box(
                 Modifier.fillMaxWidth(0.8f).aspectRatio(1f),
-                corner = 16,
+                contentAlignment = Alignment.Center,
+            ) {
+                if (showVisualiser) {
+                    Box(
+                        Modifier.fillMaxSize()
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(theme.panel),
+                    ) {
+                        VisualiserCanvas(
+                            bands = spectrum.bands.value,
+                            layers = settings.visualiserLayers,
+                            theme = theme,
+                            intensity = settings.visualiserIntensity,
+                            palette = settings.visualiserColours.map { Color(it) },
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                        if (!spectrum.active.value) {
+                            Text(
+                                "Allow audio access in the Visualiser tab",
+                                color = theme.textDim,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.align(Alignment.Center).padding(16.dp),
+                            )
+                        }
+                    }
+                } else {
+                    Cover(
+                        model.coverUrl(song?.coverArt, size = 800),
+                        Modifier.fillMaxSize(),
+                        corner = 16,
+                    )
+                }
+            }
+
+            Text(
+                if (showVisualiser) "Show artwork" else "Show visualiser",
+                color = theme.accent,
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.clickable { showVisualiser = !showVisualiser },
             )
 
             Column(horizontalAlignment = Alignment.CenterHorizontally) {

@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -83,6 +85,7 @@ fun SongRow(
     playing: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    onDownload: (() -> Unit)? = null,
     trailing: @Composable (() -> Unit)? = null,
 ) {
     val theme = LocalRoseTheme.current
@@ -114,15 +117,24 @@ fun SongRow(
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        if (song.downloaded) {
-            Text("↓", color = theme.success, style = MaterialTheme.typography.labelMedium)
-            Spacer(Modifier.width(8.dp))
-        }
         Text(
             song.durationSeconds.asClock(),
             style = MaterialTheme.typography.labelMedium,
             color = theme.textDim,
         )
+        // A download control on every row, not only on the album header. It is
+        // the second most common thing anybody does with a track, and burying
+        // it meant the only way to keep one song was to download its album.
+        onDownload?.let {
+            Spacer(Modifier.width(10.dp))
+            Icon(
+                if (song.downloaded) Icons.Default.DownloadDone else Icons.Default.Download,
+                contentDescription = if (song.downloaded) "Downloaded — tap to remove"
+                else "Download for offline",
+                tint = if (song.downloaded) theme.success else theme.textDim,
+                modifier = Modifier.size(22.dp).clickable(onClick = it),
+            )
+        }
         trailing?.let { Spacer(Modifier.width(4.dp)); it() }
     }
 }

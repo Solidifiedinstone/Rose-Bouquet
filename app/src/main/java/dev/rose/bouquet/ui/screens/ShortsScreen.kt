@@ -43,6 +43,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import dev.rose.bouquet.data.db.FeedEntity
 import dev.rose.bouquet.ui.AppViewModel
+import dev.rose.bouquet.player.playYouTube
 import dev.rose.bouquet.ui.Cover
 import dev.rose.bouquet.ui.Empty
 import dev.rose.bouquet.youtube.YouTubeSource
@@ -101,12 +102,9 @@ fun ShortsScreen(model: AppViewModel) {
             val short = feed.getOrNull(page) ?: return@collect
             loading = true
             exo.stop()
-            val playable = YouTubeSource.videoStream(
+            val found = YouTubeSource.videoPlayback(
                 "https://www.youtube.com/shorts/${short.videoId}", maxHeight = 720)
-            if (playable != null) {
-                exo.setMediaItem(MediaItem.fromUri(playable.url))
-                exo.prepare()
-            }
+            if (found != null) exo.playYouTube(context, found)
             loading = false
             model.watched(short)
         }

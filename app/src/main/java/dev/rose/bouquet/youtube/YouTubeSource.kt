@@ -57,6 +57,20 @@ data class Playable(
 )
 
 /**
+ * A video to play.
+ *
+ * [audioUrl] is null only for a progressive stream, where the one file carries
+ * sound as well. Otherwise the two are separate and the player merges them.
+ */
+data class VideoPlayback(
+    val videoUrl: String,
+    val audioUrl: String?,
+    val height: Int,
+) {
+    val adaptive: Boolean get() = audioUrl != null
+}
+
+/**
  * YouTube, via NewPipeExtractor.
  *
  * No API key and no account, which is the point — the desktop app makes the
@@ -99,13 +113,26 @@ object YouTubeSource {
      */
     suspend fun search(query: String, shorts: Boolean = false, limit: Int = 30): List<Video> =
         io(emptyList()) {
-            val handler = service.searchQHFactory.fromQuery(query, listOf(VIDEOS), "")
+            // `#shorts` in the query is how the desktop app finds shorts, and
+            // measurement says it is the only thing that works: YouTube's
+            // search results come back with `isShortFormContent` false for
+            // every single item, shorts included. Filtering on that flag
+            // discarded the entire result set and left the Shorts tab
+            // permanently empty. Duration is the usable signal instead.
+            val text = if (shorts && "#shorts" !in query.lowercase()) "$query #shorts" else query
+            val handler = service.searchQHFactory.fromQuery(text, listOf(VIDEOS), "")
+
             SearchInfo.getInfo(service, handler)
                 .relatedItems
                 .filterIsInstance<StreamInfoItem>()
-                .filter { it.isShortFormContent == shorts }
+                .filter { item ->
+                    if (shorts) item.isShortFormContent || item.duration in 1..SHORT_SECONDS
+                    // A shorts search leaking into the video feed is worse than
+                    // the reverse, so the video side excludes the flagged ones.
+                    else !item.isShortFormContent
+                }
                 .take(limit)
-                .map { it.toVideo() }
+                .map { it.toVideo(forceShort = shorts) }
         }
 
     // ── One video ─────────────────────────────────────────────────
@@ -127,22 +154,38 @@ object YouTubeSource {
     }
 
     /**
-     * A stream with picture and sound in one file, for the Watch tab.
+     * What to play for a video: a picture track and a sound track.
      *
-     * Prefers a progressive stream — one file carrying both — over the higher
-     * quality adaptive pair. Adaptive would mean muxing two sources, and the
-     * quality difference is not what somebody notices on a phone; a video that
-     * plays silently is.
+     * Adaptive first, progressive only as a fallback. That is the opposite of
+     * what looks simpler, and the measurement is why: a typical video now
+     * offers **one** progressive stream at 360p against **thirteen**
+     * video-only streams up to 1440p. Preferring progressive meant everything
+     * played at 360p when it played at all, which is most of "the videos do
+     * not work".
+     *
+     * Adaptive means two URLs that the player has to combine, which is a
+     * MergingMediaSource on the other side — see the Watch screen.
      */
-    suspend fun videoStream(url: String, maxHeight: Int = 1080): Playable? = io(null) {
+    suspend fun videoPlayback(url: String, maxHeight: Int = 1080): VideoPlayback? = io(null) {
         val info = StreamInfo.getInfo(service, url)
-        info.videoStreams
+
+        val audio = info.audioStreams
             .filter { it.content.isNotBlank() }
-            .filter { it.height in 1..maxHeight }
+            .maxByOrNull { it.averageBitrate }
+
+        val video = info.videoOnlyStreams
+            .filter { it.content.isNotBlank() && it.height in 1..maxHeight }
             .maxByOrNull { it.height }
-            ?.let { Playable(it.content, it.format?.mimeType, isVideo = true, height = it.height) }
-            ?: info.videoStreams.firstOrNull { it.content.isNotBlank() }
-                ?.let { Playable(it.content, it.format?.mimeType, isVideo = true, height = it.height) }
+
+        if (video != null && audio != null) {
+            return@io VideoPlayback(video.content, audio.content, video.height)
+        }
+
+        // No usable adaptive pair. One file carrying both is worse quality but
+        // it is a video that plays.
+        info.videoStreams.filter { it.content.isNotBlank() }
+            .maxByOrNull { it.height }
+            ?.let { VideoPlayback(it.content, null, it.height) }
     }
 
     // ── Channels ──────────────────────────────────────────────────
@@ -204,7 +247,7 @@ object YouTubeSource {
             }
         }
 
-    private fun StreamInfoItem.toVideo() = Video(
+    private fun StreamInfoItem.toVideo(forceShort: Boolean = false) = Video(
         id = url.videoId(),
         title = name.orEmpty(),
         url = url,
@@ -214,7 +257,9 @@ object YouTubeSource {
         durationSeconds = duration,
         viewCount = viewCount.coerceAtLeast(0),
         uploaded = textualUploadDate,
-        isShort = isShortFormContent,
+        // The flag is unreliable in search results — always false, even for
+        // shorts — so a shorts search says what it found.
+        isShort = isShortFormContent || forceShort,
     )
 
     /**
@@ -228,6 +273,9 @@ object YouTubeSource {
         maxByOrNull { it.height.toLong() * it.width }?.url ?: firstOrNull()?.url
 
     private const val VIDEOS = "videos"
+
+    /** Longest a thing can be and still belong in a reel. */
+    private const val SHORT_SECONDS = 180
 }
 
 /** The `v=` id out of a watch URL, which is what everything else keys on. */

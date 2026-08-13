@@ -88,6 +88,7 @@ fun LibraryScreen(model: AppViewModel, navController: NavController) {
                         coverUrl = model.coverUrl(song.coverArt, size = 128),
                         playing = playback.song?.id == song.id,
                         onClick = { model.play(songs, index) },
+                        onDownload = { model.toggleDownload(song) },
                     ) {
                         Icon(
                             if (song.starred) Icons.Default.Star else Icons.Default.StarBorder,
@@ -183,6 +184,7 @@ private fun AlbumDetail(
                     coverUrl = model.coverUrl(song.coverArt, size = 128),
                     playing = playback.song?.id == song.id,
                     onClick = { model.play(songs, index) },
+                    onDownload = { model.toggleDownload(song) },
                 )
             }
         }
@@ -232,6 +234,7 @@ fun SearchScreen(model: AppViewModel) {
                         coverUrl = model.coverUrl(song.coverArt, size = 128),
                         playing = playback.song?.id == song.id,
                         onClick = { model.play(results, index) },
+                        onDownload = { model.toggleDownload(song) },
                     )
                 }
             }
@@ -305,6 +308,7 @@ fun PlaylistsScreen(model: AppViewModel) {
                         coverUrl = model.coverUrl(song.coverArt, size = 128),
                         playing = playback.song?.id == song.id,
                         onClick = { model.play(songs, index) },
+                        onDownload = { model.toggleDownload(song) },
                     )
                 }
             }

@@ -34,6 +34,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import dev.rose.bouquet.data.db.FeedEntity
+import dev.rose.bouquet.player.playYouTube
 import dev.rose.bouquet.ui.AppViewModel
 import dev.rose.bouquet.ui.theme.LocalRoseTheme
 import dev.rose.bouquet.youtube.YouTubeSource
@@ -56,25 +57,58 @@ fun VideoPlayer(model: AppViewModel, video: FeedEntity, onBack: () -> Unit) {
     val context = LocalContext.current
     val theme = LocalRoseTheme.current
 
-    var streamUrl by remember(video.videoId) { mutableStateOf<String?>(null) }
+    var playback by remember(video.videoId) {
+        mutableStateOf<dev.rose.bouquet.youtube.VideoPlayback?>(null)
+    }
     var failed by remember(video.videoId) { mutableStateOf(false) }
+    var fullscreen by remember { mutableStateOf(false) }
 
     LaunchedEffect(video.videoId) {
         model.player.let { if (model.playback.value.playing) it.playPause() }
-        val playable = YouTubeSource.videoStream("https://www.youtube.com/watch?v=${video.videoId}")
-        if (playable == null) failed = true else streamUrl = playable.url
+        val found = YouTubeSource.videoPlayback("https://www.youtube.com/watch?v=${video.videoId}")
+        if (found == null) failed = true else playback = found
     }
 
     val exo = remember {
         ExoPlayer.Builder(context).build().apply { playWhenReady = true }
     }
 
-    LaunchedEffect(streamUrl) {
-        streamUrl?.let {
-            exo.setMediaItem(MediaItem.fromUri(it))
-            exo.prepare()
+    LaunchedEffect(playback) {
+        playback?.let { exo.playYouTube(context, it) }
+    }
+
+    // Fullscreen rotates the device and hides the system bars, which is what
+    // fullscreen means on a phone — a video filling a portrait window is not
+    // it. Both are undone on the way out, including if the screen is left by
+    // the back gesture rather than the button.
+    val activity = context as? android.app.Activity
+    DisposableEffect(fullscreen) {
+        val window = activity?.window
+        if (window != null) {
+            val controller = androidx.core.view.WindowCompat.getInsetsController(
+                window, window.decorView)
+            if (fullscreen) {
+                controller.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+                controller.systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat
+                    .BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                activity.requestedOrientation =
+                    android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            } else {
+                controller.show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+                activity.requestedOrientation =
+                    android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            }
+        }
+        onDispose {
+            val w = activity?.window ?: return@onDispose
+            androidx.core.view.WindowCompat.getInsetsController(w, w.decorView)
+                .show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+            activity.requestedOrientation =
+                android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
     }
+
+    androidx.activity.compose.BackHandler(enabled = fullscreen) { fullscreen = false }
 
     // Record the view when leaving, with how much was actually watched. A view
     // is what every recommendation downstream is built from, so it is recorded
@@ -91,10 +125,8 @@ fun VideoPlayer(model: AppViewModel, video: FeedEntity, onBack: () -> Unit) {
 
     Column(Modifier.fillMaxSize().background(theme.background)) {
         Box(
-            Modifier
-                .fillMaxWidth()
-                .aspectRatio(16f / 9f)
-                .background(Color.Black),
+            if (fullscreen) Modifier.fillMaxSize().background(Color.Black)
+            else Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(Color.Black),
             contentAlignment = Alignment.Center,
         ) {
             when {
@@ -105,7 +137,7 @@ fun VideoPlayer(model: AppViewModel, video: FeedEntity, onBack: () -> Unit) {
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                     modifier = Modifier.padding(24.dp),
                 )
-                streamUrl == null -> CircularProgressIndicator(color = theme.accent)
+                playback == null -> CircularProgressIndicator(color = theme.accent)
                 else -> AndroidView(
                     factory = {
                         PlayerView(it).apply {
@@ -113,12 +145,15 @@ fun VideoPlayer(model: AppViewModel, video: FeedEntity, onBack: () -> Unit) {
                             useController = true
                             setShowNextButton(false)
                             setShowPreviousButton(false)
+                            setFullscreenButtonClickListener { fullscreen = it }
                         }
                     },
                     modifier = Modifier.fillMaxSize(),
                 )
             }
         }
+
+        if (fullscreen) return@Column
 
         Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("‹ Back", color = theme.accent, style = MaterialTheme.typography.bodyMedium,

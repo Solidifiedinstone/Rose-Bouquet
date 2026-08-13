@@ -268,6 +268,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Download this song, or remove it if it is already here. */
+    fun toggleDownload(song: SongEntity) {
+        if (song.downloaded) removeDownload(song) else download(listOf(song))
+    }
+
     fun removeDownload(song: SongEntity) {
         val server = activeServer.value ?: return
         val app = getApplication<Application>()
