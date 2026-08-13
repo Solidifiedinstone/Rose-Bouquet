@@ -30,9 +30,9 @@ YouTube through a feed built on your phone from what you actually watch.
 
 ---
 
-> **Status: alpha.** It builds, installs and runs on a phone, and the logic that
-> decides what you see is covered by tests. What it has not had is months of
-> real use across many devices. Expect rough edges and please report them.
+> **In testing — not fully functional.** This is early software under
+> active development. Expect things to be broken or missing, and please
+> report anything that goes wrong.
 
 ## Expect bugs
 
