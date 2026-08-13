@@ -12,6 +12,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.displayCutoutPadding
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.Icon
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -165,6 +170,35 @@ fun VideoPlayer(model: AppViewModel, video: FeedEntity, onBack: () -> Unit) {
                     update = { it.player = exo },
                     modifier = Modifier.fillMaxSize(),
                 )
+
+                // An exit that is always on screen.
+                //
+                // The player's own fullscreen button is part of its controller,
+                // and a controller hides itself a few seconds after the last
+                // touch — so for most of a video there was nothing to leave
+                // with, and the only way out was a back gesture the system bars
+                // were hidden for. A control you have to tap the screen to
+                // summon is not one you can find when you do not know it is
+                // there.
+                Box(
+                    Modifier
+                        .align(Alignment.TopEnd)
+                        // Clear of the notch: the system bars are hidden here,
+                        // so nothing else keeps this out from under a cutout.
+                        .displayCutoutPadding()
+                        .padding(16.dp)
+                        .size(44.dp)
+                        .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                        .clickable { fullscreen = false },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = "Leave fullscreen",
+                        tint = Color.White,
+                        modifier = Modifier.size(24.dp),
+                    )
+                }
             }
         }
     }

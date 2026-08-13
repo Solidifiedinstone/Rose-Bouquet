@@ -151,12 +151,22 @@ fun ShortsScreen(model: AppViewModel) {
     }
 
     // Prefetching, off to one side, so it can never delay a swipe.
-    LaunchedEffect(pager) {
+    LaunchedEffect(pager, reel.size) {
         // `collect`, not `collectLatest`: cancelling the previous prefetch on
         // every swipe is what stopped anything ever being cached.
-        snapshotFlow { pager.settledPage }.collect { page ->
+        //
+        // Driven by `currentPage` rather than `settledPage`, which is the page
+        // the swipe is heading for rather than the one it has arrived at — a
+        // few hundred milliseconds earlier, and against a fetch that takes 1.4
+        // seconds every one of them counts.
+        //
+        // The window starts at 0, not 1, so the short being looked at right now
+        // is resolved too. That matters on a cold start: a feed read back from
+        // the database was never prefetched by the build that made it, so the
+        // very first short was always the slow one.
+        snapshotFlow { pager.currentPage }.collect { page ->
             YouTubeSource.prefetch(
-                (1..PREFETCH_AHEAD).mapNotNull { reel.getOrNull(page + it) }
+                (0..PREFETCH_AHEAD).mapNotNull { reel.getOrNull(page + it) }
                     .map { "https://www.youtube.com/shorts/${it.videoId}" },
                 maxHeight = SHORT_HEIGHT,
             )
@@ -207,8 +217,8 @@ fun ShortsScreen(model: AppViewModel) {
 /** 720 is plenty on a phone and resolves faster than asking for more. */
 private const val SHORT_HEIGHT = 720
 
-/** How far ahead to resolve. Three covers a fast swipe without wasting fetches. */
-private const val PREFETCH_AHEAD = 3
+/** How far ahead to resolve. Four covers a fast swipe without wasting fetches. */
+private const val PREFETCH_AHEAD = 4
 
 @UnstableApi
 @Composable

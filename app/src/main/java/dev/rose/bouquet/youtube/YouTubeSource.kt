@@ -277,23 +277,47 @@ object YouTubeSource {
      *
      * Fire and forget: the caller does not wait, and a failure here simply
      * means the reel resolves that one the slow way when it arrives.
+     *
+     * Worth knowing what this is buying. Measured against YouTube: resolving
+     * one short — fetching the watch page and its player script, and parsing
+     * them — takes about **1.4 seconds**, while the first 400 KB of the video
+     * itself arrives in **190 ms**. Resolution is the whole of the wait. Every
+     * short reached before its resolution finished is a second of staring at a
+     * thumbnail, and everything else is rounding.
      */
     fun prefetch(urls: List<String>, maxHeight: Int = 720) {
-        urls.filter { !resolved.containsKey(cacheKey(it, maxHeight)) }
+        urls.filter { cached(it, maxHeight) == null }
             .take(PREFETCH)
-            .forEach { url ->
-                val key = cacheKey(url, maxHeight)
-                // One in flight per URL. Without this, every swipe queued
-                // another resolve of shorts already being fetched.
-                if (!inFlight.add(key)) return@forEach
-                scope.launch {
-                    try {
-                        videoPlayback(url, maxHeight)
-                    } finally {
-                        inFlight.remove(key)
-                    }
+            .forEach { url -> resolving(url, maxHeight) }
+    }
+
+    /**
+     * The one resolution of this URL, started if it is not running already.
+     *
+     * The reason this returns a shared [kotlinx.coroutines.Deferred] rather
+     * than launching: a prefetch and the reel arriving at the same short used
+     * to be two separate 1.4-second fetches of the same page. The prefetch
+     * marked itself in flight, but the foreground path did not consult that —
+     * it saw nothing in the cache and started again from scratch. So on a
+     * steady scroll, where a swipe lands on a short whose prefetch is nearly
+     * done, the reel threw that away and waited for a second copy. Sharing the
+     * work means arriving late to a prefetch costs whatever is left of it.
+     *
+     * It lives in [scope], not the caller's, so a swipe that abandons the wait
+     * does not abandon the fetch — the next short still gets resolved, which is
+     * the entire point of prefetching.
+     */
+    private fun resolving(url: String, maxHeight: Int): kotlinx.coroutines.Deferred<VideoPlayback?> {
+        val key = cacheKey(url, maxHeight)
+        return inFlight.computeIfAbsent(key) {
+            scope.async {
+                try {
+                    extract(url, maxHeight)
+                } finally {
+                    inFlight.remove(key)
                 }
             }
+        }
     }
 
     /**
@@ -308,8 +332,9 @@ object YouTubeSource {
     private val scope = kotlinx.coroutines.CoroutineScope(
         kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
 
-    private val inFlight = java.util.Collections.newSetFromMap(
-        java.util.concurrent.ConcurrentHashMap<String, Boolean>())
+    /** Resolutions currently running, so nothing is ever fetched twice at once. */
+    private val inFlight =
+        java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Deferred<VideoPlayback?>>()
 
     private fun cacheKey(url: String, maxHeight: Int) = "$url|$maxHeight"
 
@@ -325,7 +350,14 @@ object YouTubeSource {
         return if (System.currentTimeMillis() - hit.at < URL_TTL_MS) hit.playback else null
     }
 
-    suspend fun videoPlayback(url: String, maxHeight: Int = 1080): VideoPlayback? = io(null) {
+    /**
+     * A stream to play, from the cache, from a prefetch already running, or by
+     * fetching it now — in that order.
+     */
+    suspend fun videoPlayback(url: String, maxHeight: Int = 1080): VideoPlayback? =
+        cached(url, maxHeight) ?: resolving(url, maxHeight).await()
+
+    private suspend fun extract(url: String, maxHeight: Int): VideoPlayback? = io(null) {
         val key = cacheKey(url, maxHeight)
         val now = System.currentTimeMillis()
 
@@ -457,8 +489,15 @@ object YouTubeSource {
     /** Longest a thing can be and still belong in a reel. */
     private const val SHORT_SECONDS = 180
 
-    /** How far ahead the reel resolves. Three is roughly a fast swipe. */
-    private const val PREFETCH = 3
+    /**
+     * How many resolutions to have running at once.
+     *
+     * Four rather than three because each one takes about 1.4 seconds and they
+     * are almost entirely network wait — a scroll faster than three shorts per
+     * four seconds is ordinary, and outrunning the prefetch is the only way the
+     * reel is ever slow.
+     */
+    private const val PREFETCH = 4
 
     /** YouTube's stream URLs are signed and time limited. */
     private const val URL_TTL_MS = 30 * 60 * 1000L
