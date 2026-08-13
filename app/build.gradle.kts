@@ -6,6 +6,13 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+ksp {
+    // Writes the schema to disk so migrations can be checked against what Room
+    // actually generates, rather than against what the index names were assumed
+    // to be — a mismatch there crashes on open for everybody.
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 android {
     namespace = "dev.rose.bouquet"
     compileSdk = 35
@@ -16,8 +23,8 @@ android {
         // notification behaviour around them, are only coherent from Oreo.
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "0.1.7"
+        versionCode = 9
+        versionName = "0.1.8"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

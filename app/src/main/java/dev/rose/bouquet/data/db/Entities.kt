@@ -18,7 +18,13 @@ import androidx.room.PrimaryKey
 @Entity(
     tableName = "songs",
     primaryKeys = ["serverId", "id"],
-    indices = [Index("serverId", "albumId"), Index("serverId", "downloaded")],
+    indices = [
+        Index("serverId", "albumId"),
+        Index("serverId", "downloaded"),
+        // The library list sorts by these on every read of a whole library.
+        // Without it SQLite sorts the entire table in memory each time.
+        Index("serverId", "artist", "album", "track"),
+    ],
 )
 data class SongEntity(
     val serverId: String,
@@ -72,7 +78,14 @@ data class AlbumEntity(
  */
 @Entity(
     tableName = "watch_history",
-    indices = [Index("videoId"), Index("isShort", "watchedAt"), Index("channelId")],
+    indices = [
+        Index("videoId"),
+        Index("isShort", "watchedAt"),
+        Index("channelId"),
+        // `recentAny` reads both forms at once to seed the shorts feed, so it
+        // cannot use the composite index above.
+        Index("watchedAt"),
+    ],
 )
 data class WatchEntity(
     @PrimaryKey(autoGenerate = true) val rowId: Long = 0,
