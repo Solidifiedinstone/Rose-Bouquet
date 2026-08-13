@@ -537,3 +537,96 @@ def test_contrast_matches_the_wcag_extremes():
 
     assert contrast("#000000", "#ffffff") == pytest.approx(21.0, abs=0.1)
     assert contrast("#777777", "#777777") == pytest.approx(1.0, abs=0.01)
+
+
+# ── Long playlists, read in pages ─────────────────────────────────
+
+class FakeSpotify:
+    """A playlist of any length, optionally rate-limiting part way through."""
+
+    def __init__(self, total, cut_at=None):
+        self.total = total
+        self.cut_at = cut_at
+        self.calls = []
+
+    def page(self, playlist_id, token, offset=0, limit=100):
+        from rose_bouquet.core.spotify import Page, SpotifyTrack
+
+        self.calls.append(offset)
+        if self.cut_at is not None and offset >= self.cut_at:
+            return Page(next_offset=offset, retry_after=60, total=self.total,
+                        error="Spotify is rate-limiting this connection")
+
+        end = min(offset + limit, self.total)
+        tracks = [SpotifyTrack(title=f"Track {i}", artist="Someone") for i in range(offset, end)]
+        finished = end >= self.total
+        return Page(tracks=tracks, total=self.total,
+                    next_offset=None if finished else end)
+
+
+def test_a_long_playlist_is_read_in_full(monkeypatch):
+    """250 tracks must arrive as 250, not as the first hundred."""
+    fake = FakeSpotify(total=250)
+    monkeypatch.setattr(spotify, "fetch_page", fake.page)
+    monkeypatch.setattr(spotify, "client_token", lambda *a, **k: "token")
+
+    page = spotify.read_all("https://open.spotify.com/playlist/abcdefghijklmnopqrst")
+
+    assert len(page.tracks) == 250
+    assert page.next_offset is None
+    assert fake.calls == [0, 100, 200]
+
+
+def test_being_cut_off_keeps_the_place(monkeypatch):
+    """Rate-limited at 200: keep the 200 and remember to carry on from there."""
+    fake = FakeSpotify(total=900, cut_at=200)
+    monkeypatch.setattr(spotify, "fetch_page", fake.page)
+    monkeypatch.setattr(spotify, "client_token", lambda *a, **k: "token")
+
+    page = spotify.read_all("https://open.spotify.com/playlist/abcdefghijklmnopqrst")
+
+    assert len(page.tracks) == 200
+    assert page.next_offset == 200
+    assert page.retry_after == 60
+    assert page.total == 900
+
+
+def test_carrying_on_starts_where_it_stopped(monkeypatch):
+    fake = FakeSpotify(total=250)
+    monkeypatch.setattr(spotify, "fetch_page", fake.page)
+    monkeypatch.setattr(spotify, "client_token", lambda *a, **k: "token")
+
+    page = spotify.read_all("https://open.spotify.com/playlist/abcdefghijklmnopqrst",
+                            start_offset=200)
+
+    assert [t.title for t in page.tracks] == [f"Track {i}" for i in range(200, 250)]
+    assert fake.calls == [200]
+
+
+def test_an_import_record_survives_a_cut_off_read(tmp_path):
+    """The offset has to outlive the process, or 'carry on' is a lie."""
+    from rose_bouquet.core.imports import ImportJob
+
+    job = ImportJob(title="Long one", link="https://open.spotify.com/playlist/abc")
+    job.add_tracks([spotify.SpotifyTrack(title=f"T{i}") for i in range(200)])
+    job.next_offset = 200
+    job.expected_total = 900
+    path = job.save(tmp_path)
+
+    restored = ImportJob.load(path)
+    assert restored.next_offset == 200
+    assert restored.expected_total == 900
+    assert not restored.fully_read
+    assert not restored.finished          # not done: there is more to read
+    assert "700 still to read" in restored.summary
+
+
+def test_a_fully_read_playlist_is_finished_once_downloaded(tmp_path):
+    from rose_bouquet.core.imports import ImportJob
+
+    job = ImportJob(title="Short one")
+    job.add_tracks([spotify.SpotifyTrack(title="Only one")])
+    job.note_match(job.entries[0], "vid")
+    job.note_done("vid", "/music/a.mp3")
+
+    assert job.fully_read and job.finished

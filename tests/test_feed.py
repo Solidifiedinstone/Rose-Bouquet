@@ -440,3 +440,113 @@ def test_a_finished_import_says_so():
 
     assert job.finished
     assert "1 of 2 downloaded" in job.summary
+
+
+# ── Takeout ───────────────────────────────────────────────────────
+
+from rose_bouquet.core import takeout  # noqa: E402
+
+
+def test_watch_history_json_is_read():
+    text = """[
+      {"header": "YouTube", "title": "Watched Roygbiv",
+       "titleUrl": "https://www.youtube.com/watch?v=aaaaaaaaaaa",
+       "subtitles": [{"name": "Boards of Canada",
+                      "url": "https://www.youtube.com/channel/UCbocbocbocbocbocbocboc"}],
+       "time": "2026-01-15T20:11:00.000Z"},
+      {"header": "YouTube", "title": "Watched a video that has been removed"}
+    ]"""
+    watched = takeout.parse_watch_history_json(text)
+
+    assert len(watched) == 1                 # the removed one has no id
+    assert watched[0].video_id == "aaaaaaaaaaa"
+    assert watched[0].title == "Roygbiv"
+    assert watched[0].channel == "Boards of Canada"
+    assert watched[0].channel_id.startswith("UC")
+
+
+def test_the_html_export_is_read_too():
+    """Because 'export it again, differently' is a miserable thing to be told."""
+    text = '''<div class="content-cell mdl-cell">
+        <a href="https://www.youtube.com/watch?v=bbbbbbbbbbb">Xtal</a><br>
+        <a href="https://www.youtube.com/channel/UCaphexaphexaphexaphex">Aphex Twin</a><br>
+        Jan 15, 2026</div>'''
+    watched = takeout.parse_watch_history_html(text)
+
+    assert len(watched) == 1
+    assert watched[0].video_id == "bbbbbbbbbbb"
+    assert watched[0].channel == "Aphex Twin"
+
+
+def test_subscriptions_csv_is_read():
+    text = ("Channel Id,Channel Url,Channel Title\n"
+            "UCwarpwarpwarpwarpwarpwa,https://www.youtube.com/channel/UCwarpwarpwarpwarpwarpwa,Warp Records\n")
+    subscriptions = takeout.parse_subscriptions_csv(text)
+
+    assert len(subscriptions) == 1
+    assert subscriptions[0].title == "Warp Records"
+
+
+def test_importing_takeout_builds_a_profile():
+    data = takeout.TakeoutData(
+        watched=[takeout.Watched(video_id="v1", title="A", channel="Warp",
+                                 channel_id="UCwarp", at="2026-01-15T20:11:00.000Z")],
+        subscriptions=[takeout.Subscription(channel_id="UCwarp", title="Warp Records")],
+    )
+    tastes = Tastes()
+    plays, followed = takeout.apply(data, tastes)
+
+    assert (plays, followed) == (1, 1)
+    assert tastes.subscribed("UCwarp")
+    # The original timestamp is kept, so old history is weighted as old.
+    assert tastes.signals[0].at.startswith("2026-01-15")
+
+
+def test_importing_the_same_export_twice_changes_nothing():
+    data = takeout.TakeoutData(
+        watched=[takeout.Watched(video_id="v1", title="A")],
+        subscriptions=[takeout.Subscription(channel_id="UCwarp", title="Warp")],
+    )
+    tastes = Tastes()
+    takeout.apply(data, tastes)
+    plays, followed = takeout.apply(data, tastes)
+
+    assert (plays, followed) == (0, 0)
+    assert len(tastes.signals) == 1
+
+
+def test_a_takeout_zip_is_read(tmp_path):
+    import zipfile
+
+    archive = tmp_path / "takeout.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("Takeout/YouTube/history/watch-history.json",
+                    '[{"title": "Watched X", "titleUrl": "https://www.youtube.com/watch?v=ccccccccccc"}]')
+        zf.writestr("Takeout/YouTube/subscriptions/subscriptions.csv",
+                    "Channel Id,Channel Url,Channel Title\nUCabc,http://x,Some Channel\n")
+
+    data = takeout.read(archive)
+    assert len(data.watched) == 1
+    assert len(data.subscriptions) == 1
+    assert "1 watched videos and 1 subscriptions" in data.summary
+
+
+def test_imported_history_actually_shapes_the_feed():
+    """The whole point: after an import, the ranker knows what you like."""
+    from rose_bouquet.core.recommend import Candidate, rank
+
+    data = takeout.TakeoutData(watched=[
+        takeout.Watched(video_id=f"v{i}", title=f"Song {i}", channel="Warp Records",
+                        channel_id="UCwarp", at=at(3))
+        for i in range(20)
+    ])
+    tastes = Tastes()
+    takeout.apply(data, tastes)
+
+    ranked = rank([Candidate(id="new", title="A Warp upload", channel_id="UCwarp",
+                             artist="Warp Records"),
+                   Candidate(id="other", title="Unrelated", artist="Nobody")],
+                  tastes, limit=2, now=NOW)
+
+    assert ranked[0].candidate.id == "new"
+    assert "affinity" in ranked[0].terms

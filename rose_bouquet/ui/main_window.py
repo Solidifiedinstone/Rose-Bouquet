@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from rose_bouquet.core import imports, spotify, ytmusic
+from rose_bouquet.core import imports, spotify, takeout, ytmusic
 from rose_bouquet.core import youtube as yt
 from rose_bouquet.core.library import Library, Track, data_dir
 from rose_bouquet.core.playlists import PlaylistStore
@@ -251,6 +251,7 @@ class MainWindow(QMainWindow):
         importer = ImportView(self.appearance)
         importer.import_requested.connect(self.import_spotify)
         importer.resume_requested.connect(self.resume_import)
+        importer.takeout_requested.connect(self.import_takeout)
         importer.status.connect(self.notify)
         self._register("import", importer)
 
@@ -881,66 +882,83 @@ class MainWindow(QMainWindow):
 
     # ── Spotify import ────────────────────────────────────────────
 
-    def import_spotify(self, link: str, text: str, download: bool) -> None:
+    def import_spotify(self, link: str, text: str, download: bool,
+                       start_offset: int = 0, job=None) -> None:
+        """Read a playlist — all of it — matching as it goes.
+
+        Long playlists come back a hundred at a time, and Spotify will cut the
+        connection off if asked too often. Both are handled the same way: read
+        what we can, match it, write down where we stopped, and carry on from
+        there — either straight away or the next time the user presses the
+        button.
+        """
         importer = self.views["import"]
         self.last_import_link = link.strip()
         credentials = _credentials()
 
-        def work(report) -> tuple[str, spotify.ImportReport]:
+        def work(report) -> tuple:
             report("Reading the playlist…")
 
-            title, tracks = "", []
+            title, tracks, next_offset, total, problem = "", [], None, 0, ""
+
             if link:
-                title, tracks = spotify.fetch_playlist(
+                page = spotify.read_all(
                     link,
-                    credentials.get("spotify_client_id", ""),
-                    credentials.get("spotify_client_secret", ""),
+                    client_id=credentials.get("spotify_client_id", ""),
+                    client_secret=credentials.get("spotify_client_secret", ""),
+                    start_offset=start_offset,
+                    report=report,
                 )
+                tracks, next_offset, total = page.tracks, page.next_offset, page.total
+                problem = page.error
+
+                if not tracks and not problem:
+                    # Nothing from the API route; the embed still gives the
+                    # first hundred without any credentials at all.
+                    title, tracks = spotify.from_embed(link)
+                    next_offset = None if len(tracks) < spotify.EMBED_LIMIT else len(tracks)
+
             if not tracks and text:
                 tracks = spotify.from_text(text)
-
-            if tracks:
-                report(f"Read {len(tracks)} tracks")
+                next_offset = None
 
             if not tracks:
-                return "", spotify.ImportReport()
+                return "", spotify.ImportReport(), next_offset, total, problem
 
-            def progress(index: int, total: int, track) -> None:
-                report(f"Matching {index + 1} of {total} — {track}")
+            report(f"Matching {len(tracks)} tracks on YouTube Music")
 
-            found = spotify.match_all(
-                tracks, self.ytmusic.best_match, progress=progress
-            )
-            found.title = title or "Imported playlist"
-            # An import that stopped at exactly one page probably did not read
-            # the whole playlist, and saying so beats silently importing 100 of
-            # 400 tracks.
-            found.truncated = spotify.looks_truncated(tracks)
-            return title, found
+            def progress(index: int, count: int, track) -> None:
+                report(f"Matching {index} of {count} — {track}")
+
+            found = spotify.match_all(tracks, self.ytmusic.best_match, progress=progress)
+            found.title = title or (job.title if job else "") or "Imported playlist"
+            return title, found, next_offset, total, problem
 
         importer.show_progress("Reading the playlist…")
         tasks.run(
             work,
             on_progress=importer.show_progress,
-            on_done=lambda outcome: self._imported(outcome, download),
+            on_done=lambda outcome: self._imported(outcome, download, job=job),
             on_error=lambda message: (
                 importer.show_report(None), self.notify(f"Import failed: {message}", "error")
             ),
         )
 
-    def _imported(self, outcome, download: bool) -> None:
-        _title, report = outcome
+    def _imported(self, outcome, download: bool, job=None) -> None:
+        _title, report, next_offset, expected, problem = outcome
         importer = self.views["import"]
         importer.show_report(report)
 
         if not report.total:
-            self.notify("Nothing could be read from that playlist", "warning")
+            self.notify(problem or "Nothing could be read from that playlist", "warning")
             return
 
         # An import is a record on disk, so an interrupted one can be picked up
         # where it stopped instead of starting over.
-        job = imports.ImportJob.for_link(self.last_import_link, report.title)
-        job.partial = bool(getattr(report, "truncated", False))
+        job = job or imports.ImportJob.for_link(self.last_import_link, report.title)
+        job.next_offset = next_offset
+        job.expected_total = expected or job.expected_total
+        job.partial = next_offset is not None
         job.add_tracks([source for source, _found in report.matched] + report.missed)
 
         for source, found in report.matched:
@@ -966,12 +984,13 @@ class MainWindow(QMainWindow):
         playlist.missing = report.missed_lines()
         self.playlists.save(playlist)
 
-        if getattr(report, "truncated", False):
+        if next_offset is not None:
+            # Cut short. Say so, and keep the place.
             self.notify(
-                f"Only the first {report.total} tracks could be read — Spotify's "
-                "public endpoint pages 100 at a time. Add API credentials in "
-                "Settings → Downloads to get the rest.", "warning",
+                f"Read {job.total} so far — {problem or 'more to come'}. "
+                "Press Carry on to continue from where it stopped.", "warning",
             )
+            self.views["import"].show_unfinished([job])
         else:
             self.notify(report.summary, "success" if not report.missed else "warning")
 
@@ -1002,14 +1021,51 @@ class MainWindow(QMainWindow):
             ))
         self.show_section("downloads")
 
+    def import_takeout(self, path: str) -> None:
+        """Fold a Google Takeout export into the local profile."""
+        if not path:
+            self.notify("Choose your Takeout zip or folder first", "warning")
+            return
+
+        self.notify("Reading your export…", "info")
+
+        def work():
+            data = takeout.read(Path(path))
+            return data, takeout.apply(data, self.tastes)
+
+        def done(outcome) -> None:
+            _data, (plays, followed) = outcome
+            if not plays and not followed:
+                self.notify(
+                    "Nothing usable in there — it needs watch-history.json or "
+                    "subscriptions.csv from a YouTube Takeout", "warning")
+                return
+
+            self.tastes.save()
+            self.notify(
+                f"Imported {plays} watched videos and {followed} subscriptions "
+                "— rebuild the feed to use them", "success")
+            self.refresh()
+
+        tasks.run(work, on_done=done,
+                  on_error=lambda message: self.notify(f"Could not read that: {message}", "error"))
+
     def resume_import(self, job) -> None:
-        """Pick up an import that was cut short."""
+        """Pick up an import that was cut short — reading as well as downloading."""
         skipped = job.skip_already_downloaded(self.library)
         job.save()
         self.import_job = job
 
         if skipped:
             self.notify(f"{skipped} were already in your library", "info")
+
+        if not job.fully_read and job.link:
+            # There is more playlist to read. Carry on from the exact offset,
+            # then download everything outstanding.
+            self.notify(f"Carrying on from track {job.next_offset}…", "info")
+            self.import_spotify(job.link, "", True, start_offset=job.next_offset, job=job)
+            return
+
         self.download_pending(job)
 
     def check_unfinished_imports(self) -> None:

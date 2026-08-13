@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (
 from rose_bouquet.core.youtube import Video, YouTube
 from rose_bouquet.ui import tasks
 from rose_bouquet.ui.theme import Appearance
+from rose_bouquet.ui.thumbnails import Thumbnail
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,7 @@ class WatchView(QWidget):
         self.current: Optional[Video] = None
         self.loading = False
         self.audio_only = False
+        self.shorts = False
         self._seeking = False
 
         self.player = QMediaPlayer(self)
@@ -101,6 +103,12 @@ class WatchView(QWidget):
         find.setObjectName("Primary")
         find.clicked.connect(self.run_search)
         header_layout.addWidget(find)
+
+        self.shorts_button = QPushButton("Shorts")
+        self.shorts_button.setCheckable(True)
+        self.shorts_button.setToolTip("Only vertical videos of a minute or less")
+        self.shorts_button.toggled.connect(self._on_shorts_toggled)
+        header_layout.addWidget(self.shorts_button)
 
         self.back = QPushButton("← Results")
         self.back.setObjectName("Quiet")
@@ -196,6 +204,11 @@ class WatchView(QWidget):
 
     # ── Searching ─────────────────────────────────────────────────
 
+    def _on_shorts_toggled(self, on: bool) -> None:
+        self.shorts = on
+        if self.search.text().strip():
+            self.run_search()
+
     def run_search(self) -> None:
         query = self.search.text().strip()
         if not query:
@@ -204,7 +217,7 @@ class WatchView(QWidget):
         self.loading = True
         self.refresh()
         tasks.run(
-            self.youtube.search, query, 24,
+            self.youtube.search, query, 24, shorts=self.shorts,
             on_done=self._searched,
             on_error=lambda message: self.status.emit(f"Search failed: {message}", "error"),
         )
@@ -362,7 +375,8 @@ class WatchView(QWidget):
         grid.setSpacing(6)
 
         for index, video in enumerate(self.results):
-            grid.addWidget(self._card(video), index // 3, index % 3)
+            columns = 4 if self.shorts else 3
+            grid.addWidget(self._card(video), index // columns, index % columns)
 
         self.body_layout.addWidget(grid_holder)
         self.body_layout.addStretch(1)
@@ -381,14 +395,23 @@ class WatchView(QWidget):
 
         layout = QVBoxLayout(card)
         layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(4)
+        layout.setSpacing(6)
+
+        # Shorts are vertical; a 16:9 thumbnail box for one is mostly padding.
+        width, height = (150, 260) if video.is_short else (260, 146)
+        picture = Thumbnail(video.thumbnail_url, width, height, self.appearance,
+                            glyph="▶")
+        layout.addWidget(picture, 0, Qt.AlignmentFlag.AlignHCenter)
 
         title = QLabel(video.title)
         title.setWordWrap(True)
         title.setStyleSheet(f"color: {theme.text}; font-weight: 600;")
         layout.addWidget(title)
 
-        subtitle = QLabel(f"{video.channel} · {video.clock}" if video.duration else video.channel)
+        detail = f"{video.channel} · {video.clock}" if video.duration else video.channel
+        if video.is_short:
+            detail = f"{detail}  ·  Short"
+        subtitle = QLabel(detail)
         subtitle.setObjectName("Subtle")
         layout.addWidget(subtitle)
 

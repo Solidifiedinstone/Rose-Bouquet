@@ -86,6 +86,11 @@ class ImportJob:
     #: True when the source could not be read in full — so a later run knows
     #: there may be more to fetch rather than assuming it is complete.
     partial: bool = False
+    #: Where to carry on reading the source from. None means it was read to the
+    #: end. This is what turns "it only got 100" into "it will get the rest".
+    next_offset: Optional[int] = None
+    #: How many tracks the source says the playlist has.
+    expected_total: int = 0
     path: Optional[Path] = None
 
     # ── Progress ──────────────────────────────────────────────────
@@ -99,7 +104,15 @@ class ImportJob:
 
     @property
     def finished(self) -> bool:
+        """Nothing left to read, match, or download."""
+        if not self.fully_read:
+            return False
         return not any(e.state in (PENDING, MATCHED) for e in self.entries)
+
+    @property
+    def fully_read(self) -> bool:
+        """Whether the whole playlist has been read from the source yet."""
+        return self.next_offset is None
 
     @property
     def summary(self) -> str:
@@ -107,6 +120,10 @@ class ImportJob:
         left = self.total - done - missing - failed
 
         parts = [f"{done} of {self.total} downloaded"]
+        if not self.fully_read:
+            remaining = max(0, self.expected_total - self.total) if self.expected_total else 0
+            parts.insert(0, f"{remaining} still to read from Spotify"
+                         if remaining else "more still to read from Spotify")
         if left:
             parts.append(f"{left} to go")
         if missing:
@@ -202,6 +219,8 @@ class ImportJob:
             "link": self.link,
             "started": self.started,
             "partial": self.partial,
+            "next_offset": self.next_offset,
+            "expected_total": self.expected_total,
             "entries": [e.to_dict() for e in self.entries],
         }
 
@@ -213,6 +232,12 @@ class ImportJob:
             started=str(data.get("started") or ""),
             partial=bool(data.get("partial")),
         )
+        offset = data.get("next_offset")
+        job.next_offset = int(offset) if isinstance(offset, int) else None
+        try:
+            job.expected_total = int(data.get("expected_total") or 0)
+        except (TypeError, ValueError):
+            job.expected_total = 0
         rows = data.get("entries")
         if isinstance(rows, list):
             job.entries = [Entry.from_dict(r) for r in rows if isinstance(r, dict)]

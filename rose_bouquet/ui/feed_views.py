@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 from rose_bouquet.core.recommend import Scored, top_artists
 from rose_bouquet.core.tastes import Channel, Tastes
 from rose_bouquet.ui.theme import Appearance
+from rose_bouquet.ui.thumbnails import Thumbnail, youtube_thumbnail
 from rose_bouquet.ui.views import ScrollingView
 from rose_bouquet.ui.widgets import SectionHeading
 
@@ -115,6 +116,10 @@ class FeedView(ScrollingView):
         layout = QHBoxLayout(row)
         layout.setContentsMargins(12, 7, 12, 7)
         layout.setSpacing(10)
+
+        picture = Thumbnail(item.thumbnail or youtube_thumbnail(item.id),
+                            96, 54, self.appearance, glyph="♪")
+        layout.addWidget(picture)
 
         column = QVBoxLayout()
         column.setSpacing(1)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -748,6 +749,7 @@ class ImportView(ScrollingView):
 
     import_requested = Signal(str, str, bool)    # link, pasted text, download?
     resume_requested = Signal(object)            # ImportJob
+    takeout_requested = Signal(str)              # path to a Takeout export
     status = Signal(str, str)
 
     def __init__(self, appearance: Appearance, parent: Optional[QWidget] = None) -> None:
@@ -818,7 +820,51 @@ class ImportView(ScrollingView):
         buttons.addWidget(self.fetch_button)
 
         layout.addLayout(buttons)
+
+        # ── YouTube history and subscriptions ────────────────────
+        layout.addWidget(SectionHeading("From YouTube", self.appearance))
+
+        takeout_note = QLabel(
+            "A fresh install knows nothing about you, and the feed is only as "
+            "good as what it knows. Google will hand your history back: "
+            "takeout.google.com → YouTube → watch history and subscriptions. "
+            "Point this at the zip or the folder.\n\n"
+            "No account is connected and no token is kept — the file is read "
+            "once, into the same local profile as everything else."
+        )
+        takeout_note.setObjectName("Subtle")
+        takeout_note.setWordWrap(True)
+        layout.addWidget(takeout_note)
+
+        takeout_row = QHBoxLayout()
+        self.takeout_field = QLineEdit()
+        self.takeout_field.setPlaceholderText("~/Downloads/takeout-20260812.zip")
+        takeout_row.addWidget(self.takeout_field, 1)
+
+        browse = QPushButton("Choose…")
+        browse.clicked.connect(self._browse_takeout)
+        takeout_row.addWidget(browse)
+
+        do_import = QPushButton("Import history")
+        do_import.clicked.connect(
+            lambda: self.takeout_requested.emit(self.takeout_field.text().strip()))
+        takeout_row.addWidget(do_import)
+        layout.addLayout(takeout_row)
+
         return form
+
+    def _browse_takeout(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+
+        chosen, _ = QFileDialog.getOpenFileName(
+            self, "Your Takeout export", str(Path.home() / "Downloads"),
+            "Takeout (*.zip *.json *.csv *.html);;All files (*)",
+        )
+        if not chosen:
+            chosen = QFileDialog.getExistingDirectory(self, "Or the Takeout folder")
+        if chosen:
+            self.takeout_field.setText(chosen)
+            self.takeout_requested.emit(chosen)
 
     def _go(self, *, download: bool) -> None:
         if self.busy:

@@ -266,6 +266,112 @@ def _from_csv(text: str) -> list[SpotifyTrack]:
     return tracks
 
 
+def spotdl_credentials() -> tuple[str, str]:
+    """Spotify app credentials from spotdl, if it is installed.
+
+    spotdl registers its own application and ships the credentials, which is
+    how it reads playlists of any length. Using them here — when the user has
+    installed spotdl — is the same arrangement, and it means a long playlist
+    works with no setup. The user's own credentials always win when set.
+    """
+    try:
+        from spotdl.utils.config import DEFAULT_CONFIG
+
+        return DEFAULT_CONFIG.get("client_id", ""), DEFAULT_CONFIG.get("client_secret", "")
+    except Exception:                             # noqa: BLE001 — not installed
+        return "", ""
+
+
+def client_token(client_id: str, client_secret: str) -> str:
+    """A client-credentials token. Empty when it cannot be had."""
+    if not client_id or not client_secret:
+        return ""
+    try:
+        import requests
+
+        response = requests.post(
+            TOKEN_URL, data={"grant_type": "client_credentials"},
+            auth=(client_id, client_secret), timeout=TIMEOUT,
+        )
+        response.raise_for_status()
+        return response.json().get("access_token", "")
+    except Exception as exc:                      # noqa: BLE001
+        logger.warning("could not get a Spotify token: %s", exc)
+        return ""
+
+
+@dataclass
+class Page:
+    """One page of a playlist, and what to do next."""
+
+    tracks: list["SpotifyTrack"] = field(default_factory=list)
+    #: Where to carry on from. None when the playlist is finished.
+    next_offset: Optional[int] = None
+    #: How many tracks the playlist says it has, when it says.
+    total: int = 0
+    #: Seconds to wait before trying again, when Spotify asked us to stop.
+    retry_after: int = 0
+    error: str = ""
+
+
+def fetch_page(playlist_id: str, token: str, offset: int = 0, limit: int = 100) -> Page:
+    """One page of a playlist, from wherever you left off.
+
+    Rate limiting is reported rather than raised, because being told "come back
+    in an hour" halfway through a nine-hundred-track playlist is a normal thing
+    that has to be survivable: the caller writes down the offset and carries on
+    later.
+    """
+    try:
+        import requests
+
+        response = requests.get(
+            API_URL.format(id=playlist_id),
+            headers={"Authorization": f"Bearer {token}"},
+            params={"limit": limit, "offset": offset,
+                    "fields": "items(track(name,artists(name),album(name),duration_ms)),total"},
+            timeout=TIMEOUT,
+        )
+    except Exception as exc:                      # noqa: BLE001
+        return Page(next_offset=offset, error=str(exc))
+
+    if response.status_code == 429:
+        try:
+            wait = int(response.headers.get("Retry-After", "60"))
+        except ValueError:
+            wait = 60
+        return Page(next_offset=offset, retry_after=wait,
+                    error="Spotify is rate-limiting this connection")
+
+    if not response.ok:
+        return Page(next_offset=offset, error=f"Spotify said {response.status_code}")
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return Page(next_offset=offset, error="Spotify sent something unreadable")
+
+    items = payload.get("items") or []
+    tracks = []
+    for item in items:
+        inner = (item or {}).get("track") or {}
+        if not inner.get("name"):
+            continue
+        tracks.append(SpotifyTrack(
+            title=inner.get("name", ""),
+            artist=_artist_names(inner),
+            album=_album_name(inner),
+            duration=int(inner.get("duration_ms", 0) // 1000),
+        ))
+
+    total = int(payload.get("total") or 0)
+    read_so_far = offset + len(items)
+    finished = not items or (total and read_so_far >= total)
+
+    return Page(tracks=tracks, total=total,
+                next_offset=None if finished else read_so_far)
+
+
 def anonymous_token() -> str:
     """An access token from the public web player. Empty if it cannot be had."""
     try:
@@ -372,6 +478,56 @@ def from_public_api(link: str, token: str = "") -> tuple[str, list[SpotifyTrack]
     except Exception as exc:                      # noqa: BLE001
         logger.warning("the public Spotify API failed: %s", exc)
         return "", []
+
+
+def read_all(
+    link: str,
+    *,
+    client_id: str = "",
+    client_secret: str = "",
+    start_offset: int = 0,
+    report=None,
+) -> Page:
+    """Read a playlist from `start_offset` to the end, however many pages that takes.
+
+    This is the route that makes a long playlist work. It pages until Spotify
+    says there is no more, and if it is cut short — rate limiting, a dropped
+    connection — it returns what it got *and where to carry on from*, so the
+    import can be finished later rather than started again.
+    """
+    identifier = playlist_id(link)
+    if not identifier:
+        return Page(error="That is not a Spotify playlist link")
+
+    token = client_token(client_id, client_secret)
+    if not token:
+        borrowed_id, borrowed_secret = spotdl_credentials()
+        token = client_token(borrowed_id, borrowed_secret)
+    if not token:
+        return Page(next_offset=start_offset,
+                    error="No Spotify credentials available — add them in "
+                          "Settings, or install spotdl")
+
+    gathered: list[SpotifyTrack] = []
+    offset = start_offset
+    total = 0
+
+    while True:
+        page = fetch_page(identifier, token, offset)
+        gathered.extend(page.tracks)
+        total = page.total or total
+
+        if page.error:
+            return Page(tracks=gathered, next_offset=page.next_offset, total=total,
+                        retry_after=page.retry_after, error=page.error)
+
+        if report is not None and total:
+            report(f"Read {start_offset + len(gathered)} of {total} tracks")
+
+        if page.next_offset is None:
+            return Page(tracks=gathered, next_offset=None, total=total)
+
+        offset = page.next_offset
 
 
 def fetch_playlist(

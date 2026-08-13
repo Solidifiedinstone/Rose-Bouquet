@@ -34,6 +34,10 @@ CHANNEL_ID = re.compile(r"(?:channel/|@)([A-Za-z0-9_\-]+)")
 #: up after a week away, few enough that twenty subscriptions is not a stall.
 UPLOADS_PER_CHANNEL = 12
 
+#: A "short" is a vertical video of a minute or less. YouTube does not label
+#: them in a flat listing, so duration is what identifies one.
+SHORT_SECONDS = 60
+
 #: Shared with the downloader — see `ytmusic.PLAYER_CLIENTS`.
 PLAYER_CLIENTS = ["tv", "android", "ios", "web"]
 
@@ -62,6 +66,21 @@ class Video:
         if hours:
             return f"{hours}:{minutes:02d}:{seconds:02d}"
         return f"{minutes}:{seconds:02d}"
+
+    @property
+    def is_short(self) -> bool:
+        return 0 < self.duration <= SHORT_SECONDS
+
+    @property
+    def thumbnail_url(self) -> str:
+        """A picture for this video, falling back to YouTube's own url.
+
+        Flat listings frequently omit thumbnails, and a wall of results with no
+        pictures is just a list of filenames.
+        """
+        if self.thumbnail:
+            return self.thumbnail
+        return f"https://i.ytimg.com/vi/{self.id}/mqdefault.jpg" if self.id else ""
 
     def to_candidate(self, source: str = "subscription") -> Candidate:
         return Candidate(
@@ -194,14 +213,21 @@ class YouTube:
             kind="channel",
         )
 
-    def uploads(self, identifier: str, limit: int = UPLOADS_PER_CHANNEL) -> list[Video]:
-        """The most recent uploads from a channel."""
+    def uploads(self, identifier: str, limit: int = UPLOADS_PER_CHANNEL,
+                *, tab: str = "videos") -> list[Video]:
+        """The most recent uploads from a channel.
+
+        `tab` picks which shelf: "videos", "shorts", or "streams". They are
+        separate pages on YouTube, and a channel that posts mostly shorts looks
+        empty if you only ever ask for videos.
+        """
         identifier = channel_id(identifier) or identifier
         base = (f"https://www.youtube.com/channel/{identifier}"
                 if identifier.startswith("UC")
                 else f"https://www.youtube.com/@{identifier}")
 
-        data = self._extract(f"{base}/videos", {"playlistend": limit})
+        tab = tab if tab in ("videos", "shorts", "streams") else "videos"
+        data = self._extract(f"{base}/{tab}", {"playlistend": limit})
         if not data:
             return []
 
@@ -218,19 +244,29 @@ class YouTube:
                 videos.append(video)
         return videos
 
-    def search(self, query: str, limit: int = 20) -> list[Video]:
-        """Search YouTube itself — videos, not just music."""
+    def search(self, query: str, limit: int = 20, *, shorts: bool = False) -> list[Video]:
+        """Search YouTube itself — videos, not just music.
+
+        `shorts` filters to the vertical ones. YouTube has no plain search
+        filter for that, so it is done on duration: a short is at most a minute,
+        and anything without a duration is left in rather than guessed at.
+        """
         if not query.strip():
             return []
 
-        data = self._extract(f"ytsearch{limit}:{query}")
+        data = self._extract(f"ytsearch{limit * 2 if shorts else limit}:{query}")
         if not data:
             return []
 
-        return [
+        videos = [
             _video(entry) for entry in (data.get("entries") or [])
             if isinstance(entry, dict) and entry.get("id")
         ]
+
+        if shorts:
+            videos = [v for v in videos if 0 < v.duration <= SHORT_SECONDS]
+
+        return videos[:limit]
 
     def related(self, video_id: str, limit: int = 10) -> list[Video]:
         """What YouTube considers related to a video.
