@@ -34,7 +34,9 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.util.UnstableApi
+import androidx.compose.ui.platform.LocalContext
 import dev.rose.bouquet.BuildConfig
+import dev.rose.bouquet.data.Updates
 import dev.rose.bouquet.ui.AppViewModel
 import dev.rose.bouquet.ui.SectionHeading
 import dev.rose.bouquet.ui.theme.LocalRoseTheme
@@ -197,6 +199,10 @@ fun SettingsScreen(model: AppViewModel) {
         }
 
         item {
+            UpdateRow()
+        }
+
+        item {
             Column(Modifier.padding(16.dp)) {
                 Text("Bouquet", color = theme.text,
                     style = MaterialTheme.typography.titleSmall)
@@ -256,6 +262,82 @@ private val BITRATES = listOf(
     128 to "128k",
     96 to "96k",
 )
+
+/**
+ * Check for a new version, and install it.
+ *
+ * Nothing is installed silently — the APK is downloaded and handed to Android's
+ * own installer, which asks. An app able to replace itself without being asked
+ * would be a worse thing to carry than the three manual steps this saves.
+ */
+@Composable
+private fun UpdateRow() {
+    val theme = LocalRoseTheme.current
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    var checking by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var found by remember { mutableStateOf<Updates.Release?>(null) }
+
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+        SectionHeading("Updates")
+        Text(
+            "Installed: ${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE})",
+            color = theme.textDim, style = MaterialTheme.typography.bodySmall,
+        )
+        message?.let {
+            Spacer(Modifier.size(6.dp))
+            Text(it, color = theme.textDim, style = MaterialTheme.typography.bodySmall)
+        }
+        Spacer(Modifier.size(10.dp))
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Button(
+                enabled = !checking,
+                onClick = {
+                    scope.launch {
+                        checking = true
+                        message = "Looking…"
+                        val latest = Updates.latest()
+                        message = when {
+                            latest == null ->
+                                "Could not check. No connection, or the release page is private " +
+                                    "to an account this phone is not signed in to."
+                            Updates.isNewer(latest.version, BuildConfig.VERSION_NAME) -> {
+                                found = latest
+                                "Version ${latest.version} is available."
+                            }
+                            else -> "This is the newest version."
+                        }
+                        checking = false
+                    }
+                },
+            ) { Text(if (checking) "Checking…" else "Check for updates") }
+
+            found?.let { release ->
+                Spacer(Modifier.width(12.dp))
+                Button(
+                    enabled = !checking && release.apkUrl != null,
+                    onClick = {
+                        scope.launch {
+                            checking = true
+                            message = "Downloading ${release.version}…"
+                            val intent = Updates.download(context, release.apkUrl!!)
+                            if (intent == null) {
+                                message = "The download failed."
+                            } else {
+                                message = "Android will ask you to confirm the install."
+                                context.startActivity(intent)
+                            }
+                            checking = false
+                        }
+                    },
+                ) { Text("Install ${release.version}") }
+            }
+        }
+    }
+}
 
 @Composable
 private fun Toggle(title: String, detail: String, value: Boolean, onChange: (Boolean) -> Unit) {

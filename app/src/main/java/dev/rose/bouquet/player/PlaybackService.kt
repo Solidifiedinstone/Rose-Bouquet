@@ -34,6 +34,14 @@ class PlaybackService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
 
+        // A visualiser can only attach to an audio session this app owns.
+        // Session 0 — the whole output mix — needs CAPTURE_AUDIO_OUTPUT, which
+        // is a privileged permission no ordinary app can hold since Android 10,
+        // so asking for it fails silently and draws nothing. Generating our own
+        // and telling the visualiser about it is the only route open.
+        val audioSession = getSystemService(android.media.AudioManager::class.java)
+            ?.generateAudioSessionId() ?: 0
+
         val player = ExoPlayer.Builder(this)
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory()))
             .setAudioAttributes(
@@ -50,6 +58,13 @@ class PlaybackService : MediaSessionService() {
             // so a stall is a normal event rather than an error to give up on.
             .setHandleAudioBecomingNoisy(true)
             .build()
+            .apply {
+                // Set rather than read: ExoPlayer's own id is unset until
+                // something plays, and the visualiser has to be able to attach
+                // before the first track rather than after it.
+                if (audioSession != 0) audioSessionId = audioSession
+                AudioSession.id = audioSessionId
+            }
 
         session = MediaSession.Builder(this, player)
             .setSessionActivity(openAppIntent())
@@ -134,4 +149,15 @@ class PlaybackService : MediaSessionService() {
     companion object {
         const val USER_AGENT = "rose-bouquet-android"
     }
+}
+
+/**
+ * The audio session the music player is using.
+ *
+ * Shared as plain state rather than passed around because the visualiser and
+ * the player never meet: one is a composable, the other a service reached
+ * through a MediaController, and a controller does not expose a session id.
+ */
+object AudioSession {
+    @Volatile var id: Int = 0
 }

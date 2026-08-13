@@ -38,13 +38,22 @@ class Spectrum(private val bandCount: Int = BANDS) {
     private val smoothed = FloatArray(bandCount)
 
     /**
-     * Start reading from an audio session.
+     * Start reading from this app's own audio session.
      *
-     * Session 0 is the whole output mix, which is what makes this work for
-     * video as well as music without knowing which player is running.
+     * Not session 0. Reading the whole output mix requires CAPTURE_AUDIO_OUTPUT,
+     * which is signature-or-privileged and unavailable to ordinary apps from
+     * Android 10 onwards — the constructor throws and the visualiser stays
+     * blank, which is exactly what it did.
      */
-    fun start(sessionId: Int = 0) {
+    fun start(sessionId: Int = AudioSession.id) {
         if (visualizer != null) return
+        // Nothing has played yet, so the service has not made a session. There
+        // is genuinely nothing to visualise; saying so beats drawing a flat
+        // line that looks like a bug.
+        if (sessionId == 0) {
+            active.value = false
+            return
+        }
         runCatching {
             Visualizer(sessionId).apply {
                 captureSize = Visualizer.getCaptureSizeRange()[1]

@@ -27,6 +27,9 @@ class MusicRepository(
     private val database = RoseDatabase.get(context)
     private val music = database.music()
 
+    /** Cover URLs already built, so the same art keeps the same URL. */
+    private val coverUrls = java.util.concurrent.ConcurrentHashMap<String, String>()
+
     // ── Reading ───────────────────────────────────────────────────
 
     fun songs(server: Server?): Flow<List<SongEntity>> =
@@ -141,8 +144,23 @@ class MusicRepository(
     fun streamUrl(server: Server, songId: String, maxBitrateKbps: Int = 0) =
         client.streamUrl(server, songId, maxBitrateKbps)
     fun downloadUrl(server: Server, songId: String) = client.downloadUrl(server, songId)
-    fun coverUrl(server: Server, coverArt: String?, size: Int = 512) =
-        client.coverUrl(server, coverArt, size)
+    /**
+     * A stable URL for one piece of cover art.
+     *
+     * Memoised, and that is the whole point rather than an optimisation.
+     * Subsonic authenticates with a token salted per request, so asking for the
+     * same cover twice produces two different URLs — and this is called from
+     * composition, so every recomposition handed the image loader a URL it had
+     * never seen, which cancelled the in-flight request and started another.
+     * With a list scrolling or a position ticking twice a second, the art never
+     * finished loading and the screen simply stayed blank.
+     */
+    fun coverUrl(server: Server, coverArt: String?, size: Int = 512): String? {
+        val art = coverArt?.takeIf { it.isNotBlank() } ?: return null
+        return coverUrls.getOrPut("${server.id}|$art|$size") {
+            client.coverUrl(server, art, size) ?: return null
+        }
+    }
 
     companion object {
         private const val PAGE = 100

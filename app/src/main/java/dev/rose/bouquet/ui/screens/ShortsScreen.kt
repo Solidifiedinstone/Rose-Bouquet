@@ -107,12 +107,24 @@ fun ShortsScreen(model: AppViewModel) {
             if (found != null) exo.playYouTube(context, found)
             loading = false
             model.watched(short)
+
+            // Resolve the next few while this one plays, so the swipe after
+            // this costs nothing. A short is roughly a second of page fetch and
+            // parse, which is the whole of why the reel felt slow.
+            YouTubeSource.prefetch(
+                (1..3).mapNotNull { feed.getOrNull(page + it) }
+                    .map { "https://www.youtube.com/shorts/${it.videoId}" },
+            )
         }
     }
 
     VerticalPager(state = pager, modifier = Modifier.fillMaxSize()) { page ->
         val short = feed[page]
         Box(Modifier.fillMaxSize().background(Color.Black)) {
+            // Always behind the player: a resolving short is otherwise a black
+            // rectangle, which reads as broken rather than as loading.
+            Cover(short.thumbnail, Modifier.fillMaxSize(), corner = 0)
+
             if (page == pager.settledPage) {
                 AndroidView(
                     factory = {
@@ -133,9 +145,6 @@ fun ShortsScreen(model: AppViewModel) {
                         modifier = Modifier.align(Alignment.Center),
                     )
                 }
-            } else {
-                // Off-screen pages show the thumbnail only — no decoder, no cost.
-                Cover(short.thumbnail, Modifier.fillMaxSize(), corner = 0)
             }
 
             Overlay(short, model, Modifier.align(Alignment.BottomStart))

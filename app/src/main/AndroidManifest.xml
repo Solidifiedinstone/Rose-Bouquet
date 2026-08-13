@@ -14,6 +14,10 @@
          only when the visualiser is first opened, and refusing costs the
          visualiser and nothing else. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Updating from the release page, since there is no store to do it. The
+         user still confirms every install; this only allows the app to be the
+         one that asks. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:name=".RoseApp"
@@ -36,6 +40,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.updates"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <service
             android:name=".player.PlaybackService"

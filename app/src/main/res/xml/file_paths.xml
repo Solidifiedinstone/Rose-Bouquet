@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Only the downloaded update, and only from the cache. Nothing else this
+         app holds should be reachable through a content URI. -->
+    <cache-path name="updates" path="." />
+</paths>

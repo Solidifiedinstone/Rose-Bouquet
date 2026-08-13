@@ -1,6 +1,9 @@
 package dev.rose.bouquet.youtube
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import org.schabi.newpipe.extractor.Image
 import org.schabi.newpipe.extractor.NewPipe
@@ -88,6 +91,22 @@ object YouTubeSource {
 
     private val started = AtomicBoolean(false)
 
+    /**
+     * Stream URLs already resolved, so a reel does not wait for the network.
+     *
+     * Resolving one short means fetching and parsing a YouTube page, which is
+     * most of a second. Doing that on the swipe is what made the reel feel
+     * broken; the desktop app solved the same problem with a stream cache and a
+     * prefetch, and this is that.
+     *
+     * Bounded, because a long doomscroll would otherwise hold every URL of the
+     * evening. Entries expire because YouTube's URLs are signed and time
+     * limited — a stale one is a 403 rather than a slow load.
+     */
+    private val resolved = java.util.concurrent.ConcurrentHashMap<String, Timed>()
+
+    private class Timed(val playback: VideoPlayback, val at: Long)
+
     private val service get() = ServiceList.YouTube
 
     /** Safe to call repeatedly and from anywhere; only the first call does work. */
@@ -166,7 +185,35 @@ object YouTubeSource {
      * Adaptive means two URLs that the player has to combine, which is a
      * MergingMediaSource on the other side — see the Watch screen.
      */
+    /**
+     * Resolve ahead of time, so the next swipe costs nothing.
+     *
+     * Fire and forget: the caller does not wait, and a failure here simply
+     * means the reel resolves that one the slow way when it arrives.
+     */
+    suspend fun prefetch(urls: List<String>, maxHeight: Int = 720) = coroutineScope {
+        urls.filter { !resolved.containsKey(cacheKey(it, maxHeight)) }
+            .take(PREFETCH)
+            .map { url -> async { videoPlayback(url, maxHeight) } }
+            .awaitAll()
+        Unit
+    }
+
+    private fun cacheKey(url: String, maxHeight: Int) = "$url|$maxHeight"
+
     suspend fun videoPlayback(url: String, maxHeight: Int = 1080): VideoPlayback? = io(null) {
+        val key = cacheKey(url, maxHeight)
+        val now = System.currentTimeMillis()
+
+        resolved[key]?.let { if (now - it.at < URL_TTL_MS) return@io it.playback }
+
+        if (resolved.size > CACHE_LIMIT) {
+            // Cheap and good enough: this is a reel, so anything old is behind
+            // the user and will not be asked for again.
+            resolved.entries.removeIf { now - it.value.at > URL_TTL_MS }
+            if (resolved.size > CACHE_LIMIT) resolved.clear()
+        }
+
         val info = StreamInfo.getInfo(service, url)
 
         val audio = info.audioStreams
@@ -178,7 +225,9 @@ object YouTubeSource {
             .maxByOrNull { it.height }
 
         if (video != null && audio != null) {
-            return@io VideoPlayback(video.content, audio.content, video.height)
+            val found = VideoPlayback(video.content, audio.content, video.height)
+            resolved[key] = Timed(found, now)
+            return@io found
         }
 
         // No usable adaptive pair. One file carrying both is worse quality but
@@ -186,7 +235,7 @@ object YouTubeSource {
         info.videoStreams.filter { it.content.isNotBlank() }
             .maxByOrNull { it.height }
             ?.let { VideoPlayback(it.content, null, it.height) }
-    }
+    }?.also { resolved[cacheKey(url, maxHeight)] = Timed(it, System.currentTimeMillis()) }
 
     // ── Channels ──────────────────────────────────────────────────
 
@@ -276,6 +325,14 @@ object YouTubeSource {
 
     /** Longest a thing can be and still belong in a reel. */
     private const val SHORT_SECONDS = 180
+
+    /** How far ahead the reel resolves. Three is roughly a fast swipe. */
+    private const val PREFETCH = 3
+
+    /** YouTube's stream URLs are signed and time limited. */
+    private const val URL_TTL_MS = 30 * 60 * 1000L
+
+    private const val CACHE_LIMIT = 120
 }
 
 /** The `v=` id out of a watch URL, which is what everything else keys on. */
