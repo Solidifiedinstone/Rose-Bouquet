@@ -468,12 +468,34 @@ def _make_handler(server: MusicServer):
             return start, end
 
         def _cover(self, cover_id: str) -> None:
+            """Serve a track's artwork, from wherever it actually is.
+
+            A cover file beside the music first, then the art embedded in the
+            file's own tags. The embedded fallback is not a nicety: this served
+            nothing but 404s for a library of 40-of-40 files that carried their
+            art in an APIC frame and had no `folder.jpg` anywhere, which is the
+            normal shape of downloaded music. Every client — the Android app,
+            Symfonium, DSub — showed blank tiles and none of them were wrong.
+            """
             track = server.track_by_id(cover_id)
-            if track is None or not track.cover or not Path(track.cover).exists():
+            if track is None:
                 return self._send_error(404, "No cover art")
 
-            data = Path(track.cover).read_bytes()
-            kind = mimetypes.guess_type(track.cover)[0] or "image/jpeg"
+            source = track.cover if track.cover and Path(track.cover).exists() else None
+            if source is None:
+                from rose_bouquet.core.artwork import embedded_art
+
+                # Extracted once into the cover cache and read from there
+                # afterwards, so this is not a tag parse per request.
+                extracted = embedded_art(track.path)
+                if extracted and Path(extracted).exists():
+                    source = extracted
+
+            if source is None:
+                return self._send_error(404, "No cover art")
+
+            data = Path(source).read_bytes()
+            kind = mimetypes.guess_type(source)[0] or "image/jpeg"
             self.send_response(200)
             self.send_header("Content-Type", kind)
             self.send_header("Content-Length", str(len(data)))
