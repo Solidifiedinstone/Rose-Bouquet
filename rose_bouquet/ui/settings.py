@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 from rose_bouquet.core import autostart
 from rose_bouquet.core.library import music_dir
 from rose_bouquet.core.server import DEFAULT_PORT, new_password
+from rose_bouquet.ui import tasks
 from rose_bouquet.ui.branding import APP_NAME, APP_TAGLINE, ORGANISATION, rose_widget
 from rose_bouquet.ui.preferences import (
     STYLE_AXES,
@@ -806,6 +807,78 @@ class SettingsDialog(QDialog):
 
     # ── Serving ───────────────────────────────────────────────────
 
+    def _updates_row(self) -> QWidget:
+        """Check for a new version, and install it.
+
+        The command differs by how this was installed — `pipx upgrade` or a
+        `git pull` — so it works that out rather than offering both and letting
+        the user pick the one that cannot work.
+        """
+        from rose_bouquet.core import updates
+
+        box = QWidget()
+        row = QVBoxLayout(box)
+        row.setContentsMargins(0, 0, 0, 0)
+
+        installed = QLabel(f"Installed: {updates.current_version()} "
+                           f"({updates.install_kind()} install)")
+        installed.setProperty("role", "hint")
+        row.addWidget(installed)
+
+        note = QLabel("")
+        note.setWordWrap(True)
+        note.setProperty("role", "hint")
+
+        buttons = QHBoxLayout()
+        check = QPushButton("Check for updates")
+        install = QPushButton("Update now")
+        install.setEnabled(False)
+        buttons.addWidget(check)
+        buttons.addWidget(install)
+        buttons.addStretch(1)
+        row.addLayout(buttons)
+        row.addWidget(note)
+
+        def on_check() -> None:
+            check.setEnabled(False)
+            note.setText("Looking…")
+
+            def work():
+                return updates.latest()
+
+            def done(release) -> None:
+                check.setEnabled(True)
+                if release is None:
+                    note.setText("Could not check — no connection, or the release page "
+                                 "is not visible from this machine.")
+                    return
+                if updates.is_newer(release.version, updates.current_version()):
+                    note.setText(f"Version {release.version} is available.")
+                    install.setEnabled(True)
+                else:
+                    note.setText("This is the newest version.")
+
+            tasks.run(work, on_done=done,
+                      on_error=lambda m: (check.setEnabled(True),
+                                          note.setText(f"Could not check: {m}")))
+
+        def on_install() -> None:
+            install.setEnabled(False)
+            note.setText("Updating…")
+
+            def done(result) -> None:
+                worked, message = result
+                note.setText(message)
+                install.setEnabled(not worked)
+
+            tasks.run(updates.update, on_done=done,
+                      on_error=lambda m: (install.setEnabled(True),
+                                          note.setText(f"Could not update: {m}")))
+
+        check.clicked.connect(on_check)
+        install.clicked.connect(on_install)
+        return box
+
     def _autostart_note(self) -> str:
         if not autostart.enabled():
             return ("Runs the server on its own at login — no window, no player. "
@@ -858,6 +931,8 @@ class SettingsDialog(QDialog):
         self.autostart_note.setWordWrap(True)
         self.autostart_note.setProperty("role", "hint")
         form.addRow("", self.autostart_note)
+
+        form.addRow("Updates", self._updates_row())
 
         self.port = QSpinBox()
         self.port.setRange(1024, 65535)

@@ -714,3 +714,21 @@ def test_turning_the_login_entry_off_twice_is_not_an_error(tmp_path, monkeypatch
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     autostart.disable()
     autostart.disable()
+
+
+def test_version_comparison_treats_versions_as_numbers():
+    """A string comparison calls 0.1.10 older than 0.1.9.
+
+    Which breaks precisely when a project has had enough releases for updates
+    to matter.
+    """
+    from rose_bouquet.core.updates import is_newer
+
+    assert is_newer("0.1.10", "0.1.9")
+    assert is_newer("0.2.0", "0.1.99")
+    assert is_newer("1.0.0", "0.9.9")
+    assert not is_newer("0.1.2", "0.1.3")
+    assert not is_newer("0.1.3", "0.1.3")
+    # Tags carry a leading v and releases sometimes a suffix.
+    assert is_newer("v0.1.4", "0.1.3")
+    assert not is_newer("0.1.3-beta", "0.1.3")
