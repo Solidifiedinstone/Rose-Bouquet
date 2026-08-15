@@ -78,7 +78,10 @@ following it without seeing it in the feed.
 finding things your subscriptions would never have shown you.
 
 **Library** — your own files, scanned from folders you choose, with tags read
-by mutagen. Albums group properly, including compilations. Shuffle is a
+by mutagen. Albums group properly, including compilations, and an open album
+shows the *whole* record — the tracklist comes from MusicBrainz, your files are
+laid into it, and the ones you are missing are listed greyed out with a button
+to go and get them. So you can tell an EP from half a record at a glance. Shuffle is a
 shuffled *order* rather than a random pick, so nothing repeats before the album
 is through and "previous" means something.
 
@@ -308,7 +311,7 @@ python -m venv .venv
 .venv/bin/python -m pytest -q
 ```
 
-247 tests over the queue, the library, playlists, the cava bridge, the Spotify
+252 tests over the queue, the library, playlists, the cava bridge, the Spotify
 and Takeout importers, resumable imports, the recommender and its interest
 filtering, the shorts reel, optical discs, the server, and theme readability —
 including one that launches the real entry point and waits for the window,

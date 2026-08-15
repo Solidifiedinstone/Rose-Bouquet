@@ -1368,3 +1368,84 @@ def test_the_launch_check_asks_once_a_day_not_once_a_launch():
     restored = Preferences.from_dict(prefs.to_dict())
     assert restored.check_updates_on_start is False
     assert restored.last_update_check == prefs.last_update_check
+
+
+# ── What an album actually contains ───────────────────────────────
+
+def test_a_tracklist_lays_your_files_into_the_real_album():
+    """An album you have four tracks of is not a four-track album.
+
+    The library only knew about files, so there was no way to tell an EP from
+    half a record — the one thing you want to know while looking at it.
+    """
+    from rose_bouquet.core import musicbrainz as mb
+
+    release = mb.Release(title="An Album", artist="A", tracks=[
+        mb.CatalogueTrack(position=1, title="One", duration=100),
+        mb.CatalogueTrack(position=2, title="Two", duration=200),
+        mb.CatalogueTrack(position=3, title="Three", duration=300),
+    ])
+    owned = [Track(path="/m/2.mp3", title="Two", artist="A", album="An Album")]
+
+    slots = mb.reconcile(release, owned)
+
+    assert len(slots) == 3
+    assert [s.owned for s in slots] == [False, True, False]
+    assert slots[1].track.path == "/m/2.mp3"
+    # The catalogue supplies length even for tracks you do not have.
+    assert slots[0].duration == 100
+
+
+def test_files_are_matched_by_title_not_by_position():
+    """A file tagged with the wrong track number is common; a wrong title is not."""
+    from rose_bouquet.core import musicbrainz as mb
+
+    release = mb.Release(tracks=[
+        mb.CatalogueTrack(position=1, title="Wesley's Theory"),
+        mb.CatalogueTrack(position=2, title="For Free?"),
+    ])
+    # Tagged as track 3, prefixed by the ripper, and accented differently.
+    owned = [Track(path="/m/x.mp3", title="03 - Wesley’s Theory", track_number=3)]
+
+    slots = mb.reconcile(release, owned)
+    assert slots[0].owned and not slots[1].owned
+
+
+def test_a_track_the_catalogue_does_not_list_is_kept_not_hidden():
+    """Losing a track you own would be far worse than an extra line."""
+    from rose_bouquet.core import musicbrainz as mb
+
+    release = mb.Release(tracks=[mb.CatalogueTrack(position=1, title="One")])
+    owned = [Track(path="/m/1.mp3", title="One"),
+             Track(path="/m/b.mp3", title="Some Bonus Track")]
+
+    slots = mb.reconcile(release, owned)
+
+    assert len(slots) == 2
+    assert slots[-1].title == "Some Bonus Track"
+    assert slots[-1].owned
+
+
+def test_no_tracklist_means_the_album_looks_exactly_as_it_did():
+    """A failed lookup must never cost you the view of your own music."""
+    from rose_bouquet.core import musicbrainz as mb
+
+    owned = [Track(path="/m/1.mp3", title="One"), Track(path="/m/2.mp3", title="Two")]
+
+    slots = mb.reconcile(None, owned)
+
+    assert len(slots) == 2
+    assert all(s.owned for s in slots)
+    assert [s.position for s in slots] == [1, 2]
+
+
+def test_titles_compare_past_the_noise_rippers_add():
+    from rose_bouquet.core import musicbrainz as mb
+
+    same = "king kunta"
+    for written in ("King Kunta", "03 - King Kunta", "King Kunta (Remastered)",
+                    "King  Kunta", "King Kunta [Explicit]"):
+        assert mb.normalise(written) == same
+
+    # It must not collapse songs that genuinely differ.
+    assert mb.normalise("One") != mb.normalise("One More Time")

@@ -225,6 +225,10 @@ class AlbumsView(ScrollingView):
 
     play_requested = Signal(object, object)
     menu_requested = Signal(object, object)
+    #: (artist, album) — go and look up what this album actually contains.
+    tracklist_wanted = Signal(object)
+    #: title, artist, album — a track of it you do not have, go and get it.
+    fetch_requested = Signal(str, str, str)
 
     COLUMNS = 5
 
@@ -233,6 +237,7 @@ class AlbumsView(ScrollingView):
         super().__init__(appearance, parent)
         self.library = library
         self.open_album: Optional[tuple[str, str]] = None
+        self.release = None
 
         self.title = QLabel("Albums")
         self.title.setObjectName("Heading")
@@ -247,29 +252,112 @@ class AlbumsView(ScrollingView):
 
     def show_album(self, key: Optional[tuple[str, str]]) -> None:
         self.open_album = key
+        #: The catalogue's tracklist for the open album, once it arrives.
+        self.release = None
         self.refresh()
+        if key is not None:
+            self.tracklist_wanted.emit(key)
+
+    def show_tracklist(self, key, release) -> None:
+        """The catalogue answered. Ignored if you have opened another album."""
+        if key != self.open_album:
+            return
+        self.release = release
+        self.refresh()
+
+    def _render_album(self, tracks: list, playing_path: str) -> None:
+        """One album: everything on it, and which of it you have.
+
+        The list used to be the files on disk, so an album you had four tracks
+        of looked like a four-track album — there was no way to tell an EP from
+        half a record, which is the one thing you want to know while looking at
+        it. The catalogue supplies the shape; the files fill it in.
+
+        Until the lookup comes back, and whenever it fails, this is exactly the
+        old list. A missing tracklist must never cost you the view of your own
+        music.
+        """
+        from rose_bouquet.core import musicbrainz
+
+        artist, album = self.open_album
+        self.title.setText(album)
+        self.back.setVisible(True)
+
+        slots = musicbrainz.reconcile(self.release, tracks)
+        owned = sum(1 for slot in slots if slot.owned)
+        missing = len(slots) - owned
+
+        heading = f"{artist} · {owned} of {len(slots)} tracks" if missing \
+            else f"{artist} · {len(slots)} tracks"
+        self.body_layout.addWidget(SectionHeading(heading, self.appearance))
+
+        for slot in slots:
+            if slot.owned:
+                row = TrackRow(slot.track, self.appearance, index=slot.position,
+                               show_art=False, show_album=False,
+                               playing=slot.track.path == playing_path)
+                row.play_requested.connect(
+                    lambda t, ts=tracks: self.play_requested.emit(t, ts))
+                row.menu_requested.connect(self.menu_requested.emit)
+                self.body_layout.addWidget(row)
+            else:
+                self.body_layout.addWidget(self._missing_row(slot, artist, album))
+
+        if missing:
+            note = QLabel(
+                f"{missing} track{'' if missing == 1 else 's'} of this album "
+                f"{'is' if missing == 1 else 'are'} not in your library. "
+                "Tracklist from MusicBrainz."
+            )
+            note.setObjectName("Subtle")
+            note.setWordWrap(True)
+            note.setContentsMargins(12, 8, 12, 0)
+            self.body_layout.addWidget(note)
+
+        self.body_layout.addStretch(1)
+
+    def _missing_row(self, slot, artist: str, album: str) -> QWidget:
+        """A track the album has and you do not, with a way to go and get it."""
+        row = QWidget()
+        row.setObjectName("TrackRow")
+        row.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(12, 6, 12, 6)
+        layout.setSpacing(10)
+
+        dim = self.appearance.theme.text_dim
+
+        number = QLabel(str(slot.position))
+        number.setFixedWidth(24)
+        number.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        number.setStyleSheet(f"color: {dim}; background: transparent;")
+        layout.addWidget(number)
+
+        title = QLabel(slot.title)
+        title.setStyleSheet(f"color: {dim}; background: transparent;")
+        layout.addWidget(title, 1)
+
+        if slot.duration:
+            length = QLabel(f"{slot.duration // 60}:{slot.duration % 60:02d}")
+            length.setStyleSheet(f"color: {dim}; background: transparent;")
+            layout.addWidget(length)
+
+        get = QPushButton("Get")
+        get.setObjectName("Quiet")
+        get.setToolTip("Find this on YouTube Music and download it")
+        get.clicked.connect(
+            lambda: self.fetch_requested.emit(slot.title, artist or "", album))
+        layout.addWidget(get)
+
+        return row
 
     def refresh(self, playing_path: str = "") -> None:
         self.clear(self.body_layout)
         albums = self.library.albums()
 
         if self.open_album is not None and self.open_album in albums:
-            artist, album = self.open_album
-            tracks = albums[self.open_album]
-            self.title.setText(album)
-            self.back.setVisible(True)
-
-            self.body_layout.addWidget(SectionHeading(
-                f"{artist} · {len(tracks)} tracks", self.appearance
-            ))
-            for number, track in enumerate(tracks, start=1):
-                row = TrackRow(track, self.appearance, index=number, show_art=False,
-                               show_album=False, playing=track.path == playing_path)
-                row.play_requested.connect(lambda t, ts=tracks: self.play_requested.emit(t, ts))
-                row.menu_requested.connect(self.menu_requested.emit)
-                self.body_layout.addWidget(row)
-
-            self.body_layout.addStretch(1)
+            self._render_album(albums[self.open_album], playing_path)
             return
 
         self.title.setText("Albums")

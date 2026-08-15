@@ -468,6 +468,8 @@ class MainWindow(QMainWindow):
         albums = AlbumsView(self.library, self.appearance)
         albums.play_requested.connect(self.play_track)
         albums.menu_requested.connect(self.open_track_menu)
+        albums.tracklist_wanted.connect(self.look_up_tracklist)
+        albums.fetch_requested.connect(self.fetch_missing_track)
         self._register("albums", albums)
 
         playlists = PlaylistsView(self.library, self.playlists, self.appearance)
@@ -1147,6 +1149,51 @@ class MainWindow(QMainWindow):
                 artist=source.artist, fmt=self.preferences.download_format,
             ))
         self.show_section("downloads")
+
+    # ── What an album actually contains ───────────────────────────
+
+    def look_up_tracklist(self, key) -> None:
+        """Ask the catalogue what is on this album, off the interface thread.
+
+        Silent when it fails. The album already shows your files; a tracklist
+        that did not arrive should cost nothing but the extra lines it would
+        have added.
+        """
+        from rose_bouquet.core import musicbrainz
+
+        artist, album = key
+
+        def done(release) -> None:
+            self.views["albums"].show_tracklist(key, release)
+
+        tasks.run(lambda: musicbrainz.tracklist(artist, album), on_done=done,
+                  on_error=lambda message: logger.info(
+                      "no tracklist for %r: %s", album, message))
+
+    def fetch_missing_track(self, title: str, artist: str, album: str) -> None:
+        """Get a track the album has and the library does not.
+
+        Matched with the same `best_match` the Spotify import uses rather than
+        a second, differently-wrong matcher.
+        """
+        self.notify(f"Looking for {title}…", "info")
+
+        def work():
+            return self.ytmusic.best_match(title, artist)
+
+        def done(found) -> None:
+            if found is None:
+                self.notify(f"Could not find {title} on YouTube Music", "warning")
+                return
+            self._download(ytmusic.DownloadRequest(
+                video_id=found.id, title=title, artist=artist, album=album,
+                fmt=self.preferences.download_format,
+            ))
+            self.show_section("downloads")
+
+        tasks.run(work, on_done=done,
+                  on_error=lambda message: self.notify(
+                      f"Could not look that up: {message}", "error"))
 
     # ── Updates ───────────────────────────────────────────────────
 
