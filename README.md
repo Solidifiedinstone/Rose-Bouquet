@@ -21,8 +21,8 @@
 **Everything you listen to, and everything you follow.**
 
 A music player, a YouTube client, and a music server for your own network —
-with no account anywhere, and an algorithm that runs on your machine and tells
-you what it is doing.
+YouTube without Google's client, your own music library, and a server for
+your own network.
 
 </div>
 
@@ -48,34 +48,18 @@ which is usually more use than the terminal.
 
 ## What it does
 
-**Watch** — a YouTube feed built on this machine, from what you follow and what
-you have actually watched, plus search and full video playback with a real
-transport. Every item says *why* it is there: "You follow Warp Records", "You
-liked something by Boards of Canada", "Because you watch Techmoan". Nothing you
-have already watched comes back, one video never floods the feed with its whole
-channel, and a slice is reserved for channels you have no history with, so it
-cannot collapse into the same five names. Switch any video to audio-only and
-keep your position; download it, follow the channel, or like it from the
-player.
+**YouTube** — YouTube itself, with the hostile parts taken out on the way
+through. Not a reimplementation and not a scraper: it is YouTube's own site in
+a web view, with ads, trackers and Shorts removed before the page renders. Sign
+in and you get *your* recommendations, your subscriptions and your history —
+the real algorithm, without the client that reports on you. Ads and telemetry
+are blocked at the network layer, so nothing is requested and nothing is
+measured; the app adds no analytics of its own and sends nothing anywhere but
+YouTube. YouTube Music is a button away in the same tab.
 
-**Shorts** — a vertical reel you scroll with the wheel, arrow keys or a swipe,
-built from the same profile but kept *separate* from your video history, so
-doomscrolling for ten minutes does not rewrite what the Watch tab thinks you
-like. Videos unload as they leave the screen and the next page loads before you
-reach it.
-
-**Your interests, configurable and actually obeyed** — say what you want more
-of and what you never want to see, by topic or by channel, and it is enforced
-as a filter rather than a hint. On by default is a filter for engagement-bait
-and AI-generated slop, which is the thing an algorithm optimised for watch time
-will otherwise feed you.
-
-**Following** — subscriptions kept locally rather than on an account. Paste a
-channel link, or follow anything you are watching. Mute a channel to keep
-following it without seeing it in the feed.
-
-**Browse** — new music and new channels near what you already listen to, for
-finding things your subscriptions would never have shown you.
+This replaced a feed built on this machine, which said why every item was there
+but only ever knew what it had been told — always going to be a worse
+recommender than the one with a billion hours of watch time behind it.
 
 **Library** — your own files, scanned from folders you choose, with tags read
 by mutagen. Albums group properly, including compilations, and an open album
@@ -88,13 +72,12 @@ is through and "previous" means something.
 **Playlists** — extended M3U files in a folder, readable by every other player
 ever written.
 
-**Import from Spotify, or from Google Takeout** — Spotify imports bring the
-track list across and find each song on YouTube Music; the ones it *cannot*
-find are listed and saved with the playlist rather than quietly dropped. A
-Takeout archive brings your real YouTube watch history in, which is what makes
-the feed yours on the first run rather than the hundredth. An import is a
-record on disk, so an interrupted one carries on where it stopped and nothing
-downloads twice.
+**Import from Spotify** — imports bring the track list across and find each
+song on YouTube Music; the ones it *cannot* find are listed and saved with the
+playlist rather than quietly dropped, alongside anything that matched but would
+not download. Paste a link, paste a track list, or hand it the CSV Exportify
+gave you. An import is a record on disk, so an interrupted one carries on where
+it stopped and nothing downloads twice.
 
 **Disc** — play an audio CD straight from the drive (streamed, not ripped
 first), rip one to your library with proper track tags, burn a playlist back to
@@ -180,8 +163,9 @@ If your shell cannot find the command, `pipx ensurepath` adds pipx's directory
 to your `PATH` — then open a new terminal.
 
 The `[online]` part pulls in `yt-dlp`, `ytmusicapi` and `requests`, which are
-what the YouTube, Shorts and Browse tabs need. Leave it off and you get a local
-music player that says plainly which parts are unavailable:
+what downloading, the YouTube Music tab, Spotify imports and album tracklists
+need. Leave it off and you get a local music player that says plainly which
+parts are unavailable:
 
 ```sh
 pipx install git+https://github.com/Solidifiedinstone/Rose-Bouquet
@@ -246,9 +230,7 @@ those two folders removes every trace.
 | `Ctrl+1`…`9` | Jump to a section |
 | `Ctrl+,` | Settings |
 
-In the Shorts reel, the wheel and `↑`/`↓` move between shorts and `Esc` leaves
-the reel. The visualiser has a fullscreen button beside it, and `Esc` comes
-back.
+The visualiser has a fullscreen button beside it, and `Esc` comes back.
 
 ```sh
 rose-bouquet --section feed       # open on a section
@@ -261,12 +243,12 @@ rose-bouquet --theme matrix       # try a theme without changing the setting
 ```
 ~/.local/share/rose-bouquet/
   library.json     what was found on disk, a cache you can delete
-  tastes.json      subscriptions, likes, interests and history — the profile
-  feed.json        the last feed that was built, so a cold start is instant
   session.json     what was playing and where, restored on the next launch
   covers/          album art, cached
   logs/            a rolling log, the first thing to look at when something breaks
   imports/         one record per playlist import, so they can resume
+  tracklists/      album tracklists from MusicBrainz, cached
+  youtube/         the YouTube tab's own profile — cookies, so a sign-in sticks
   playlists/       M3U files
   downloads/       only used if you have no music folder set
 ~/.config/rose-bouquet/
@@ -311,9 +293,9 @@ python -m venv .venv
 .venv/bin/python -m pytest -q
 ```
 
-252 tests over the queue, the library, playlists, the cava bridge, the Spotify
-and Takeout importers, resumable imports, the recommender and its interest
-filtering, the shorts reel, optical discs, the server, and theme readability —
+163 tests over the queue, the library, playlists, the cava bridge, the Spotify
+importer and its CSV handling, resumable imports, album tracklists, optical
+discs, the server, and theme readability —
 including one that launches the real entry point and waits for the window,
 because a deadlock on startup is invisible to every test that builds the
 window by hand.

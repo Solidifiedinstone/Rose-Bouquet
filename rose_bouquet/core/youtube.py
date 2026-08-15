@@ -23,8 +23,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional, Sequence
 
-from rose_bouquet.core.recommend import Candidate
-from rose_bouquet.core.tastes import Channel
+from rose_bouquet.core.media import Candidate, Channel
 
 logger = logging.getLogger(__name__)
 

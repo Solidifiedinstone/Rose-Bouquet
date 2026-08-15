@@ -39,7 +39,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QScrollArea,
     QSlider,
     QVBoxLayout,
     QWidget,
@@ -47,7 +46,6 @@ from PySide6.QtWidgets import (
 
 from rose_bouquet.ui import tasks
 from rose_bouquet.ui.theme import Appearance
-from rose_bouquet.ui.thumbnails import Thumbnail, youtube_thumbnail
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +71,7 @@ class VideoStage(QWidget):
     watch_requested = Signal(object)      # Candidate
 
     def __init__(self, youtube, appearance: Appearance,
-                 parent: Optional[QWidget] = None, *, recommend=None) -> None:
+                 parent: Optional[QWidget] = None) -> None:
         """`recommend` is what fills the up-next column.
 
         A callable taking `(video_id, title)` and returning ranked `Scored`
@@ -86,10 +84,8 @@ class VideoStage(QWidget):
         super().__init__(parent)
         self.youtube = youtube
         self.appearance = appearance
-        self._recommend = recommend
 
         #: What is in the up-next column, so it can be redrawn on a theme change.
-        self._related: list = []
 
         #: The Candidate being watched, or None.
         self.current = None
@@ -140,135 +136,8 @@ class VideoStage(QWidget):
 
         layout.addLayout(self._transport())
 
-        self.related_panel = self._related_column()
-        outer.addWidget(self.related_panel)
 
     # ── Up next ───────────────────────────────────────────────────
-
-    def _related_column(self) -> QWidget:
-        """The column of what to watch next, to the right of the picture."""
-        panel = QWidget()
-        panel.setFixedWidth(RELATED_WIDTH)
-        panel.setVisible(False)
-
-        column = QVBoxLayout(panel)
-        column.setContentsMargins(0, 0, 0, 0)
-        column.setSpacing(6)
-
-        self.related_heading = QLabel("Up next")
-        self.related_heading.setObjectName("Heading")
-        column.addWidget(self.related_heading)
-
-        # Scrolls on its own, so a long list cannot push the transport off the
-        # bottom of the window.
-        area = QScrollArea()
-        area.setWidgetResizable(True)
-        area.setFrameShape(QScrollArea.Shape.NoFrame)
-        area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        area.setStyleSheet("background: transparent;")
-
-        holder = QWidget()
-        self.related_layout = QVBoxLayout(holder)
-        self.related_layout.setContentsMargins(0, 0, 0, 0)
-        self.related_layout.setSpacing(2)
-        area.setWidget(holder)
-        column.addWidget(area, 1)
-
-        return panel
-
-    def _load_related(self, item) -> None:
-        """Ask for what to watch after this, without holding up playback."""
-        if self._recommend is None:
-            return
-
-        video_id, title = item.id, item.title
-        self.show_related([], note="Looking…")
-
-        def done(scored) -> None:
-            # The answer arrives after a network round trip, by which time the
-            # user may be watching something else entirely — and a column of
-            # suggestions for the previous video is worse than an empty one.
-            if self.current is None or self.current.id != video_id:
-                return
-            self.show_related(list(scored or []))
-
-        tasks.run(
-            lambda: self._recommend(video_id, title),
-            on_done=done,
-            # Silent: a missing column is a disappointment, and a red banner
-            # about one is an interruption to something that is playing fine.
-            on_error=lambda message: logger.warning("related lookup failed: %s", message),
-        )
-
-    def show_related(self, scored: list, note: str = "") -> None:
-        """Fill the up-next column with ranked candidates."""
-        self._related = list(scored)
-
-        while self.related_layout.count():
-            child = self.related_layout.takeAt(0)
-            widget = child.widget()
-            if widget is not None:
-                widget.deleteLater()
-
-        if self._recommend is None:
-            return
-
-        # Hidden with the picture. Audio-only means somebody is listening
-        # rather than looking, and a column of thumbnails beside a transport
-        # with no video above it is a strange thing to leave on screen.
-        self.related_panel.setVisible(not self.audio_only)
-
-        if not self._related:
-            empty = QLabel(note or "Nothing related to this.")
-            empty.setObjectName("Subtle")
-            empty.setWordWrap(True)
-            self.related_layout.addWidget(empty)
-            self.related_layout.addStretch(1)
-            return
-
-        for entry in self._related:
-            self.related_layout.addWidget(self._related_row(entry))
-        self.related_layout.addStretch(1)
-
-    def _related_row(self, scored) -> QWidget:
-        item = getattr(scored, "candidate", scored)
-
-        row = QWidget()
-        row.setObjectName("TrackRow")
-        row.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        row.setCursor(Qt.CursorShape.PointingHandCursor)
-        # The whole row, not a small button on it: this is a list of things to
-        # watch, and every one of them is a click target.
-        row.mousePressEvent = (
-            lambda _event, candidate=item: self.watch_requested.emit(candidate))
-
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(8)
-
-        layout.addWidget(Thumbnail(
-            item.thumbnail or youtube_thumbnail(item.id),
-            100, 56, self.appearance, glyph="▶"))
-
-        column = QVBoxLayout()
-        column.setSpacing(1)
-
-        title = QLabel(item.title)
-        title.setObjectName("RowTitle")
-        title.setWordWrap(True)
-        column.addWidget(title)
-
-        # The same "why" the feed shows. A suggestion you cannot interrogate is
-        # one you cannot correct, and that is as true beside the player as it
-        # is in the list.
-        why = getattr(scored, "why", "")
-        caption = QLabel(f"{item.artist} · {why}" if why else item.artist)
-        caption.setObjectName("Subtle")
-        caption.setWordWrap(True)
-        column.addWidget(caption)
-
-        layout.addLayout(column, 1)
-        return row
 
     def _transport(self) -> QHBoxLayout:
         row = QHBoxLayout()
@@ -409,8 +278,6 @@ class VideoStage(QWidget):
         # long reel does not accumulate decoders it will never use again.
         self.player.stop()
 
-        self._load_related(item)
-
         if url:
             self._play(url, item)
             return
@@ -472,8 +339,6 @@ class VideoStage(QWidget):
         self.audio_only = not self.audio_only
         self.audio_button.setText("Show video" if self.audio_only else "Audio only")
         self.video.setVisible(not self.audio_only)
-        if self._recommend is not None:
-            self.related_panel.setVisible(not self.audio_only)
 
         # A local file or a disc has one stream carrying both tracks, so there
         # is nothing to re-fetch — hiding the picture is the whole operation.
@@ -502,7 +367,6 @@ class VideoStage(QWidget):
         # Cleared rather than left standing: suggestions for a video that is no
         # longer playing are stale the moment the panel closes, and they would
         # be the first thing on screen the next time it opens.
-        self.show_related([])
         self.closed.emit()
 
     def stop(self) -> None:
@@ -553,8 +417,6 @@ class VideoStage(QWidget):
         # The rows hold thumbnails, and a thumbnail's placeholder is drawn in
         # the palette it was built with — so they are rebuilt rather than
         # restyled, which is also how the feed handles a theme change.
-        if self._recommend is not None and self._related:
-            self.show_related(self._related)
 
 
 #: Wide enough for a thumbnail and two lines of title, narrow enough that the

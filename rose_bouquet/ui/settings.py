@@ -81,17 +81,11 @@ class SettingsDialog(QDialog):
     library_changed = Signal()
     visualizer_changed = Signal()
     server_changed = Signal()
-    interests_changed = Signal()
 
-    def __init__(self, preferences: Preferences, tastes=None,
+    def __init__(self, preferences: Preferences,
                  parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.preferences = preferences
-        #: The taste profile, for the Interests tab. Optional so the dialog
-        #: can still be built without one.
-        from rose_bouquet.core.tastes import Tastes
-
-        self.tastes = tastes if tastes is not None else Tastes()
         self.appearance = preferences.appearance()
 
         self.setWindowTitle(f"{APP_NAME} — Settings")
@@ -109,7 +103,6 @@ class SettingsDialog(QDialog):
         tabs = QTabWidget()
         tabs.addTab(self._appearance_tab(), "Appearance")
         tabs.addTab(self._visualizer_tab(), "Visualiser")
-        tabs.addTab(self._interests_tab(), "Interests")
         tabs.addTab(self._library_tab(), "Library")
         tabs.addTab(self._downloads_tab(), "Downloads")
         tabs.addTab(self._server_tab(), "Serving")
@@ -216,47 +209,6 @@ class SettingsDialog(QDialog):
 
         return None
 
-    # ── Interests ─────────────────────────────────────────────────
-
-    def _interests_tab(self) -> QWidget:
-        """What the feeds should look for, and what they must never show."""
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setSpacing(10)
-
-        note = QLabel(
-            "The feeds work out what you like from what you watch. This is "
-            "where you say it outright.\n\n"
-            "Anything you type here outranks anything worked out for you — "
-            "you know what you want and the guessing does not. Blocked topics "
-            "are removed entirely rather than merely shown less."
-        )
-        note.setObjectName("Subtle")
-        note.setWordWrap(True)
-        layout.addWidget(note)
-
-        self.wanted_list, wanted_box = self._topic_editor(
-            "Show me more of", "a topic — 'guitar pedals', 'speedruns'")
-        layout.addWidget(wanted_box)
-
-        self.blocked_list, blocked_box = self._topic_editor(
-            "Never show me", "a topic to block — 'politics', 'gambling'")
-        layout.addWidget(blocked_box)
-
-        self.blocked_channels_list, channels_box = self._topic_editor(
-            "Never show these channels", "a channel name")
-        layout.addWidget(channels_box)
-
-        derived = QLabel()
-        derived.setObjectName("Subtle")
-        derived.setWordWrap(True)
-        self.derived_label = derived
-        layout.addWidget(derived)
-        self._show_derived()
-
-        layout.addStretch(1)
-        return page
-
     def _topic_editor(self, title: str, placeholder: str):
         """A labelled list you can add to and remove from."""
         box = QWidget()
@@ -311,20 +263,6 @@ class SettingsDialog(QDialog):
             if topics else
             "Nothing worked out yet — watch a few things and this fills in."
         )
-
-    def _save_interests(self) -> None:
-        from rose_bouquet.core.interests import Interests
-
-        def items(listing) -> list:
-            return [listing.item(i).text() for i in range(listing.count())]
-
-        self.tastes.interests = Interests(
-            wanted=items(self.wanted_list),
-            blocked=items(self.blocked_list),
-            blocked_channels=items(self.blocked_channels_list),
-        )
-        self.tastes.save()
-        self.interests_changed.emit()
 
     # ── Visualiser ────────────────────────────────────────────────
 

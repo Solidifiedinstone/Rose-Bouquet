@@ -29,17 +29,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from rose_bouquet.core import cava, imports, optical, spotify, takeout, ytmusic
+from rose_bouquet.core import cava, imports, optical, spotify, ytmusic
 from rose_bouquet.core import youtube as yt
 from rose_bouquet.core.library import Library, Track, data_dir
+from rose_bouquet.core.media import Candidate
 from rose_bouquet.core.mpris import Mpris
 from rose_bouquet.core.playlists import PlaylistStore
 from rose_bouquet.core.playqueue import Repeat
-from rose_bouquet.core.recommend import (
-    Candidate,
-)
 from rose_bouquet.core.server import MusicServer
-from rose_bouquet.core.tastes import Tastes
 from rose_bouquet.ui import tasks
 from rose_bouquet.ui.branding import APP_NAME
 from rose_bouquet.ui.cdplayer import CdPlayer
@@ -128,7 +125,6 @@ class MainWindow(QMainWindow):
         self.youtube = yt.YouTube()
         #: Stream URLs resolved ahead of being needed — see `StreamCache`.
         self.streams = yt.StreamCache(self.youtube)
-        self.tastes = Tastes.load()
         self.playback = Playback(self.library, self)
         self.downloads_pool = tasks.downloads_pool()
 
@@ -164,10 +160,6 @@ class MainWindow(QMainWindow):
         #: The same for the taste profile, which is a few hundred kilobytes by
         #: the time somebody has imported a history. Writing it on every scroll
         #: of a reel is a lot of disk for a file nobody reads until next launch.
-        self._tastes_save = QTimer(self)
-        self._tastes_save.setSingleShot(True)
-        self._tastes_save.setInterval(3000)
-        self._tastes_save.timeout.connect(self.tastes.save)
 
         self.setWindowTitle(APP_NAME)
         self.resize(*self.preferences.window_size)
@@ -432,7 +424,6 @@ class MainWindow(QMainWindow):
         importer.resume_requested.connect(self.resume_import)
         importer.force_resume_requested.connect(
             lambda job: self.resume_import(job, ignore_wait=True))
-        importer.takeout_requested.connect(self.import_takeout)
         importer.retry_failed_requested.connect(self.retry_failed_downloads)
         importer.status.connect(self.notify)
         self._register("import", importer)
@@ -721,16 +712,6 @@ class MainWindow(QMainWindow):
         repeat = self.playback.queue.repeat
         self.repeat_button.setStyleSheet(off if repeat is Repeat.OFF else on)
         self.repeat_button.setText("↻¹" if repeat is Repeat.ONE else "↻")
-
-    def _note_local_play(self, track: Optional[Track]) -> None:
-        """Local listening shapes the feed too — it is the same signal."""
-        if track is None:
-            return
-        self.tastes.note_play(
-            track.source_id or track.path, track.display_title,
-            track.display_artist, completion=1.0,
-        )
-        self.tastes.save()
 
     def _feed_artwork(self, track) -> None:
         """Hand the sleeve to the visualiser, for the shapes that draw it."""
@@ -1255,8 +1236,6 @@ class MainWindow(QMainWindow):
                 source="youtube", source_id=item.id,
             )
             self.playback.play_tracks([track], 0)
-            self.tastes.note_play(item.id, item.title, item.artist, item.channel_id)
-            self.tastes.save()
 
         tasks.run(work, on_done=play,
                   on_error=lambda message: self.notify(f"Stream failed: {message}", "error"))
@@ -1410,42 +1389,6 @@ class MainWindow(QMainWindow):
             ))
         self.show_section("downloads")
 
-    def import_takeout(self, path: str) -> None:
-        """Fold a Google Takeout export into the local profile."""
-        if not path:
-            self.notify("Choose your Takeout zip or folder first", "warning")
-            return
-
-        self.notify("Reading your export…", "info")
-
-        def work():
-            data = takeout.read(Path(path))
-            return data, takeout.apply(data, self.tastes)
-
-        def done(outcome) -> None:
-            data, (plays, followed) = outcome
-            if not plays and not followed:
-                # Nothing *new* and nothing *usable* are different outcomes and
-                # used to give the same message, so a second import of a good
-                # export read as a broken one.
-                if data.watched or data.subscriptions:
-                    self.notify(
-                        f"Already imported — all {data.summary} in there are "
-                        "already in your profile", "info")
-                else:
-                    self.notify(
-                        "Nothing usable in there — it needs watch-history.json or "
-                        "subscriptions.csv from a YouTube Takeout", "warning")
-                return
-
-            self.tastes.save()
-            self.notify(
-                f"Imported {plays} watched videos and {followed} subscriptions "
-                "— rebuild the feed to use them", "success")
-            self.refresh()
-
-        tasks.run(work, on_done=done,
-                  on_error=lambda message: self.notify(f"Could not read that: {message}", "error"))
 
     def resume_import(self, job, *, ignore_wait: bool = False) -> None:
         """Pick up an import that was cut short — reading as well as downloading.
@@ -1749,7 +1692,7 @@ class MainWindow(QMainWindow):
             search.selectAll()
 
     def open_settings(self) -> None:
-        dialog = SettingsDialog(self.preferences, self.tastes, self)
+        dialog = SettingsDialog(self.preferences, self)
         dialog.appearance_changed.connect(self.apply_appearance)
         dialog.library_changed.connect(self._library_folders_changed)
         dialog.visualizer_changed.connect(self._visualizer_changed)
@@ -1926,8 +1869,6 @@ class MainWindow(QMainWindow):
         # Anything still running is about to lose the widgets it reports to.
         tasks.cancel_all()
         self._save_session()
-        self._tastes_save.stop()
-        self.tastes.save()
         if self.import_job is not None:
             self.import_job.save()
         self.playback.stop()
