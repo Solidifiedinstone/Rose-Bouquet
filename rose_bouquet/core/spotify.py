@@ -80,6 +80,9 @@ class ImportReport:
     title: str = ""
     matched: list[tuple[SpotifyTrack, object]] = field(default_factory=list)
     missed: list[SpotifyTrack] = field(default_factory=list)
+    #: Matched on YouTube, but the audio never arrived: (track, why).
+    #: Filled in after the report is first shown, as downloads come back.
+    failed: list[tuple[SpotifyTrack, str]] = field(default_factory=list)
     #: Set when the source probably had more tracks than we could read.
     truncated: bool = False
 
@@ -91,12 +94,46 @@ class ImportReport:
     def summary(self) -> str:
         if not self.total:
             return "Nothing to import"
-        if not self.missed:
+        parts = []
+        if self.missed:
+            parts.append(f"{len(self.missed)} missing")
+        if self.failed:
+            parts.append(f"{len(self.failed)} failed to download")
+        if not parts:
             return f"All {self.total} tracks found"
-        return f"{len(self.matched)} of {self.total} found · {len(self.missed)} missing"
+        return f"{len(self.matched)} of {self.total} found · " + " · ".join(parts)
 
     def missed_lines(self) -> list[str]:
-        return [str(track) for track in self.missed]
+        """Everything that did not end up as audio, in one list.
+
+        A track nobody could find and a track that was found but would not
+        download are different problems with the same consequence — it is not
+        in your library. Splitting them across two screens meant the download
+        failures were only ever a toast that scrolled past, so they were the
+        ones people lost. The reason travels with the line.
+        """
+        lines = [str(track) for track in self.missed]
+        lines += [f"{track} — download failed: {why}" if why else f"{track} — download failed"
+                  for track, why in self.failed]
+        return lines
+
+    def note_download_failure(self, track: SpotifyTrack, why: str = "") -> None:
+        """Record a download that did not land. Idempotent per track.
+
+        Retries call this again for the same track, and a row that appears
+        twice in the list reads as two lost songs.
+        """
+        key = str(track)
+        for index, (existing, _why) in enumerate(self.failed):
+            if str(existing) == key:
+                self.failed[index] = (existing, why.strip())
+                return
+        self.failed.append((track, why.strip()))
+
+    def note_download_recovered(self, track: SpotifyTrack) -> None:
+        """Take a track back off the failed list — a retry worked."""
+        key = str(track)
+        self.failed = [pair for pair in self.failed if str(pair[0]) != key]
 
 
 def playlist_id(link: str) -> str:

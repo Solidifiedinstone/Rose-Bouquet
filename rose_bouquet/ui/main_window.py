@@ -98,6 +98,16 @@ SIDEBAR_ANIMATION_MS = 200
 #: it and forgot.
 PER_SEED = 4
 
+#: Asked of YouTube for the up-next column. More than are shown, because the
+#: ranker drops the ones already watched and anything blocked, and a column
+#: that empties itself out on somebody with a long history is worse than one
+#: that had a few spare to work with.
+RELATED_CANDIDATES = 24
+
+#: How many end up beside the picture. Enough to choose from, few enough that
+#: the choice is still a choice.
+RELATED_SHOWN = 10
+
 #: Below this the window is too narrow to give a third of itself to a sidebar,
 #: so the rail pulls itself in. Phones are the obvious case, but a half-screen
 #: window on a laptop hits it too — and the user's own choice is remembered
@@ -137,6 +147,10 @@ class MainWindow(QMainWindow):
 
         #: The import being worked through, if any.
         self.import_job: Optional[imports.ImportJob] = None
+        #: The last import's report and playlist, so a download that fails
+        #: after the report is on screen can still be added to it.
+        self.import_report: Optional[spotify.ImportReport] = None
+        self.import_playlist = None
         self.last_import_link = ""
 
         self._import_save = QTimer(self)
@@ -377,10 +391,12 @@ class MainWindow(QMainWindow):
         # The picture half of the Watch tab. Given the YouTube client here
         # rather than built inside the view, which is deliberately handed only
         # the local profile.
-        video = VideoStage(self.youtube, self.appearance)
+        video = VideoStage(self.youtube, self.appearance,
+                           recommend=self.related_to)
         video.playback_requested.connect(self.playback.pause)
         video.download_requested.connect(self.download_candidate)
         video.like_toggled.connect(self.toggle_like)
+        video.watch_requested.connect(self.watch_candidate)
         video.status.connect(self.notify)
         feed.attach_video(video)
         self.video = video
@@ -458,11 +474,12 @@ class MainWindow(QMainWindow):
         importer.force_resume_requested.connect(
             lambda job: self.resume_import(job, ignore_wait=True))
         importer.takeout_requested.connect(self.import_takeout)
+        importer.retry_failed_requested.connect(self.retry_failed_downloads)
         importer.status.connect(self.notify)
         self._register("import", importer)
 
         downloads = DownloadsView(self.appearance)
-        downloads.retry_requested.connect(self.download_result)
+        downloads.retry_requested.connect(self.retry_download)
         self._register("downloads", downloads)
 
         server_view = ServerView(self.server, self.appearance)
@@ -946,6 +963,24 @@ class MainWindow(QMainWindow):
         )
         self._download(request)
 
+    def retry_download(self, request: ytmusic.DownloadRequest) -> None:
+        """The Retry button on a failed row.
+
+        It used to be wired to `download_result`, which takes a search Result
+        and reads `.id` — a row hands back the DownloadRequest it was started
+        from, which spells that field `video_id`. So every press raised inside
+        the signal and the button did nothing at all, silently.
+
+        Going straight to `_download` also keeps the chosen format and the rest
+        of the original request rather than rebuilding half of it.
+        """
+        if request is None:
+            return
+        # The old row is still marked failed, and a stale one confuses both the
+        # duplicate check and the summary count.
+        self.views["downloads"].entries.pop(request.video_id, None)
+        self._download(request)
+
     def _download(self, request: ytmusic.DownloadRequest) -> None:
         downloads = self.views["downloads"]
         key = request.video_id
@@ -981,8 +1016,11 @@ class MainWindow(QMainWindow):
             on_progress=lambda update, key=key, label=label: downloads.note(
                 key, label, update[0], update[1], request),
             on_done=lambda outcome, key=key, label=label: self._downloaded(outcome, key, label),
-            on_error=lambda message, key=key, label=label: downloads.note(
-                key, label, 0.0, "failed", request),
+            # A crash in the worker is a failed download like any other, and
+            # used to stop at a grey row: the import never heard about it, so
+            # the track was neither downloaded nor listed as missing.
+            on_error=lambda message, key=key, label=label: self._download_failed(
+                key, label, message, request),
             pool=self.downloads_pool,
         )
 
@@ -990,11 +1028,7 @@ class MainWindow(QMainWindow):
         downloads = self.views["downloads"]
 
         if not outcome.ok:
-            downloads.note(key, label, 0.0, "failed", outcome.request)
-            if self.import_job is not None:
-                self.import_job.note_failed(key, outcome.error)
-                self._import_save.start()
-            self.notify(f"Download failed: {outcome.error[:80]}", "error")
+            self._download_failed(key, label, outcome.error, outcome.request)
             return
 
         downloads.note(key, label, 1.0, "done", None)
@@ -1002,6 +1036,9 @@ class MainWindow(QMainWindow):
         if self.import_job is not None:
             self.import_job.note_done(key, outcome.path)
             self._import_save.start()
+
+        # A retry that worked takes the track back off the failed list.
+        self._note_import_recovery(key)
 
         if self.preferences.add_downloads_to_library:
             track = ytmusic.track_from_download(outcome)
@@ -1014,6 +1051,90 @@ class MainWindow(QMainWindow):
                     self.refresh()
 
         self.notify(f"Downloaded {label}", "success")
+
+    def _download_failed(self, key: str, label: str, error: str, request) -> None:
+        """One place for a download that did not land, however it failed.
+
+        The row goes red, the import record remembers, and — the part that was
+        missing — the track joins the list of things that did not make it, next
+        to the ones nothing could be found for. A toast is not a record: it is
+        gone in six seconds and the song is gone with it.
+        """
+        error = (error or "").strip()
+        self.views["downloads"].note(key, label, 0.0, "failed", request)
+
+        if self.import_job is not None:
+            self.import_job.note_failed(key, error)
+            self._import_save.start()
+
+        self._note_import_download_failure(key, error)
+        self.notify(f"Download failed: {error[:80] or label}", "error")
+
+    def _track_for_download(self, key: str):
+        """The imported track a download key belongs to, if it is from one."""
+        report = getattr(self, "import_report", None)
+        if report is None:
+            return None
+        for source, found in report.matched:
+            if getattr(found, "id", "") == key:
+                return source
+        return None
+
+    def _note_import_download_failure(self, key: str, error: str) -> None:
+        """Add a failed download to the import's list of what did not arrive."""
+        report = getattr(self, "import_report", None)
+        track = self._track_for_download(key)
+        if report is None or track is None:
+            return
+
+        report.note_download_failure(track, error)
+        self.views["import"].show_report(report)
+
+        # Saved with the playlist too, so closing the window does not lose it.
+        playlist = getattr(self, "import_playlist", None)
+        if playlist is not None:
+            playlist.missing = report.missed_lines()
+            self.playlists.save(playlist)
+
+    def _note_import_recovery(self, key: str) -> None:
+        """A retry landed — take the track back off that list."""
+        report = getattr(self, "import_report", None)
+        track = self._track_for_download(key)
+        if report is None or track is None or not report.failed:
+            return
+
+        report.note_download_recovered(track)
+        self.views["import"].show_report(report)
+
+        playlist = getattr(self, "import_playlist", None)
+        if playlist is not None:
+            playlist.missing = report.missed_lines()
+            self.playlists.save(playlist)
+
+    def retry_failed_downloads(self) -> None:
+        """Try again everything that matched but would not download."""
+        report = getattr(self, "import_report", None)
+        if report is None or not report.failed:
+            self.notify("Nothing waiting to retry", "info")
+            return
+
+        wanted = {str(track) for track, _why in report.failed}
+        again = [(source, found) for source, found in report.matched
+                 if str(source) in wanted and getattr(found, "id", "")]
+        if not again:
+            self.notify("Nothing waiting to retry", "info")
+            return
+
+        self.notify(f"Retrying {len(again)} downloads", "info")
+        for source, found in again:
+            # Clear the old row first, or _download sees a "failed" entry and
+            # the retry is refused as a duplicate.
+            self.views["downloads"].entries.pop(found.id, None)
+            self._download(ytmusic.DownloadRequest(
+                video_id=found.id, title=source.title,
+                artist=source.artist, fmt=self.preferences.download_format,
+            ))
+        self.show_section("downloads")
 
     # ── The local algorithm ───────────────────────────────────────
 
@@ -1132,6 +1253,28 @@ class MainWindow(QMainWindow):
         """
         if self.video.isVisible():
             self.video.close_player()
+
+    def related_to(self, video_id: str, title: str = "") -> list:
+        """What to watch after this one, ordered here rather than by YouTube.
+
+        Runs on a worker thread — the stage calls it off the interface thread
+        and hands the answer to its up-next column.
+
+        The candidates are YouTube's notion of related, which is the only place
+        that notion can come from; the *ordering* is the local ranker, against
+        the same profile and the same blocks as the feed. That difference is
+        the whole point of the app: a column beside the player is where a
+        recommender does most of its work on somebody, and taking YouTube's
+        order there while claiming the feed is yours would be a lie by omission.
+
+        Already-watched videos are dropped, as everywhere else — "up next"
+        offering something watched last week is the complaint the feed was
+        fixed for.
+        """
+        videos = self.youtube.related(video_id, limit=RELATED_CANDIDATES, title=title)
+        candidates = [video.to_candidate("related") for video in videos]
+        return rank(candidates, self.tastes, limit=RELATED_SHOWN,
+                    interests=self.tastes.interests)
 
     def watch_candidate(self, item: Candidate) -> None:
         """Watch something in the Watch tab, picture and all."""
@@ -1387,6 +1530,11 @@ class MainWindow(QMainWindow):
         playlist.source = "spotify"
         playlist.missing = report.missed_lines()
         self.playlists.save(playlist)
+
+        # Kept so a download that fails later can add itself to this report's
+        # list rather than only appearing as a toast that scrolls away.
+        self.import_report = report
+        self.import_playlist = playlist
 
         if next_offset is not None:
             # Cut short. Say so, and keep the place.

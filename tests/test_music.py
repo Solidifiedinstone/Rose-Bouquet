@@ -732,3 +732,440 @@ def test_version_comparison_treats_versions_as_numbers():
     # Tags carry a leading v and releases sometimes a suffix.
     assert is_newer("v0.1.4", "0.1.3")
     assert not is_newer("0.1.3-beta", "0.1.3")
+
+
+def test_fullscreen_returns_the_picture_to_the_stage():
+    """Reparenting a live video widget has to be undone exactly.
+
+    Fullscreen moves the picture into a frameless window of its own — maximising
+    the stage instead would carry the window chrome and the transport with it,
+    which is what people mean when they say fullscreen does not work. The risk
+    is the way back: leave the widget in the dead window and the stage is left
+    with a hole where the video was.
+
+    Builds a real widget, which nothing else here does, because reparenting is
+    the whole behaviour and there is no part of it left once Qt is mocked out.
+    Offscreen, so it needs no display.
+    """
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+
+    from rose_bouquet.ui.theme import Appearance
+    from rose_bouquet.ui.video import VideoStage
+
+    app = QApplication.instance() or QApplication([])
+    stage = VideoStage(youtube=None, appearance=Appearance())
+    try:
+        home = stage.video.parent()
+        assert stage._fullscreen_window is None
+
+        stage.toggle_fullscreen()
+        assert stage._fullscreen_window is not None
+        assert stage.video.parent() is not home
+
+        stage.leave_fullscreen()
+        assert stage._fullscreen_window is None
+        assert stage.video.parent() is home
+
+        # A round trip must not leave a second window or lose the picture.
+        stage.toggle_fullscreen()
+        stage.toggle_fullscreen()
+        assert stage._fullscreen_window is None
+        assert stage.video.parent() is home
+
+        # And leaving when it was never entered is a no-op, not a crash.
+        stage.leave_fullscreen()
+    finally:
+        stage.deleteLater()
+        app.processEvents()
+
+
+def _stage_with_column(recommend=None):
+    """A real VideoStage with an up-next column, offscreen."""
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+
+    from rose_bouquet.ui.theme import Appearance
+    from rose_bouquet.ui.video import VideoStage
+
+    app = QApplication.instance() or QApplication([])
+    stage = VideoStage(youtube=None, appearance=Appearance(),
+                       recommend=recommend or (lambda video_id, title: []))
+    return app, stage
+
+
+def _column_rows(stage):
+    """The row widgets currently in the up-next column."""
+    rows = [stage.related_layout.itemAt(i).widget()
+            for i in range(stage.related_layout.count())]
+    return [row for row in rows if row is not None and row.objectName() == "TrackRow"]
+
+
+def _candidate(video_id, title="Something", artist="Someone"):
+    from rose_bouquet.core.recommend import Candidate
+
+    return Candidate(id=video_id, title=title, artist=artist)
+
+
+def test_the_up_next_column_is_a_list_of_click_targets():
+    """Every row watches that video, and says why it is there.
+
+    The column is where a recommender does most of its work on somebody, so
+    two things have to hold: clicking a row plays *that* row, and the reason it
+    was suggested is on screen next to it. A suggestion you cannot interrogate
+    is one you cannot correct.
+    """
+    from rose_bouquet.core.recommend import Scored
+
+    app, stage = _stage_with_column()
+    try:
+        watched = []
+        stage.watch_requested.connect(watched.append)
+
+        first = _candidate("aaa", "First")
+        second = _candidate("bbb", "Second")
+        stage.show_related([
+            Scored(candidate=first, score=1.0, terms={"affinity": 1.0}),
+            Scored(candidate=second, score=0.5, terms={}),
+        ])
+
+        rows = _column_rows(stage)
+        assert len(rows) == 2
+
+        # The reason travels with the row, the way it does in the feed.
+        labels = [child.text() for child in rows[0].findChildren(type(stage.caption))]
+        assert any("You listen to" in text for text in labels)
+
+        rows[1].mousePressEvent(None)
+        assert watched == [second]
+    finally:
+        stage.deleteLater()
+        app.processEvents()
+
+
+def test_a_column_of_suggestions_for_the_previous_video_is_dropped():
+    """The answer arrives after a round trip, and by then things have moved on.
+
+    Suggestions for whatever was playing a moment ago are worse than none: they
+    look like recommendations for what is on screen now, and they are not.
+    """
+    from rose_bouquet.core.recommend import Scored
+    from rose_bouquet.ui import video as video_module
+
+    calls = []
+
+    # Every caller of tasks.run is stubbed, not just this one — the module
+    # object is shared, and the thumbnails in the rows use it too.
+    def fake_run(work, *args, on_done=None, on_error=None, **kwargs):
+        calls.append((work, on_done))
+
+    app, stage = _stage_with_column()
+    original = video_module.tasks.run
+    video_module.tasks.run = fake_run
+    try:
+        stage.watch(_candidate("first-video"))
+        assert calls, "watching should have asked for suggestions"
+        _work, deliver = calls[0]
+
+        # In time, and it fills the column.
+        deliver([Scored(candidate=_candidate("aaa", title="Still watching this"))])
+        assert len(_column_rows(stage)) == 1
+
+        # The user has moved on before the next lookup came back.
+        calls.clear()
+        stage.watch(_candidate("second-video"))
+        _work, late = calls[0]
+        stage.current = _candidate("third-video")
+        late([Scored(candidate=_candidate("bbb", title="For the wrong video"))])
+
+        assert not _column_rows(stage), "suggestions for the previous video were shown"
+        text = " ".join(
+            label.text()
+            for label in stage.related_panel.findChildren(type(stage.caption))
+        )
+        assert "For the wrong video" not in text
+    finally:
+        video_module.tasks.run = original
+        stage.deleteLater()
+        app.processEvents()
+
+
+def test_audio_only_takes_the_column_with_the_picture():
+    """No picture, no column of pictures.
+
+    Audio-only means somebody is listening rather than looking, and a strip of
+    thumbnails beside a transport with nothing above it is a strange thing to
+    leave on screen.
+    """
+    from rose_bouquet.core.recommend import Scored
+
+    app, stage = _stage_with_column()
+    try:
+        stage.setVisible(True)
+        stage.show_related([Scored(candidate=_candidate("aaa"))])
+        assert stage.related_panel.isVisibleTo(stage)
+
+        stage.toggle_audio_only()
+        assert not stage.related_panel.isVisibleTo(stage)
+
+        stage.toggle_audio_only()
+        assert stage.related_panel.isVisibleTo(stage)
+    finally:
+        stage.deleteLater()
+        app.processEvents()
+
+
+def test_a_stage_with_no_recommender_has_no_column():
+    """The reel passes nothing and gets nothing.
+
+    Shorts are a reel — the next one is the swipe, not a list beside it — so
+    the column is opt-in rather than something the Shorts stage has to hide.
+    """
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+
+    from rose_bouquet.ui.theme import Appearance
+    from rose_bouquet.ui.video import VideoStage
+
+    app = QApplication.instance() or QApplication([])
+    stage = VideoStage(youtube=None, appearance=Appearance())
+    try:
+        assert not stage.related_panel.isVisibleTo(stage)
+        stage.watch_file("/nonexistent.mp4", title="Local")
+        assert not stage.related_panel.isVisibleTo(stage)
+    finally:
+        stage.deleteLater()
+        app.processEvents()
+
+
+# ── Loading an Exportify CSV from disk ────────────────────────────
+
+def _import_view():
+    """A real ImportView, offscreen."""
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+
+    from rose_bouquet.ui.theme import Appearance
+    from rose_bouquet.ui.views import ImportView
+
+    app = QApplication.instance() or QApplication([])
+    return app, ImportView(Appearance())
+
+
+EXPORTIFY_CSV = (
+    "Track URI,Track Name,Artist Name(s),Album Name\n"
+    "spotify:track:1,Bad Guy,Billie Eilish,When We All Fall Asleep\n"
+    "spotify:track:2,Alright,Kendrick Lamar,To Pimp a Butterfly\n"
+)
+
+
+def test_a_chosen_csv_lands_in_the_box_the_parser_reads(tmp_path):
+    """The button is a shortcut into the paste box, not a second code path.
+
+    Exportify hands you a file and the box only took text, so the file had to
+    be opened in an editor and copied by hand. What the button must not do is
+    grow a private parser: it fills the same box, and the same reader answers.
+    """
+    csv_file = tmp_path / "playlist.csv"
+    csv_file.write_text(EXPORTIFY_CSV, encoding="utf-8")
+
+    app, view = _import_view()
+    try:
+        view._load_csv(str(csv_file))
+        tracks = spotify.from_text(view.paste.toPlainText())
+        assert [(t.artist, t.title) for t in tracks] == [
+            ("Billie Eilish", "Bad Guy"),
+            ("Kendrick Lamar", "Alright"),
+        ]
+    finally:
+        view.deleteLater()
+        app.processEvents()
+
+
+def test_the_byte_order_mark_exportify_writes_does_not_hide_the_header(tmp_path):
+    """Exportify writes a BOM, and the header is what marks the file a CSV.
+
+    Read as plain utf-8 the BOM sticks to the first column name, the header no
+    longer matches, and the whole file is taken for a list of song titles —
+    every row silently becomes a track called "Track URI,Track Name,…". Read as
+    utf-8-sig it is the same file as the one above.
+    """
+    csv_file = tmp_path / "bom.csv"
+    csv_file.write_bytes(b"\xef\xbb\xbf" + EXPORTIFY_CSV.encode("utf-8"))
+
+    app, view = _import_view()
+    try:
+        view._load_csv(str(csv_file))
+        assert not view.paste.toPlainText().startswith("﻿")
+        tracks = spotify.from_text(view.paste.toPlainText())
+        assert [t.title for t in tracks] == ["Bad Guy", "Alright"]
+    finally:
+        view.deleteLater()
+        app.processEvents()
+
+
+def test_an_unreadable_or_empty_csv_is_said_out_loud(tmp_path):
+    """A bad file gets a sentence, not a traceback and not silence."""
+    app, view = _import_view()
+    said = []
+    view.status.connect(lambda text, kind: said.append((text, kind)))
+    try:
+        view._load_csv(str(tmp_path / "does-not-exist.csv"))
+        assert said and said[-1][1] == "warning"
+
+        empty = tmp_path / "empty.csv"
+        empty.write_text("   \n", encoding="utf-8")
+        view._load_csv(str(empty))
+        assert "empty" in said[-1][0].lower()
+
+        # Neither attempt may leave half a file in the box.
+        assert not view.paste.toPlainText().strip()
+    finally:
+        view.deleteLater()
+        app.processEvents()
+
+
+def test_the_csv_button_stops_while_an_import_is_running():
+    """Loading a second playlist mid-import would overwrite the first."""
+    app, view = _import_view()
+    try:
+        assert view.csv_button.isEnabled()
+        view.busy = True
+        view.refresh()
+        assert not view.csv_button.isEnabled()
+        view.busy = False
+        view.refresh()
+        assert view.csv_button.isEnabled()
+    finally:
+        view.deleteLater()
+        app.processEvents()
+
+
+# ── What did not end up as audio ──────────────────────────────────
+
+def test_a_failed_download_joins_the_tracks_nothing_was_found_for():
+    """Two reasons, one list — because the consequence is the same.
+
+    A song nobody could match and a song that matched but would not download
+    are both songs you do not have. The second used to exist only as a toast
+    and a state on a row in another tab, so it was the one that got lost.
+    """
+    found = spotify.SpotifyTrack(title="Alright", artist="Kendrick Lamar")
+    lost = spotify.SpotifyTrack(title="Obscure B-Side", artist="Nobody")
+    report = spotify.ImportReport(
+        matched=[(found, object())], missed=[lost])
+
+    assert report.missed_lines() == [str(lost)]
+
+    report.note_download_failure(found, "HTTP 403")
+    lines = report.missed_lines()
+    assert len(lines) == 2
+    assert str(lost) in lines[0]
+    assert "Alright" in lines[1] and "403" in lines[1]
+    assert "1 missing" in report.summary and "1 failed to download" in report.summary
+
+
+def test_the_same_track_failing_twice_is_still_one_line():
+    """A retry that fails again must not double the list."""
+    track = spotify.SpotifyTrack(title="A", artist="B")
+    report = spotify.ImportReport(matched=[(track, object())])
+
+    report.note_download_failure(track, "timed out")
+    report.note_download_failure(track, "timed out again")
+
+    assert len(report.failed) == 1
+    assert "timed out again" in report.missed_lines()[0]
+
+
+def test_a_retry_that_works_takes_the_track_off_the_list():
+    """Otherwise the list still accuses you of missing a song you have."""
+    track = spotify.SpotifyTrack(title="A", artist="B")
+    report = spotify.ImportReport(matched=[(track, object())])
+
+    report.note_download_failure(track, "timed out")
+    assert report.failed
+
+    report.note_download_recovered(track)
+    assert not report.failed
+    assert report.missed_lines() == []
+    assert report.summary == "All 1 tracks found"
+
+
+def test_a_clean_import_still_says_so_with_the_failed_list_empty():
+    """The happy path must not gain a new way to look unhappy."""
+    report = spotify.ImportReport(matched=[(spotify.SpotifyTrack(title="A"), object())])
+    assert report.summary == "All 1 tracks found"
+    assert report.missed_lines() == []
+
+
+# ── Retrying a download ───────────────────────────────────────────
+
+def test_the_retry_button_hands_back_something_the_window_can_download():
+    """The bug this pins: the row emits a DownloadRequest, and the slot it was
+    wired to read `.id` — a field only a search Result has. Every press raised
+    inside the signal, so the button looked dead and said nothing.
+
+    Asserted on the field names rather than on a mocked window, because the
+    mismatch between the two shapes *is* the fault.
+    """
+    from rose_bouquet.core import ytmusic
+
+    request = ytmusic.DownloadRequest(video_id="abc123", title="T", artist="A")
+
+    assert not hasattr(request, "id")
+    assert request.video_id == "abc123"
+
+    import inspect
+
+    from rose_bouquet.ui.main_window import MainWindow
+
+    # retry_download must take the request as it is, and must not reach for the
+    # attribute that broke it.
+    source = inspect.getsource(MainWindow.retry_download)
+    assert "request.video_id" in source
+    assert "request.id" not in source
+
+
+def test_a_failed_row_keeps_the_request_so_it_can_be_retried():
+    """A row with no payload shows no Retry button — nothing to send."""
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+
+    from rose_bouquet.core import ytmusic
+    from rose_bouquet.ui.theme import Appearance
+    from rose_bouquet.ui.views import DownloadsView
+
+    app = QApplication.instance() or QApplication([])
+    view = DownloadsView(Appearance())
+    try:
+        request = ytmusic.DownloadRequest(video_id="k", title="T")
+        view.note("k", "A — T", 0.0, "failed", request)
+
+        # note() repaints on a timer, which needs an event loop; the rows are
+        # what is being tested, so they are built directly.
+        view.refresh()
+
+        sent = []
+        view.retry_requested.connect(sent.append)
+        view.rows["k"]["retry"].click()
+
+        # The request must arrive intact — rebuilding it is how it broke.
+        assert sent == [request]
+    finally:
+        view.deleteLater()
+        app.processEvents()

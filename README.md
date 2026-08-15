@@ -286,7 +286,8 @@ not touch your cookie jar unasked.
 **Spotify caps unauthenticated playlist reads at 100 tracks.** Their public
 token endpoints are now signed and refuse anonymous requests, so a longer
 playlist needs either your own free API credentials (Settings → Downloads, and
-imports then page properly) or an Exportify CSV pasted into the import box.
+imports then page properly) or an Exportify CSV — paste it into the import box,
+or press **Choose CSV** and pick the file Exportify gave you.
 When an import is capped, it says so rather than pretending the playlist was
 short.
 
@@ -307,7 +308,7 @@ python -m venv .venv
 .venv/bin/python -m pytest -q
 ```
 
-221 tests over the queue, the library, playlists, the cava bridge, the Spotify
+240 tests over the queue, the library, playlists, the cava bridge, the Spotify
 and Takeout importers, resumable imports, the recommender and its interest
 filtering, the shorts reel, optical discs, the server, and theme readability —
 including one that launches the real entry point and waits for the window,

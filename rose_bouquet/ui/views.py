@@ -877,6 +877,7 @@ class ImportView(ScrollingView):
     resume_requested = Signal(object)            # ImportJob
     force_resume_requested = Signal(object)      # ImportJob, ignoring the wait
     takeout_requested = Signal(str)              # path to a Takeout export
+    retry_failed_requested = Signal()            # try the failed downloads again
     status = Signal(str, str)
 
     def __init__(self, appearance: Appearance, parent: Optional[QWidget] = None) -> None:
@@ -928,12 +929,18 @@ class ImportView(ScrollingView):
             "…or paste a track list, one per line:\n"
             "Artist - Title\n"
             "Artist - Title\n\n"
-            "An Exportify CSV works too."
+            "An Exportify CSV works too — paste it, or use Choose CSV below."
         )
         self.paste.setMaximumHeight(130)
         layout.addWidget(self.paste)
 
         buttons = QHBoxLayout()
+
+        self.csv_button = QPushButton("Choose CSV…")
+        self.csv_button.setToolTip("Load an Exportify CSV into the box above")
+        self.csv_button.clicked.connect(self._browse_csv)
+        buttons.addWidget(self.csv_button)
+
         buttons.addStretch(1)
 
         self.match_button = QPushButton("Match only")
@@ -980,6 +987,36 @@ class ImportView(ScrollingView):
 
         return form
 
+    def _browse_csv(self) -> None:
+        """Load an Exportify CSV into the paste box, which already parses one."""
+        from PySide6.QtWidgets import QFileDialog
+
+        chosen, _ = QFileDialog.getOpenFileName(
+            self, "Your Exportify CSV", str(Path.home() / "Downloads"),
+            "Track lists (*.csv *.txt);;All files (*)",
+        )
+        if chosen:
+            self._load_csv(chosen)
+
+    def _load_csv(self, chosen: str) -> None:
+        """The reading half, kept apart from the dialog so it can be tested."""
+        try:
+            # utf-8-sig: Exportify writes a BOM, and the header row is what the
+            # parser sniffs to tell a CSV from a plain list — a BOM hides it.
+            text = Path(chosen).read_text(encoding="utf-8-sig", errors="replace")
+        except OSError as problem:
+            logger.warning("could not read %s: %s", chosen, problem)
+            self.status.emit(f"Could not read that file — {problem.strerror}", "warning")
+            return
+        if not text.strip():
+            self.status.emit("That file is empty", "warning")
+            return
+        self.paste.setPlainText(text)
+        lines = max(0, len(text.strip().splitlines()) - 1)
+        self.status.emit(
+            f"Loaded {Path(chosen).name} — {lines} rows. Now Match, or Match and download.",
+            "success")
+
     def _browse_takeout(self) -> None:
         from PySide6.QtWidgets import QFileDialog
 
@@ -1022,7 +1059,8 @@ class ImportView(ScrollingView):
         self.progress_label = None
 
         # The form is persistent chrome; only the results are redrawn.
-        for button in (getattr(self, "match_button", None), getattr(self, "fetch_button", None)):
+        for button in (getattr(self, "match_button", None), getattr(self, "fetch_button", None),
+                       getattr(self, "csv_button", None)):
             if button is not None:
                 button.setEnabled(not self.busy)
 
@@ -1084,20 +1122,36 @@ class ImportView(ScrollingView):
         )
         self.body_layout.addWidget(summary)
 
-        if not report.missed:
+        if not report.missed and not report.failed:
             return
 
-        self.body_layout.addWidget(SectionHeading(
-            "Not found", self.appearance, count=len(report.missed)))
+        # Not found and failed-to-download are one list with two reasons: both
+        # mean the song is not in your library, and that is what the list is
+        # for. Kept as separate headings so the second group stays actionable —
+        # those already matched, so a retry is worth offering.
+        if report.missed:
+            self.body_layout.addWidget(SectionHeading(
+                "Not found", self.appearance, count=len(report.missed)))
+            for track in report.missed:
+                self.body_layout.addWidget(self._miss_row(str(track)))
 
-        for track in report.missed:
-            label = QLabel(f"·  {track}")
-            label.setStyleSheet(
-                f"color: {self.appearance.theme.warning}; background: transparent;"
-                f" padding: 1px 12px;"
-            )
-            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            self.body_layout.addWidget(label)
+        if report.failed:
+            self.body_layout.addWidget(SectionHeading(
+                "Failed to download", self.appearance, count=len(report.failed)))
+            for track, why in report.failed:
+                self.body_layout.addWidget(
+                    self._miss_row(str(track), why or "the download did not finish"))
+
+            retry = QPushButton(f"Retry {len(report.failed)} downloads")
+            retry.setObjectName("Primary")
+            retry.clicked.connect(self.retry_failed_requested.emit)
+            row = QHBoxLayout()
+            row.setContentsMargins(12, 4, 12, 0)
+            row.addWidget(retry)
+            row.addStretch(1)
+            holder = QWidget()
+            holder.setLayout(row)
+            self.body_layout.addWidget(holder)
 
         note = QLabel(
             "These are saved with the playlist, so they are still listed the "
@@ -1106,6 +1160,28 @@ class ImportView(ScrollingView):
         note.setObjectName("Subtle")
         note.setWordWrap(True)
         self.body_layout.addWidget(note)
+
+    def _miss_row(self, text: str, why: str = "") -> QWidget:
+        """One line of what did not arrive, with the reason under it."""
+        row = QWidget()
+        column = QVBoxLayout(row)
+        column.setContentsMargins(12, 1, 12, 1)
+        column.setSpacing(0)
+
+        label = QLabel(f"·  {text}")
+        label.setStyleSheet(
+            f"color: {self.appearance.theme.warning}; background: transparent;")
+        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        column.addWidget(label)
+
+        if why:
+            reason = QLabel(f"    {why}")
+            reason.setObjectName("Subtle")
+            reason.setWordWrap(True)
+            reason.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            column.addWidget(reason)
+
+        return row
 
 
 # ── Server ────────────────────────────────────────────────────────
