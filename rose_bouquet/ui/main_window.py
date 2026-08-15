@@ -68,7 +68,7 @@ from rose_bouquet.ui.views import (
     YouTubeView,
 )
 from rose_bouquet.ui.visualizer import FullscreenVisualizer, Shape, Visualizer
-from rose_bouquet.ui.widgets import Banner, CoverArt
+from rose_bouquet.ui.widgets import Banner, CoverArt, UpdateBar
 
 logger = logging.getLogger(__name__)
 
@@ -230,6 +230,10 @@ class MainWindow(QMainWindow):
         if self.server.config.enabled:
             QTimer.singleShot(200, lambda: self.toggle_server(True))
 
+        # Delayed so the window is up and interactive first — this is a network
+        # call and nothing about it should hold up the launch.
+        QTimer.singleShot(3000, self.check_for_updates)
+
     # ── Layout ────────────────────────────────────────────────────
 
     def _build(self) -> None:
@@ -240,6 +244,10 @@ class MainWindow(QMainWindow):
 
         self.banner = Banner(self.appearance)
         layout.addWidget(self.banner)
+
+        self.update_bar = UpdateBar(self.appearance)
+        self.update_bar.update_requested.connect(self.install_update)
+        layout.addWidget(self.update_bar)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._nav_rail())
@@ -1135,6 +1143,45 @@ class MainWindow(QMainWindow):
                 artist=source.artist, fmt=self.preferences.download_format,
             ))
         self.show_section("downloads")
+
+    # ── Updates ───────────────────────────────────────────────────
+
+    def check_for_updates(self) -> None:
+        """Look once, quietly, and only speak up if there is something to say.
+
+        A check that failed used to be indistinguishable from no update, which
+        is fine here: this runs on its own without being asked, so a machine
+        with no connection must stay silent rather than complain every launch.
+        Settings → About still has the button that reports what went wrong.
+        """
+        from rose_bouquet.core import updates
+
+        def done(release) -> None:
+            if release is None:
+                return
+            if updates.is_newer(release.version, updates.current_version()):
+                self.update_bar.announce(release.version)
+
+        tasks.run(updates.latest, on_done=done,
+                  on_error=lambda message: logger.info(
+                      "update check failed: %s", message))
+
+    def install_update(self) -> None:
+        """The Update now button on the bar."""
+        from rose_bouquet.core import updates
+
+        self.update_bar.working()
+
+        def done(result) -> None:
+            worked, message = result
+            if worked:
+                self.update_bar.finished(f"{message} Restart to use it.")
+            else:
+                self.update_bar.finished(message)
+
+        tasks.run(updates.update, on_done=done,
+                  on_error=lambda message: self.update_bar.finished(
+                      f"Could not update: {message}"))
 
     # ── The local algorithm ───────────────────────────────────────
 
@@ -2270,7 +2317,8 @@ class MainWindow(QMainWindow):
         self.video.apply_appearance(appearance)
         self.shorts_video.apply_appearance(appearance)
 
-        for widget in (*self.views.values(), self.banner, self.visualizer, self.now_art):
+        for widget in (*self.views.values(), self.banner, self.update_bar,
+                       self.visualizer, self.now_art):
             stage = getattr(widget, "stage_appearance", None)
             if stage is not None:
                 stage(appearance)

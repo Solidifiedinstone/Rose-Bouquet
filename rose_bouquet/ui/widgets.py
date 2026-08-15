@@ -345,3 +345,74 @@ class Banner(QLabel):
 
     def apply_appearance(self, appearance: Appearance) -> None:
         self.appearance = appearance
+
+
+class UpdateBar(QWidget):
+    """A new version is out — said in the window, not in a settings tab.
+
+    Separate from `Banner` because a banner is a toast: it says its piece and
+    disappears after six seconds. An update notice that vanishes while you are
+    looking at something else is the same as no notice at all, which is how
+    the old one worked — a button in Settings, and you had to already know it
+    was there to go and press it. This stays until it is answered.
+    """
+
+    update_requested = Signal()
+    dismissed = Signal()
+
+    def __init__(self, appearance: Appearance, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.appearance = appearance
+        self.setVisible(False)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(14, 8, 10, 8)
+        row.setSpacing(10)
+
+        self.message = QLabel("")
+        self.message.setWordWrap(True)
+        row.addWidget(self.message, 1)
+
+        self.update_button = QPushButton("Update now")
+        self.update_button.clicked.connect(self.update_requested.emit)
+        row.addWidget(self.update_button)
+
+        self.later = QPushButton("Later")
+        self.later.clicked.connect(self._dismiss)
+        row.addWidget(self.later)
+
+        self.apply_appearance(appearance)
+
+    def announce(self, version: str) -> None:
+        self.message.setText(f"Version {version} is available.")
+        self.update_button.setEnabled(True)
+        self.setVisible(True)
+
+    def working(self, text: str = "Updating…") -> None:
+        """Mid-update: the buttons stop, the bar stays and says what happened."""
+        self.message.setText(text)
+        self.update_button.setEnabled(False)
+
+    def finished(self, text: str) -> None:
+        self.message.setText(text)
+        self.update_button.setVisible(False)
+        self.later.setText("Close")
+
+    def _dismiss(self) -> None:
+        self.setVisible(False)
+        self.dismissed.emit()
+
+    def apply_appearance(self, appearance: Appearance) -> None:
+        self.appearance = appearance
+        theme = appearance.theme
+        self.setStyleSheet(
+            f"background-color: {theme.accent};"
+        )
+        self.message.setStyleSheet(
+            f"color: {theme.background}; font-weight: 600; background: transparent;")
+        for button in (self.update_button, self.later):
+            button.setStyleSheet(
+                f"color: {theme.text}; background-color: {theme.background};"
+                f" border: none; border-radius: 6px; padding: 5px 12px;"
+            )

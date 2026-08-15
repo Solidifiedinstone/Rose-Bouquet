@@ -1169,3 +1169,87 @@ def test_a_failed_row_keeps_the_request_so_it_can_be_retried():
     finally:
         view.deleteLater()
         app.processEvents()
+
+
+# ── Saying that an update exists ──────────────────────────────────
+
+def _update_bar():
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+
+    from rose_bouquet.ui.theme import Appearance
+    from rose_bouquet.ui.widgets import UpdateBar
+
+    app = QApplication.instance() or QApplication([])
+    return app, UpdateBar(Appearance())
+
+
+def test_the_update_notice_stays_until_it_is_answered():
+    """The reason this is not a Banner.
+
+    A Banner is a toast — it hides itself after six seconds. An update notice
+    that disappears while you are looking at the library is the same as never
+    having shown it, which is how this worked before: a button in a settings
+    tab you had to already know about.
+    """
+    app, bar = _update_bar()
+    try:
+        assert bar.isHidden()
+
+        bar.announce("0.3.0")
+        assert not bar.isHidden()
+        assert "0.3.0" in bar.message.text()
+
+        # No timer may take it away — only a press.
+        app.processEvents()
+        assert not bar.isHidden()
+
+        bar.later.click()
+        assert bar.isHidden()
+    finally:
+        bar.deleteLater()
+        app.processEvents()
+
+
+def test_the_bar_asks_to_update_and_then_stops_asking():
+    """Pressing Update must fire once and disable itself, not queue five."""
+    app, bar = _update_bar()
+    try:
+        asked = []
+        bar.update_requested.connect(lambda: asked.append(1))
+
+        bar.announce("0.3.0")
+        bar.update_button.click()
+        assert asked == [1]
+
+        bar.working()
+        assert not bar.update_button.isEnabled()
+        bar.update_button.click()
+        assert asked == [1]
+
+        bar.finished("Updated. Restart to use it.")
+        assert "Restart" in bar.message.text()
+        assert bar.later.text() == "Close"
+    finally:
+        bar.deleteLater()
+        app.processEvents()
+
+
+def test_a_check_that_fails_says_nothing_on_its_own():
+    """The launch check is unasked-for, so a machine offline must stay quiet.
+
+    Settings → About keeps the button that does report what went wrong; this
+    one running by itself must not complain on every launch.
+    """
+    import inspect
+
+    from rose_bouquet.ui.main_window import MainWindow
+
+    source = inspect.getsource(MainWindow.check_for_updates)
+    # The failure path logs; it must not reach for the banner or a dialog.
+    assert "logger" in source
+    assert "self.notify" not in source
+    assert "announce" in source

@@ -932,8 +932,6 @@ class SettingsDialog(QDialog):
         self.autostart_note.setProperty("role", "hint")
         form.addRow("", self.autostart_note)
 
-        form.addRow("Updates", self._updates_row())
-
         self.port = QSpinBox()
         self.port.setRange(1024, 65535)
         self.port.setValue(config.port or DEFAULT_PORT)
@@ -1021,6 +1019,18 @@ class SettingsDialog(QDialog):
         credit.setAlignment(Qt.AlignmentFlag.AlignCenter)
         credit.setWordWrap(True)
         layout.addWidget(credit)
+
+        # Updating lived under Serving, between the autostart checkbox and the
+        # server port, because that tab happened to be where the version string
+        # already was. Nobody looks for "is there a new version" inside the
+        # settings for hosting your library to other devices. It is here, next
+        # to what version this is, and the window says so on its own besides.
+        updates_row = QWidget()
+        holder = QHBoxLayout(updates_row)
+        holder.addStretch(1)
+        holder.addWidget(self._updates_row())
+        holder.addStretch(1)
+        layout.addWidget(updates_row)
 
         layout.addStretch(2)
         return page
