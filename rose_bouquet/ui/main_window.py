@@ -54,7 +54,6 @@ from rose_bouquet.ui.views import (
     LibraryView,
     PlaylistsView,
     ServerView,
-    YouTubeView,
 )
 from rose_bouquet.ui.visualizer import FullscreenVisualizer, Shape, Visualizer
 from rose_bouquet.ui.widgets import Banner, CoverArt, UpdateBar
@@ -67,7 +66,6 @@ SECTIONS = [
     ("library", "Library", "♫"),
     ("albums", "Albums", "▣"),
     ("playlists", "Playlists", "≡"),
-    ("youtube", "YouTube Music", "▶"),
     ("import", "Import", "⤓"),
     ("downloads", "Downloads", "↓"),
     ("disc", "Disc", "◎"),
@@ -414,11 +412,6 @@ class MainWindow(QMainWindow):
         playlists.menu_requested.connect(self.open_track_menu)
         self._register("playlists", playlists)
 
-        youtube = YouTubeView(self.ytmusic, self.appearance)
-        youtube.download_requested.connect(self.download_result)
-        youtube.status.connect(self.notify)
-        self._register("youtube", youtube)
-
         importer = ImportView(self.appearance)
         importer.import_requested.connect(self.import_spotify)
         importer.resume_requested.connect(self.resume_import)
@@ -654,7 +647,7 @@ class MainWindow(QMainWindow):
         # The local feed, the Shorts reel, Following and Browse were all
         # replaced by the one YouTube tab. A preference saved before that
         # should land there rather than silently dumping you in the library.
-        if key in ("feed", "shorts", "browse", "subscriptions"):
+        if key in ("feed", "shorts", "browse", "subscriptions", "youtube"):
             key = "watch"
 
         view = self.views.get(key)
@@ -1076,22 +1069,34 @@ class MainWindow(QMainWindow):
             ))
         self.show_section("downloads")
 
-    def download_watching(self, url: str) -> None:
+    def download_watching(self, url: str, page_title: str = "") -> None:
         """Download whatever the YouTube tab is showing.
 
-        The page is YouTube's, so the only thing to go on is the address, and
-        the only address worth downloading is a watch page.
+        Works the same on music.youtube.com as on the video site — both spell a
+        track `watch?v=…`, so the Music button and the Download button compose
+        without either knowing about the other. This is what replaced the
+        YouTube Music tab.
+
+        The page title is only a label for the downloads row and a fallback:
+        yt-dlp writes the real tags, and `track_from_download` prefers those.
         """
         from urllib.parse import parse_qs, urlparse
 
         parsed = urlparse(url or "")
         video_id = (parse_qs(parsed.query).get("v") or [""])[0]
         if not video_id:
-            self.notify("Open a video first — that is not a watch page", "warning")
+            self.notify("Open a video or a song first — that is not a watch page",
+                        "warning")
             return
 
+        # "Roygbiv - YouTube Music" is the tab title, not the song.
+        title = (page_title or "").strip()
+        for suffix in (" - YouTube Music", " - YouTube"):
+            if title.endswith(suffix):
+                title = title[:-len(suffix)].strip()
+
         self._download(ytmusic.DownloadRequest(
-            video_id=video_id, title=video_id,
+            video_id=video_id, title=title or video_id,
             fmt=self.preferences.download_format,
         ))
         self.show_section("downloads")
@@ -1105,16 +1110,21 @@ class MainWindow(QMainWindow):
         that did not arrive should cost nothing but the extra lines it would
         have added.
         """
-        from rose_bouquet.core import musicbrainz
+        from rose_bouquet.core import tracklists
 
         artist, album = key
 
         def done(release) -> None:
             self.views["albums"].show_tracklist(key, release)
 
-        tasks.run(lambda: musicbrainz.tracklist(artist, album), on_done=done,
-                  on_error=lambda message: logger.info(
-                      "no tracklist for %r: %s", album, message))
+        def failed(message: str) -> None:
+            logger.info("no tracklist for %r: %s", album, message)
+            # Still tell the view, or it waits for an answer that never comes
+            # and the album sits looking like the feature does not work.
+            self.views["albums"].show_tracklist(key, None)
+
+        tasks.run(lambda: tracklists.lookup(artist, album, self.ytmusic),
+                  on_done=done, on_error=failed)
 
     def fetch_missing_track(self, title: str, artist: str, album: str) -> None:
         """Get a track the album has and the library does not.
@@ -1387,7 +1397,13 @@ class MainWindow(QMainWindow):
                 video_id=entry.video_id, title=entry.title,
                 artist=entry.artist, fmt=self.preferences.download_format,
             ))
-        self.show_section("downloads")
+
+        # Deliberately staying put. This runs straight after an import, and the
+        # import report — the list naming every song that was not found and
+        # every one that would not download — is on the tab we were about to
+        # jump away from. Being shown a progress bar instead of the list of
+        # what you lost is how that list went unread. The downloads carry on in
+        # the background either way, and the section is one click away.
 
 
     def resume_import(self, job, *, ignore_wait: bool = False) -> None:

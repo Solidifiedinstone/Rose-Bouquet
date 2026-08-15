@@ -34,6 +34,7 @@ from typing import Optional
 
 from PySide6.QtCore import QUrl, Signal
 from PySide6.QtWebEngineCore import (
+    QWebEnginePage,
     QWebEngineProfile,
     QWebEngineScript,
     QWebEngineSettings,
@@ -158,11 +159,30 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
             info.block(True)
 
 
+class _Page(QWebEnginePage):
+    """A page that does not silently drop the windows the site asks for.
+
+    This is what stopped sign-in working. Google's login is opened from a
+    button that calls `window.open`, and a QWebEngineView with no
+    `createWindow` throws that request away — so the button did nothing at
+    all, with no error and nothing in the log. The page itself was never
+    blocked: asked directly, Google serves the ordinary login form.
+
+    Returning this same page loads the popup in place, which is right for a
+    sign-in flow: it is meant to come back to YouTube when it finishes, and a
+    second window with no address bar would be a worse place to type a
+    password into.
+    """
+
+    def createWindow(self, _kind):               # noqa: N802 (Qt's name)
+        return self
+
+
 class YouTubeTab(QWidget):
     """YouTube and YouTube Music, in one tab, without the client that spies."""
 
     status = Signal(str, str)
-    download_requested = Signal(str)          # the url on screen
+    download_requested = Signal(str, str)     # the url on screen, its title
 
     def __init__(self, appearance: Appearance, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -241,9 +261,7 @@ class YouTubeTab(QWidget):
         return profile
 
     def _build_page(self):
-        from PySide6.QtWebEngineCore import QWebEnginePage
-
-        page = QWebEnginePage(self.profile, self)
+        page = _Page(self.profile, self)
         settings = page.settings()
         for attribute, value in (
             (QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False),
@@ -295,7 +313,8 @@ class YouTubeTab(QWidget):
         self.download.setObjectName("Quiet")
         self.download.setToolTip("Download what is on screen")
         self.download.clicked.connect(
-            lambda: self.download_requested.emit(self.view.url().toString()))
+            lambda: self.download_requested.emit(
+                self.view.url().toString(), self.view.title()))
         row.addWidget(self.download)
 
         self.blocked_label = QLabel("")

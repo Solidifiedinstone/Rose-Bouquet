@@ -55,11 +55,20 @@ in and you get *your* recommendations, your subscriptions and your history —
 the real algorithm, without the client that reports on you. Ads and telemetry
 are blocked at the network layer, so nothing is requested and nothing is
 measured; the app adds no analytics of its own and sends nothing anywhere but
-YouTube. YouTube Music is a button away in the same tab.
+YouTube. YouTube Music is a button away in the same tab — the dedicated tab it used to
+have is gone, because it was the same site. Download works from either: the
+Download button takes whatever is on screen.
 
 This replaced a feed built on this machine, which said why every item was there
 but only ever knew what it had been told — always going to be a worse
 recommender than the one with a billion hours of watch time behind it.
+
+**Albums show the whole record** — not just the part you have. The tracklist
+comes from MusicBrainz, and from YouTube Music when MusicBrainz has never heard
+of it, which for self-released and netlabel records is most of the time. Your
+files are laid into it by title, the gaps are listed greyed out with a button
+to go and get them, and when neither source knows the album it says so rather
+than quietly showing you what was already there.
 
 **Library** — your own files, scanned from folders you choose, with tags read
 by mutagen. Albums group properly, including compilations, and an open album
@@ -293,7 +302,7 @@ python -m venv .venv
 .venv/bin/python -m pytest -q
 ```
 
-163 tests over the queue, the library, playlists, the cava bridge, the Spotify
+167 tests over the queue, the library, playlists, the cava bridge, the Spotify
 importer and its CSV handling, resumable imports, album tracklists, optical
 discs, the server, and theme readability —
 including one that launches the real entry point and waits for the window,

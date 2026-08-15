@@ -254,15 +254,20 @@ class AlbumsView(ScrollingView):
         self.open_album = key
         #: The catalogue's tracklist for the open album, once it arrives.
         self.release = None
+        #: Whether an answer — including "nobody knows this album" — has come
+        #: back yet. Without it, "still looking" and "nothing found" look the
+        #: same on screen, which is how the whole feature read as broken.
+        self.looked_up = False
         self.refresh()
         if key is not None:
             self.tracklist_wanted.emit(key)
 
     def show_tracklist(self, key, release) -> None:
-        """The catalogue answered. Ignored if you have opened another album."""
+        """The lookup answered. Ignored if you have opened another album."""
         if key != self.open_album:
             return
         self.release = release
+        self.looked_up = True
         self.refresh()
 
     def _render_album(self, tracks: list, playing_path: str) -> None:
@@ -306,13 +311,25 @@ class AlbumsView(ScrollingView):
         if missing:
             note = QLabel(
                 f"{missing} track{'' if missing == 1 else 's'} of this album "
-                f"{'is' if missing == 1 else 'are'} not in your library. "
-                "Tracklist from MusicBrainz."
+                f"{'is' if missing == 1 else 'are'} not in your library."
             )
-            note.setObjectName("Subtle")
-            note.setWordWrap(True)
-            note.setContentsMargins(12, 8, 12, 0)
-            self.body_layout.addWidget(note)
+        elif self.release is not None:
+            note = QLabel("You have all of this album.")
+        elif self.looked_up:
+            # Said out loud, because an album with no tracklist looks exactly
+            # like an album whose tracklist never loaded.
+            note = QLabel(
+                "Neither MusicBrainz nor YouTube Music has a tracklist for "
+                "this one, so this is what is on disk. Small and self-released "
+                "records often are not catalogued anywhere."
+            )
+        else:
+            note = QLabel("Looking up the full tracklist…")
+
+        note.setObjectName("Subtle")
+        note.setWordWrap(True)
+        note.setContentsMargins(12, 8, 12, 0)
+        self.body_layout.addWidget(note)
 
         self.body_layout.addStretch(1)
 

@@ -1303,3 +1303,94 @@ def test_titles_compare_past_the_noise_rippers_add():
 
     # It must not collapse songs that genuinely differ.
     assert mb.normalise("One") != mb.normalise("One More Time")
+
+
+# ── Where a tracklist comes from ──────────────────────────────────
+
+class _FakeYTM:
+    """Stands in for YouTube Music, including its confident wrong answers."""
+
+    def __init__(self, hits, tracks=()):
+        self._hits, self._tracks = hits, list(tracks)
+        self.asked = []
+
+    def search(self, query, kind=None, limit=25):
+        self.asked.append((query, kind))
+        return self._hits
+
+    def album(self, browse_id):
+        return "An Album", self._tracks
+
+
+class _Hit:
+    def __init__(self, title, artist, browse_id="b1"):
+        self.title, self.artist, self.browse_id = title, artist, browse_id
+
+
+class _Song:
+    def __init__(self, title, duration=0):
+        self.title, self.duration = title, duration
+
+
+def test_youtube_music_fills_in_what_musicbrainz_has_never_heard_of(monkeypatch):
+    """A library of netlabel and self-released records is mostly not catalogued.
+
+    MusicBrainz is a catalogue of published releases, so for a lot of this
+    library it simply says no — and the album then looks exactly as it did
+    before the feature existed, which reads as broken.
+    """
+    from rose_bouquet.core import tracklists
+
+    monkeypatch.setattr(tracklists.musicbrainz, "tracklist",
+                        lambda artist, album: None)
+
+    ytm = _FakeYTM([_Hit("golden dogs", "xe1la")],
+                   [_Song("still"), _Song("wisdom"), _Song("angler fish")])
+
+    release = tracklists.lookup("xe1la", "golden dogs", ytm)
+
+    assert release is not None
+    assert [t.title for t in release.tracks] == ["still", "wisdom", "angler fish"]
+    assert [t.position for t in release.tracks] == [1, 2, 3]
+
+
+def test_a_confidently_wrong_album_is_refused(monkeypatch):
+    """Searching YouTube Music for "Acoustin / Acoustin" really does return
+    "Black & White (Acoustic)" by Meechi Mono. A tracklist from the wrong
+    record is worse than none: it invents songs and offers to download them.
+    """
+    from rose_bouquet.core import tracklists
+
+    monkeypatch.setattr(tracklists.musicbrainz, "tracklist",
+                        lambda artist, album: None)
+
+    ytm = _FakeYTM([_Hit("Black & White (Acoustic)", "Meechi Mono")],
+                   [_Song("Black & White")])
+
+    assert tracklists.lookup("Acoustin", "Acoustin", ytm) is None
+
+
+def test_musicbrainz_is_asked_first_and_youtube_music_not_at_all(monkeypatch):
+    """The catalogue's track numbers are the release's own — prefer them."""
+    from rose_bouquet.core import musicbrainz, tracklists
+
+    known = musicbrainz.Release(title="An Album", tracks=[
+        musicbrainz.CatalogueTrack(position=1, title="One")])
+    monkeypatch.setattr(tracklists.musicbrainz, "tracklist",
+                        lambda artist, album: known)
+
+    ytm = _FakeYTM([_Hit("An Album", "A")], [_Song("Something Else")])
+
+    assert tracklists.lookup("A", "An Album", ytm) is known
+    assert ytm.asked == []
+
+
+def test_no_source_knows_it_and_nothing_pretends_otherwise(monkeypatch):
+    from rose_bouquet.core import tracklists
+
+    monkeypatch.setattr(tracklists.musicbrainz, "tracklist",
+                        lambda artist, album: None)
+
+    assert tracklists.lookup("Nobody", "Nothing", _FakeYTM([])) is None
+    # And with no YouTube Music at all — the offline install.
+    assert tracklists.lookup("Nobody", "Nothing", None) is None
