@@ -32,6 +32,11 @@ from rose_bouquet.ui.widgets import Card, SectionHeading, TrackRow
 logger = logging.getLogger(__name__)
 
 
+#: Library rows built per block. Small enough that a block is imperceptible,
+#: large enough that a fast scroll does not outrun it.
+LIBRARY_CHUNK = 150
+
+
 class ScrollingView(QWidget):
     """A scrolling column, which nearly every section is."""
 
@@ -140,12 +145,21 @@ class LibraryView(ScrollingView):
         scan.clicked.connect(self.scan_requested.emit)
         self.header_layout.addWidget(scan)
 
+        #: The whole result, and how much of it has been built into widgets.
+        #: The list is all of it; the widgets arrive as you reach them.
+        self._tracks: list = []
+        self._built = 0
+        self.scroll.verticalScrollBar().valueChanged.connect(self._maybe_extend)
+
     def refresh(self, playing_path: str = "") -> None:
         self.playing_path = playing_path or self.playing_path
         self.clear(self.body_layout)
 
         tracks = self.library.search(self.search.text())
         self.count.setText(f"{len(tracks)} track{'' if len(tracks) == 1 else 's'}")
+
+        self._tracks = tracks
+        self._built = 0
 
         if not tracks:
             message = (
@@ -157,20 +171,53 @@ class LibraryView(ScrollingView):
             self.body_layout.addStretch(1)
             return
 
-        # Long libraries are capped per draw: a thousand widgets is slow to
-        # build and nobody scrolls that far without searching.
-        for track in tracks[:500]:
-            row = TrackRow(track, self.appearance, playing=track.path == self.playing_path)
-            row.play_requested.connect(lambda t, ts=tracks: self.play_requested.emit(t, ts))
-            row.menu_requested.connect(self.menu_requested.emit)
-            self.body_layout.addWidget(row)
-
-        if len(tracks) > 500:
-            self.body_layout.addWidget(self.empty_label(
-                f"…and {len(tracks) - 500} more. Search to narrow it down."
-            ))
-
         self.body_layout.addStretch(1)
+        self._extend()
+
+    def _extend(self) -> None:
+        """Build the next block of rows, above the trailing stretch.
+
+        The list used to stop at 500 with "search to narrow it down", on the
+        reasoning that nobody scrolls a thousand tracks. That is a guess about
+        the person using it, and the honest reading of someone scrolling to the
+        bottom is that they wanted what was down there. The cap was really
+        about build cost — a thousand row widgets at once is a visible stall —
+        so the cost is what got fixed: every track is in the list, and the
+        widgets for them are made in blocks as the scroll reaches them.
+        """
+        start, end = self._built, min(self._built + LIBRARY_CHUNK, len(self._tracks))
+        if start >= end:
+            return
+
+        # Everything after the rows is the stretch, so new rows go before it.
+        at = self.body_layout.count() - 1
+        for track in self._tracks[start:end]:
+            row = TrackRow(track, self.appearance,
+                           playing=track.path == self.playing_path)
+            row.play_requested.connect(
+                lambda t: self.play_requested.emit(t, self._tracks))
+            row.menu_requested.connect(self.menu_requested.emit)
+            self.body_layout.insertWidget(at, row)
+            at += 1
+
+        self._built = end
+
+        # A window taller than the first block would otherwise sit there with
+        # no scrollbar to move and nothing more coming.
+        QTimer.singleShot(0, self._fill_viewport)
+
+    def _fill_viewport(self) -> None:
+        bar = self.scroll.verticalScrollBar()
+        if self._built < len(self._tracks) and bar.maximum() <= 0:
+            self._extend()
+
+    def _maybe_extend(self, value: int) -> None:
+        """More rows once the scroll is within a screenful of the end."""
+        if self._built >= len(self._tracks):
+            return
+        bar = self.scroll.verticalScrollBar()
+        if value >= bar.maximum() - bar.pageStep():
+            self._extend()
 
 
 class AlbumsView(ScrollingView):

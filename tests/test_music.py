@@ -1253,3 +1253,118 @@ def test_a_check_that_fails_says_nothing_on_its_own():
     assert "logger" in source
     assert "self.notify" not in source
     assert "announce" in source
+
+
+# ── The library shows the library ─────────────────────────────────
+
+def _library_view(count: int):
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from PySide6.QtWidgets import QApplication
+
+    from rose_bouquet.ui.theme import Appearance
+    from rose_bouquet.ui.views import LibraryView
+
+    app = QApplication.instance() or QApplication([])
+    library = Library()
+    for i in range(count):
+        library.add(Track(path=f"/m/{i}.mp3", title=f"Song {i}",
+                          artist="A", album="Al", duration=200))
+    view = LibraryView(library, Appearance())
+    view.resize(900, 700)
+    return app, view
+
+
+def test_a_long_library_is_all_reachable():
+    """It used to stop at 500 and tell you to search.
+
+    The cap was about build cost, but it was written as a claim about the
+    person — nobody scrolls that far — and someone scrolling to the bottom
+    plainly wanted what was down there. Every track is in the list now; the
+    widgets are built in blocks as the scroll reaches them.
+    """
+    app, view = _library_view(915)
+    try:
+        view.refresh()
+
+        assert view.count.text() == "915 tracks"
+        assert len(view._tracks) == 915
+        # Not all at once — that stall is why the cap existed.
+        assert view._built < 915
+
+        while view._built < len(view._tracks):
+            view._extend()
+        assert view._built == 915
+    finally:
+        view.deleteLater()
+        app.processEvents()
+
+
+def test_nothing_tells_you_to_search_to_see_your_own_music():
+    """The "…and 415 more" line must not come back."""
+    app, view = _library_view(915)
+    try:
+        view.refresh()
+        while view._built < len(view._tracks):
+            view._extend()
+
+        texts = []
+        for i in range(view.body_layout.count()):
+            widget = view.body_layout.itemAt(i).widget()
+            if widget is not None and hasattr(widget, "text"):
+                texts.append(widget.text())
+
+        assert not any("more" in t and "Search" in t for t in texts)
+    finally:
+        view.deleteLater()
+        app.processEvents()
+
+
+def test_playing_a_track_queues_the_whole_result_not_the_built_part():
+    """Press play on row three and the queue is every track, not the first block.
+
+    The rows are built lazily, so a queue taken from "what is on screen" would
+    silently shrink to a block — the failure the lazy list could easily cause.
+    """
+    app, view = _library_view(400)
+    try:
+        view.refresh()
+        assert view._built < 400
+
+        queued = []
+        view.play_requested.connect(lambda track, tracks: queued.append(tracks))
+
+        first_row = view.body_layout.itemAt(0).widget()
+        first_row.play_requested.emit(view._tracks[0])
+
+        assert len(queued[0]) == 400
+    finally:
+        view.deleteLater()
+        app.processEvents()
+
+
+def test_the_launch_check_asks_once_a_day_not_once_a_launch():
+    """An unasked-for network call needs both a limit and an off switch.
+
+    Opening the app five times in an afternoon is one request. The preference
+    exists because an app should not phone anywhere unprompted with no way to
+    stop it, and the isolated startup test is entitled to a quiet process.
+    """
+    import time
+
+    from rose_bouquet.ui.main_window import UPDATE_CHECK_INTERVAL
+    from rose_bouquet.ui.preferences import Preferences
+
+    prefs = Preferences()
+    assert prefs.check_updates_on_start is True
+    assert prefs.last_update_check == 0.0
+    assert UPDATE_CHECK_INTERVAL == 24 * 60 * 60
+
+    # Round trips, or the throttle forgets across launches and is no throttle.
+    prefs.last_update_check = time.time()
+    prefs.check_updates_on_start = False
+    restored = Preferences.from_dict(prefs.to_dict())
+    assert restored.check_updates_on_start is False
+    assert restored.last_update_check == prefs.last_update_check

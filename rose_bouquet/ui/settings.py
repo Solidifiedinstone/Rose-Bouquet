@@ -825,6 +825,15 @@ class SettingsDialog(QDialog):
         installed.setProperty("role", "hint")
         row.addWidget(installed)
 
+        self.check_updates_on_start = QCheckBox("Look for updates when I open the app")
+        self.check_updates_on_start.setChecked(self.preferences.check_updates_on_start)
+        self.check_updates_on_start.setToolTip(
+            "One request, at most once a day. It says nothing unless there is "
+            "a new version.")
+        self.check_updates_on_start.toggled.connect(
+            lambda on: self.preferences.set_persistent("check_updates_on_start", on))
+        row.addWidget(self.check_updates_on_start)
+
         note = QLabel("")
         note.setWordWrap(True)
         note.setProperty("role", "hint")

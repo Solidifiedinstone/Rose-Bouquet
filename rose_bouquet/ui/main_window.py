@@ -102,6 +102,10 @@ PER_SEED = 4
 #: ranker drops the ones already watched and anything blocked, and a column
 #: that empties itself out on somebody with a long history is worse than one
 #: that had a few spare to work with.
+#: How long between unasked-for update checks. A release is not urgent enough
+#: to ask GitHub on every launch.
+UPDATE_CHECK_INTERVAL = 24 * 60 * 60
+
 RELATED_CANDIDATES = 24
 
 #: How many end up beside the picture. Enough to choose from, few enough that
@@ -1154,7 +1158,19 @@ class MainWindow(QMainWindow):
         with no connection must stay silent rather than complain every launch.
         Settings → About still has the button that reports what went wrong.
         """
+        import time
+
         from rose_bouquet.core import updates
+
+        if not self.preferences.check_updates_on_start:
+            return
+
+        # Launching five times in an afternoon is one request, not five.
+        since = time.time() - self.preferences.last_update_check
+        if since < UPDATE_CHECK_INTERVAL:
+            return
+
+        self.preferences.set_persistent("last_update_check", time.time())
 
         def done(release) -> None:
             if release is None:

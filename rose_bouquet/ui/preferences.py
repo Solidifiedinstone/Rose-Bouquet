@@ -140,6 +140,14 @@ class Preferences:
     use_browser_cookies: bool = False
     #: Add downloads to the library as soon as they finish.
     add_downloads_to_library: bool = True
+    #: Look for a new version shortly after launch, at most once a day. The
+    #: check is one request and says nothing unless there is something to say;
+    #: it is a preference because an app should not phone anywhere unasked
+    #: without an off switch.
+    check_updates_on_start: bool = True
+    #: When it last looked, as a unix time. Kept so launching five times in an
+    #: afternoon is still one request.
+    last_update_check: float = 0.0
 
     # ── Visualiser ────────────────────────────────────────────────
 
@@ -335,6 +343,8 @@ class Preferences:
             "scan_on_start": self.scan_on_start,
             "use_browser_cookies": self.use_browser_cookies,
             "add_downloads_to_library": self.add_downloads_to_library,
+            "check_updates_on_start": self.check_updates_on_start,
+            "last_update_check": self.last_update_check,
             "visualizer": self.visualizer,
             "visualizer_shape": self.visualizer_shape,
             "visualizer_alpha": self.visualizer_alpha,
@@ -373,9 +383,13 @@ class Preferences:
                 setattr(prefs, name, value)
 
         for name in ("scan_on_start", "add_downloads_to_library", "visualizer",
-                     "visualizer_blur", "remote_control", "use_browser_cookies"):
+                     "visualizer_blur", "remote_control", "use_browser_cookies",
+                     "check_updates_on_start"):
             if name in data:
                 setattr(prefs, name, bool(data[name]))
+
+        if isinstance(data.get("last_update_check"), (int, float)):
+            prefs.last_update_check = float(data["last_update_check"])
 
         folders = data.get("folders")
         if isinstance(folders, list):

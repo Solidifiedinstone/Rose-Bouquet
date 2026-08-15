@@ -308,7 +308,7 @@ python -m venv .venv
 .venv/bin/python -m pytest -q
 ```
 
-240 tests over the queue, the library, playlists, the cava bridge, the Spotify
+247 tests over the queue, the library, playlists, the cava bridge, the Spotify
 and Takeout importers, resumable imports, the recommender and its interest
 filtering, the shorts reel, optical discs, the server, and theme readability —
 including one that launches the real entry point and waits for the window,
