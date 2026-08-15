@@ -37,29 +37,21 @@ from rose_bouquet.core.playlists import PlaylistStore
 from rose_bouquet.core.playqueue import Repeat
 from rose_bouquet.core.recommend import (
     Candidate,
-    feed_channels,
-    load_feed,
-    rank,
-    save_feed,
-    top_artists,
 )
 from rose_bouquet.core.server import MusicServer
-from rose_bouquet.core.tastes import Channel, Tastes
+from rose_bouquet.core.tastes import Tastes
 from rose_bouquet.ui import tasks
 from rose_bouquet.ui.branding import APP_NAME
 from rose_bouquet.ui.cdplayer import CdPlayer
 from rose_bouquet.ui.disc import DiscView
-from rose_bouquet.ui.feed_views import FeedView, SubscriptionsView
 from rose_bouquet.ui.first_run import FirstRunDialog
 from rose_bouquet.ui.playback import Playback
 from rose_bouquet.ui.preferences import Preferences
 from rose_bouquet.ui.settings import SettingsDialog
-from rose_bouquet.ui.shorts import ShortsView
 from rose_bouquet.ui.theme import Appearance, set_active_style
 from rose_bouquet.ui.video import VideoStage
 from rose_bouquet.ui.views import (
     AlbumsView,
-    BrowseMusicView,
     DownloadsView,
     ImportView,
     LibraryView,
@@ -69,14 +61,12 @@ from rose_bouquet.ui.views import (
 )
 from rose_bouquet.ui.visualizer import FullscreenVisualizer, Shape, Visualizer
 from rose_bouquet.ui.widgets import Banner, CoverArt, UpdateBar
+from rose_bouquet.ui.youtube_tab import YouTubeTab
 
 logger = logging.getLogger(__name__)
 
 SECTIONS = [
-    ("feed", "Watch", "▶"),
-    ("shorts", "Shorts", "⧉"),
-    ("subscriptions", "Following", "☆"),
-    ("browse", "Browse", "✦"),
+    ("watch", "YouTube", "▶"),
     ("library", "Library", "♫"),
     ("albums", "Albums", "▣"),
     ("playlists", "Playlists", "≡"),
@@ -220,8 +210,6 @@ class MainWindow(QMainWindow):
         #: The desktop's media controls — the bar, `playerctl`, media keys.
         #: None when there is no session bus to join, which is not an error.
         self.mpris = Mpris.start(self.playback, self, parent=self)
-
-        self._restore_feed()
 
         QTimer.singleShot(900, self.check_unfinished_imports)
 
@@ -391,29 +379,20 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.views: dict[str, QWidget] = {}
 
-        feed = FeedView(self.tastes, self.appearance)
-        feed.refresh_requested.connect(self.rebuild_feed)
-        feed.play_requested.connect(self.play_candidate)
-        feed.download_requested.connect(self.download_candidate)
-        feed.like_toggled.connect(self.toggle_like)
-        feed.search_requested.connect(self.search_youtube)
-        feed.watch_requested.connect(self.watch_candidate)
-        feed.status.connect(self.notify)
+        watch = YouTubeTab(self.appearance)
+        watch.status.connect(self.notify)
+        watch.download_requested.connect(self.download_watching)
+        self._register("watch", watch)
 
-        # The picture half of the Watch tab. Given the YouTube client here
-        # rather than built inside the view, which is deliberately handed only
-        # the local profile.
-        video = VideoStage(self.youtube, self.appearance,
-                           recommend=self.related_to)
+        # A player for video that is not YouTube's — a film on a disc, a file.
+        # It has no nav entry of its own; the disc reader switches to it. The
+        # YouTube half plays inside the web view, so this is not given a
+        # YouTube client or a recommender any more.
+        video = VideoStage(None, self.appearance)
         video.playback_requested.connect(self.playback.pause)
-        video.download_requested.connect(self.download_candidate)
-        video.like_toggled.connect(self.toggle_like)
-        video.watch_requested.connect(self.watch_candidate)
         video.status.connect(self.notify)
-        feed.attach_video(video)
         self.video = video
-
-        self._register("feed", feed)
+        self._register("player", video)
 
         disc = DiscView(self.appearance, self.preferences.downloads_path)
         disc.status.connect(self.notify)
@@ -424,40 +403,6 @@ class MainWindow(QMainWindow):
         disc.watch_requested.connect(self.watch_disc)
         self._register("disc", disc)
 
-        shorts = ShortsView(self.tastes, self.appearance)
-        shorts.search_requested.connect(self.search_shorts)
-        shorts.refresh_requested.connect(self.refresh_shorts)
-        shorts.watch_requested.connect(self.watch_short)
-        shorts.more_requested.connect(self.more_shorts)
-        shorts.download_requested.connect(self.download_candidate)
-        shorts.like_toggled.connect(self.toggle_like)
-        shorts.status.connect(self.notify)
-
-        shorts_video = VideoStage(self.youtube, self.appearance)
-        shorts_video.playback_requested.connect(self.playback.pause)
-        shorts_video.download_requested.connect(self.download_candidate)
-        shorts_video.like_toggled.connect(self.toggle_like)
-        shorts_video.status.connect(self.notify)
-        shorts.attach_video(shorts_video)
-        self.shorts_video = shorts_video
-
-        self._register("shorts", shorts)
-
-        browse = BrowseMusicView(self.appearance)
-        browse.search_requested.connect(self.search_browse)
-        browse.refresh_requested.connect(self.refresh_browse)
-        browse.play_requested.connect(self.play_music_result)
-        browse.download_requested.connect(self.download_result)
-        browse.status.connect(self.notify)
-        self._register("browse", browse)
-
-        subscriptions = SubscriptionsView(self.tastes, self.appearance)
-        subscriptions.subscribe_requested.connect(self.subscribe_to)
-        subscriptions.unsubscribe.connect(self.unsubscribe_from)
-        subscriptions.mute_toggled.connect(self.toggle_mute)
-        subscriptions.open_channel.connect(self.open_channel)
-        subscriptions.status.connect(self.notify)
-        self._register("subscriptions", subscriptions)
 
         library_view = LibraryView(self.library, self.appearance)
         library_view.play_requested.connect(self.play_track)
@@ -715,11 +660,11 @@ class MainWindow(QMainWindow):
     # ── Sections ──────────────────────────────────────────────────
 
     def show_section(self, key: str) -> None:
-        # "watch" was a section of its own before search moved into the feed.
-        # A saved preference naming it should land on its replacement rather
-        # than silently dumping the user in the library.
-        if key == "watch":
-            key = "feed"
+        # The local feed, the Shorts reel, Following and Browse were all
+        # replaced by the one YouTube tab. A preference saved before that
+        # should land there rather than silently dumping you in the library.
+        if key in ("feed", "shorts", "browse", "subscriptions"):
+            key = "watch"
 
         view = self.views.get(key)
         if view is None:
@@ -1150,6 +1095,26 @@ class MainWindow(QMainWindow):
             ))
         self.show_section("downloads")
 
+    def download_watching(self, url: str) -> None:
+        """Download whatever the YouTube tab is showing.
+
+        The page is YouTube's, so the only thing to go on is the address, and
+        the only address worth downloading is a watch page.
+        """
+        from urllib.parse import parse_qs, urlparse
+
+        parsed = urlparse(url or "")
+        video_id = (parse_qs(parsed.query).get("v") or [""])[0]
+        if not video_id:
+            self.notify("Open a video first — that is not a watch page", "warning")
+            return
+
+        self._download(ytmusic.DownloadRequest(
+            video_id=video_id, title=video_id,
+            fmt=self.preferences.download_format,
+        ))
+        self.show_section("downloads")
+
     # ── What an album actually contains ───────────────────────────
 
     def look_up_tracklist(self, key) -> None:
@@ -1248,112 +1213,6 @@ class MainWindow(QMainWindow):
 
     # ── The local algorithm ───────────────────────────────────────
 
-    def _restore_feed(self) -> None:
-        """Put the last feed back, and build one if there is nothing to put.
-
-        The feed used to live only in memory, so "For you" opened empty on
-        every launch and stayed empty until you knew to press Rebuild and wait
-        half a minute for the network. An empty page with a button on it is not
-        a feed — it is a form.
-        """
-        ranked, built_at = load_feed()
-        if ranked:
-            self.views["feed"].show_feed(ranked)
-            if built_at:
-                logger.info("restored a feed of %d, built %s", len(ranked), built_at)
-            return
-
-        if self.tastes.subscriptions() or self.tastes.signals:
-            # Nothing saved but plenty to build from — do it rather than
-            # showing an empty page. Delayed so the window is up first.
-            QTimer.singleShot(1500, self.rebuild_feed)
-
-    def rebuild_feed(self) -> None:
-        """Gather candidates, then rank them here.
-
-        The gathering needs the network; the ranking does not, and never leaves
-        this machine. That split is the whole design.
-        """
-        view = self.views["feed"]
-
-        if not self.tastes.subscriptions() and not self.tastes.signals:
-            self.notify("Follow something or play some music first", "warning")
-            return
-
-        # A sample rather than all of them: every channel costs a round trip,
-        # and a feed nobody waits for is a feed nobody has.
-        channels = feed_channels(self.tastes)
-
-        def work(report) -> list:
-            candidates: list[Candidate] = []
-
-            if channels:
-                candidates.extend(yt.subscription_candidates(
-                    self.youtube, channels, report=report))
-
-            # Related tracks to what you liked or replayed, as further
-            # candidates — YouTube's suggestions, ranked by our weights.
-            # The seeds are looked up together rather than one after another:
-            # each is its own round trip and they do not depend on each other.
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-
-            from rose_bouquet.core.recommend import seeds
-
-            chosen_seeds = seeds(self.tastes, limit=4)
-            if chosen_seeds:
-                report(f"Looking for more like {chosen_seeds[0].title or 'what you play'}")
-                with ThreadPoolExecutor(max_workers=len(chosen_seeds)) as pool:
-                    jobs = [
-                        pool.submit(self.youtube.related, seed.id, 8, title=seed.title)
-                        for seed in chosen_seeds
-                    ]
-                    for job in as_completed(jobs):
-                        try:
-                            for video in job.result():
-                                candidates.append(video.to_candidate("related"))
-                        except Exception:    # noqa: BLE001 — one dead seed
-                            continue
-
-            # Discovery: things about the subjects you watch, from channels
-            # you have never seen. Without this the feed is a subscription box
-            # that shows the same dozen creators until it runs dry.
-            from rose_bouquet.core.interests import search_terms
-
-            # Two searches, not six. A search returns whatever ranks for a
-            # phrase, which is where the slop lives; the related lookups above
-            # are seeded from things this person chose to watch.
-            terms = search_terms(self.tastes, self.tastes.interests, limit=2,
-                                 forms=("video",))
-            if terms and len(candidates) < 60:
-                report("Looking a bit wider")
-                candidates.extend(
-                    yt.discover(self.youtube, terms[:1], per_term=8, report=report))
-
-            # And channels like the ones already followed, so the feed can
-            # introduce a creator rather than only a video.
-            report("Looking for channels like the ones you follow")
-            for channel in yt.similar_channels(self.youtube, channels[:6], limit=6):
-                if self.tastes.subscribed(channel.id):
-                    continue
-                for video in self.youtube.uploads(channel.id, limit=3):
-                    candidate = video.to_candidate("similar")
-                    candidate.channel_id = candidate.channel_id or channel.id
-                    candidates.append(candidate)
-
-            report(f"Ranking {len(candidates)} candidates")
-            return rank(candidates, self.tastes, limit=60,
-                        interests=self.tastes.interests)
-
-        view.show_progress("Checking your subscriptions…")
-        tasks.run(
-            work,
-            on_progress=view.show_progress,
-            on_done=lambda ranked: (view.show_feed(ranked), save_feed(ranked),
-                                    self.notify(f"{len(ranked)} things for you", "success")),
-            on_error=lambda message: (view.show_feed([]),
-                                      self.notify(f"Could not build the feed: {message}", "error")),
-        )
-
     def close_video(self) -> None:
         """Escape closes the video, and does nothing at all otherwise.
 
@@ -1363,35 +1222,6 @@ class MainWindow(QMainWindow):
         """
         if self.video.isVisible():
             self.video.close_player()
-
-    def related_to(self, video_id: str, title: str = "") -> list:
-        """What to watch after this one, ordered here rather than by YouTube.
-
-        Runs on a worker thread — the stage calls it off the interface thread
-        and hands the answer to its up-next column.
-
-        The candidates are YouTube's notion of related, which is the only place
-        that notion can come from; the *ordering* is the local ranker, against
-        the same profile and the same blocks as the feed. That difference is
-        the whole point of the app: a column beside the player is where a
-        recommender does most of its work on somebody, and taking YouTube's
-        order there while claiming the feed is yours would be a lie by omission.
-
-        Already-watched videos are dropped, as everywhere else — "up next"
-        offering something watched last week is the complaint the feed was
-        fixed for.
-        """
-        videos = self.youtube.related(video_id, limit=RELATED_CANDIDATES, title=title)
-        candidates = [video.to_candidate("related") for video in videos]
-        return rank(candidates, self.tastes, limit=RELATED_SHOWN,
-                    interests=self.tastes.interests)
-
-    def watch_candidate(self, item: Candidate) -> None:
-        """Watch something in the Watch tab, picture and all."""
-        self.show_section("feed")
-        self.video.watch(item)
-        self.tastes.note_play(item.id, item.title, item.artist, item.channel_id)
-        self._tastes_save.start()
 
     def play_candidate(self, item: Candidate, context=None) -> None:
         """Stream something from the feed without downloading it first.
@@ -1404,11 +1234,6 @@ class MainWindow(QMainWindow):
         # Taking the audio into the music player means the video is done.
         self.video.stop()
         self.cd.stop()
-
-        if context is None:
-            view = self.views["feed"]
-            scored = view.results or view.ranked
-            context = [s.candidate for s in scored]
 
         self._streaming = list(context) or [item]
         self._streaming_at = next(
@@ -1435,104 +1260,6 @@ class MainWindow(QMainWindow):
 
         tasks.run(work, on_done=play,
                   on_error=lambda message: self.notify(f"Stream failed: {message}", "error"))
-
-    def download_candidate(self, item: Candidate) -> None:
-        self._download(ytmusic.DownloadRequest(
-            video_id=item.id, title=item.title, artist=item.artist,
-            fmt=self.preferences.download_format,
-        ))
-
-    def toggle_like(self, item: Candidate) -> None:
-        form = "short" if item.source == "shorts" else "video"
-        liked = self.tastes.like(item.id, item.title, item.artist,
-                                 item.channel_id, form=form)
-        self.tastes.save()
-        self.notify("Liked — your feed will lean this way" if liked else "Like removed",
-                    "success" if liked else "info")
-        self.refresh()
-
-    def subscribe_to(self, link: str) -> None:
-        def work():
-            return self.youtube.channel(link)
-
-        def followed(channel) -> None:
-            if channel is None:
-                self.notify("Could not find that channel", "error")
-                return
-            self.tastes.subscribe(channel)
-            self.tastes.save()
-            self.notify(f"Following {channel.title}", "success")
-            self.refresh()
-
-        self.notify("Looking that up…", "info")
-        tasks.run(work, on_done=followed,
-                  on_error=lambda message: self.notify(f"Lookup failed: {message}", "error"))
-
-    def unsubscribe_from(self, channel_id: str) -> None:
-        self.tastes.unsubscribe(channel_id)
-        self.tastes.save()
-        self.refresh()
-
-    def toggle_mute(self, channel_id: str) -> None:
-        channel = self.tastes.channels.get(channel_id)
-        if channel is not None:
-            channel.muted = not channel.muted
-            self.tastes.save()
-            self.refresh()
-
-    def _as_results(self, videos) -> list:
-        """Videos as feed rows.
-
-        Search results and channel uploads go through the same rows as the
-        feed, unscored — one list widget to keep working rather than two that
-        drift apart.
-        """
-        from rose_bouquet.core.recommend import Scored
-
-        return [Scored(candidate=video.to_candidate("search")) for video in videos]
-
-    def search_youtube(self, query: str) -> None:
-        """Search from the Watch tab, into the same list the feed uses."""
-        view = self.views["feed"]
-        view.loading = True
-        view.progress_text = f"Searching for {query}…"
-        view.refresh()
-        self.show_section("feed")
-
-        def done(videos) -> None:
-            view.show_results(
-                self._as_results(videos),
-                note=f"Results for “{query}”" if videos else "",
-            )
-            if not videos:
-                self.notify("Nothing found for that", "warning")
-
-        tasks.run(
-            lambda: self.youtube.search(query, limit=30),
-            on_done=done,
-            on_error=lambda message: (view.show_results([]),
-                                      self.notify(f"Search failed: {message}", "error")),
-        )
-
-    def open_channel(self, channel: Channel) -> None:
-        """Show a channel's recent uploads in the Watch tab."""
-        view = self.views["feed"]
-        view.loading = True
-        view.progress_text = f"Loading {channel.title}…"
-        view.refresh()
-        self.show_section("feed")
-
-        def work():
-            return self.youtube.uploads(channel.id or channel.title, limit=30)
-
-        tasks.run(
-            work,
-            on_done=lambda videos: view.show_results(
-                self._as_results(videos),
-                note=f"From {channel.title}" if videos else "Nothing there"),
-            on_error=lambda message: (view.show_results([]),
-                                      self.notify(f"Could not load that: {message}", "error")),
-        )
 
     # ── Spotify import ────────────────────────────────────────────
 
@@ -1766,249 +1493,7 @@ class MainWindow(QMainWindow):
 
     # ── Browsing music ────────────────────────────────────────────
 
-    def refresh_browse(self) -> None:
-        """Music for the subjects you listen to, in shelves.
-
-        The same topics that drive the video feeds, asked of YouTube Music —
-        so a taste picked up in one place informs the others, rather than
-        every screen starting from nothing.
-        """
-        from rose_bouquet.core.interests import search_terms
-
-        interests = self.tastes.interests
-
-        # Artists first, topics second. Browse is the *music* tab, and the
-        # topics are derived from a watch history that is mostly video — asking
-        # YouTube Music about them fills a music shelf with whatever video
-        # subject happened to recur, which is not browsing music.
-        artists = [name for name, _ in top_artists(self.tastes, limit=6)]
-        topics = [t for t in search_terms(self.tastes, interests, limit=3) if t]
-        terms = [a for a in artists if a] + topics
-
-        if not terms:
-            self.notify("Play something first, or add interests in Settings",
-                        "warning")
-            return
-
-        view = self.views["browse"]
-        view.show_progress("Looking for music you might like…")
-        self.show_section("browse")
-
-        def work(report):
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-
-            shelves = []
-            with ThreadPoolExecutor(max_workers=4) as pool:
-                # "songs" rather than no filter. Unfiltered, YouTube Music
-                # returns songs, videos, albums and playlists mixed together,
-                # which is why this tab was full of videos — Watch is the tab
-                # for those.
-                jobs = {pool.submit(self.ytmusic.search, term, "songs", 10): term
-                        for term in terms[:6]}
-                for job in as_completed(jobs):
-                    term = jobs[job]
-                    report(f"Looking for {term}")
-                    try:
-                        results = job.result()
-                    except Exception:        # noqa: BLE001 — one dead search
-                        continue
-
-                    # Blocked topics apply here too: a filter that only works
-                    # on video would be a filter nobody trusts.
-                    kept = [r for r in results
-                            if not interests.blocks(title=r.title, channel=r.artist)]
-                    if kept:
-                        shelves.append((f"Because you like {term}", kept))
-            return shelves
-
-        tasks.run(work, on_progress=view.show_progress,
-                  on_done=view.show_shelves,
-                  on_error=lambda m: (view.show_shelves([]),
-                                      self.notify(f"Could not look: {m}", "error")))
-
-    def search_browse(self, query: str) -> None:
-        view = self.views["browse"]
-        view.show_progress(f"Searching for {query}…")
-        self.show_section("browse")
-
-        tasks.run(
-            lambda: self.ytmusic.search(query, "songs", 30),
-            on_done=lambda results: view.show_shelves(
-                [(f"Results for “{query}”", results)] if results else []),
-            on_error=lambda m: (view.show_shelves([]),
-                                self.notify(f"Search failed: {m}", "error")),
-        )
-
     # ── Shorts ────────────────────────────────────────────────────
-
-    def search_shorts(self, query: str) -> None:
-        view = self.views["shorts"]
-        view.show_progress(f"Searching shorts for {query}…")
-        self.show_section("shorts")
-
-        def done(videos) -> None:
-            view.show_shorts([v.to_candidate("shorts") for v in videos],
-                             note=f"Shorts for “{query}”" if videos else "")
-            if not videos:
-                self.notify("No shorts found for that", "warning")
-
-        tasks.run(lambda: self.youtube.search(query, limit=40, shorts=True),
-                  on_done=done,
-                  on_error=lambda m: (view.show_shorts([]),
-                                      self.notify(f"Search failed: {m}", "error")))
-
-    def refresh_shorts(self) -> None:
-        """Shorts from the channels you actually watch, and ones like them.
-
-        Built on the watch history rather than on searching, because searching
-        does not work: a title search returns whatever ranks for those words,
-        and `related` turned out to *be* a title search — YouTube stopped
-        publishing a related list, and the mixes that replaced it exist for
-        almost no ordinary video. Measured: none of six seeds had one.
-
-        What a watch history does have is channels, and a count of how often
-        each was chosen. That is the strongest signal available here and it
-        needs no search engine to interpret it.
-        """
-        from rose_bouquet.core.recommend import watched_channels
-
-        interests = self.tastes.interests
-        watched = watched_channels(self.tastes, limit=14,
-                                   forms=("short", "video"))
-        if not watched:
-            self.notify("Watch a few things first — this is built from what "
-                        "you actually watch", "warning")
-            return
-
-        view = self.views["shorts"]
-        view.show_progress("Looking at what you watch…")
-        self.show_section("shorts")
-
-        def work(report):
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-
-            found = []
-
-            # Shorts from the channels this person watches most.
-            report(f"Checking {len(watched)} channels you watch")
-            with ThreadPoolExecutor(max_workers=yt.CHANNEL_WORKERS) as pool:
-                jobs = {pool.submit(self.youtube.uploads, c.id or c.title,
-                                    PER_SEED, tab="shorts"): c for c in watched}
-                for job in as_completed(jobs):
-                    channel = jobs[job]
-                    try:
-                        for video in job.result():
-                            candidate = video.to_candidate("shorts")
-                            candidate.channel_id = candidate.channel_id or channel.id
-                            found.append(candidate)
-                    except Exception:        # noqa: BLE001 — one bad channel
-                        continue
-
-            # A minority of things from outside that circle, so the feed can
-            # still show something new.
-            #
-            # Done by searching the titles of things actually watched, which is
-            # unsatisfying but is what is left: YouTube stopped publishing a
-            # related list, the mixes that replaced it exist for almost no
-            # ordinary video, and the "channels" shelf that used to name
-            # similar creators now answers "this channel does not have a
-            # channels tab" for every channel tried. So: real titles, from
-            # recurring subjects, hard-capped at a fraction of the feed.
-            from rose_bouquet.core.recommend import seeds
-
-            known = {c.id for c in watched}
-            grounded = seeds(self.tastes, limit=3, forms=("short", "video"))
-
-            if grounded:
-                report("Looking a little further out")
-                with ThreadPoolExecutor(max_workers=3) as pool:
-                    jobs = [pool.submit(self.youtube.related, seed.id, 4,
-                                        title=seed.title) for seed in grounded]
-                    for job in as_completed(jobs):
-                        try:
-                            taken = 0
-                            for video in job.result():
-                                if taken >= 3:
-                                    break
-                                if video.channel_id in known:
-                                    continue
-                                if video.duration and not video.is_short:
-                                    continue
-                                found.append(video.to_candidate("similar"))
-                                taken += 1
-                        except Exception:    # noqa: BLE001
-                            continue
-
-            ranked = rank(found, self.tastes, limit=80, interests=interests)
-            return [s.candidate for s in ranked]
-
-        tasks.run(work, on_progress=view.show_progress,
-                  on_done=lambda found: view.show_shorts(found, note="Picked for you"),
-                  on_error=lambda m: (view.show_shorts([]),
-                                      self.notify(f"Could not load shorts: {m}", "error")))
-
-    def watch_short(self, item: Candidate) -> None:
-        """Play a short, and get the next few ready while it plays."""
-        view = self.views["shorts"]
-        self.playback.pause()
-        self.video.stop()
-        self.cd.stop()
-
-        # Already resolved, if the reel got here in the usual way.
-        url = self.streams.cached(item.id, audio_only=False)
-        self.shorts_video.watch(item, url=url or None)
-
-        # The next few, so scrolling on costs a repaint rather than a round
-        # trip. Two ahead is enough to stay in front of a fast scroller
-        # without resolving a wall of URLs nobody will watch.
-        coming = view.shorts[view.reel_at + 1:view.reel_at + 3]
-        self.streams.prefetch([c.id for c in coming], audio_only=False)
-
-        # And release what is behind: a URL scrolled past is not coming back.
-        behind = view.shorts[max(0, view.reel_at - 4):max(0, view.reel_at - 3)]
-        for old_item in behind:
-            self.streams.forget(old_item.id)
-
-        self.tastes.note_play(item.id, item.title, item.artist, item.channel_id,
-                              form="short")
-        self._tastes_save.start()
-
-    def more_shorts(self) -> None:
-        """Another batch, fetched while the reel is still playing the last one."""
-        view = self.views["shorts"]
-        query = view.search.text().strip()
-
-        def done(videos) -> None:
-            view.add_shorts([v.to_candidate("shorts") for v in videos])
-
-        def failed(_message: str) -> None:
-            view.fetching_more = False
-
-        if query:
-            # A deeper cut of the same search — the first page has been seen.
-            tasks.run(lambda: self.youtube.search(query, limit=80, shorts=True),
-                      on_done=done, on_error=failed)
-            return
-
-        from rose_bouquet.core.recommend import feed_channels
-        chosen = feed_channels(self.tastes, limit=12)
-
-        def work():
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-
-            found = []
-            with ThreadPoolExecutor(max_workers=yt.CHANNEL_WORKERS) as pool:
-                jobs = {pool.submit(self.youtube.uploads, c.id or c.title, 6,
-                                    tab="shorts"): c for c in chosen}
-                for job in as_completed(jobs):
-                    try:
-                        for video in job.result():
-                            found.append(video)
-                    except Exception:        # noqa: BLE001
-                        continue
-            return found
-
-        tasks.run(work, on_done=done, on_error=failed)
 
     # ── Discs ─────────────────────────────────────────────────────
 
@@ -2135,7 +1620,7 @@ class MainWindow(QMainWindow):
         def not_audio(_message: str) -> None:
             # No audio table of contents, so it is a data or film disc —
             # which is exactly what the video player is for.
-            self.show_section("feed")
+            self.show_section("player")
             self.video.watch_file(device, title="Disc", artist="")
 
         tasks.run(lambda: optical.read_toc(Path(device) if device else None),
@@ -2376,9 +1861,6 @@ class MainWindow(QMainWindow):
                 self.preferences.palette(appearance.theme.accent))
 
         self.visualizer.set_palette(self.preferences.palette(appearance.theme.accent))
-
-        self.video.apply_appearance(appearance)
-        self.shorts_video.apply_appearance(appearance)
 
         for widget in (*self.views.values(), self.banner, self.update_bar,
                        self.visualizer, self.now_art):
