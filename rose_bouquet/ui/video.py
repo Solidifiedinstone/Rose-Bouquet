@@ -66,9 +66,9 @@ class VideoStage(QWidget):
                  parent: Optional[QWidget] = None) -> None:
         """`youtube` resolves a video id to a stream, and may be None.
 
-        It is given one now: the YouTube tab plays here rather than in a
-        browser, which is what makes it ad-free. None is still allowed, for the
-        disc reader and for playing a video file — neither needs resolving.
+        YouTube plays inside the web view, so this stage is what shows a film
+        off a disc or a video file. Neither of those needs anything resolved,
+        which is why None is allowed.
         """
         super().__init__(parent)
         self.youtube = youtube

@@ -14,8 +14,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="rose-bouquet", description=APP_NAME)
     parser.add_argument("--music-dir", type=Path, action="append",
                         help="scan this folder for music (repeatable, this run only)")
-    parser.add_argument("--section", help="open on: watch, webview, library, albums, "
-                                          "playlists, import, downloads, disc, server")
+    parser.add_argument("--section", help="open on: watch, library, albums, playlists, "
+                                          "import, downloads, disc, server")
     parser.add_argument("--serve", action="store_true",
                         help="start the network server on launch")
     parser.add_argument("--serve-only", action="store_true",

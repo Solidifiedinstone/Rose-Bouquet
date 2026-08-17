@@ -282,51 +282,21 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
             info.block(True)
 
 
-#: Google's login. A dead end from in here, and the reason for the detour
-#: below — see `_Page.acceptNavigationRequest`.
-SIGN_IN_HOST = "accounts.google.com"
-
-
 class _Page(QWebEnginePage):
-    """A page that opens the site's own windows, and refuses one of them."""
+    """A page that does not silently drop the windows the site asks for.
 
-    #: Someone tried to sign in from the web view. Carried out to the window
-    #: rather than handled here, because the flow that works is not in this
-    #: widget at all.
-    sign_in_requested = Signal()
+    Google's login is opened from a button that calls `window.open`, and a
+    QWebEngineView with no `createWindow` throws that request away — so the
+    button did nothing at all, with no error and nothing in the log.
+
+    Returning this same page loads the popup in place, which is right for a
+    sign-in flow: it is meant to come back to YouTube when it finishes, and a
+    second window with no address bar would be a worse place to type a
+    password into.
+    """
 
     def createWindow(self, _kind):               # noqa: N802 (Qt's name)
-        """Load a popup in place instead of dropping it.
-
-        YouTube opens several things with `window.open`, and a page with no
-        `createWindow` throws every one of them away silently — no error, no
-        log line, the button simply does nothing.
-        """
         return self
-
-    def acceptNavigationRequest(self, url, kind, is_main_frame):  # noqa: N802
-        """Turn a walk into Google's login around at the door.
-
-        Google will not authenticate an embedded browser. It does not matter
-        what the user agent claims — it fingerprints the engine, and answers
-        "Couldn't sign you in / This browser or app may not be secure". There
-        is no header to set and no flag to pass that changes this; it is the
-        policy, and it applies to every embedded view including this one.
-
-        So the sign-in used to end at a wall with a Try again button that
-        could only ever fail again. Rather than let that happen, a main-frame
-        navigation to Google's login is stopped here and the app offers the
-        device-code flow instead, which Google *does* accept — because it is
-        the one it designed for exactly this situation.
-
-        Only the main frame, and only Google's login host: the page's own
-        background calls to that domain are how a session that already exists
-        stays alive, and blocking those would sign you out rather than in.
-        """
-        if is_main_frame and url.host() == SIGN_IN_HOST:
-            self.sign_in_requested.emit()
-            return False
-        return super().acceptNavigationRequest(url, kind, is_main_frame)
 
 
 class YouTubeTab(QWidget):
@@ -334,9 +304,6 @@ class YouTubeTab(QWidget):
 
     status = Signal(str, str)
     download_requested = Signal(str, str)     # the url on screen, its title
-    #: Someone pressed Sign in here, where it cannot work. The window sends
-    #: them to the native tab's device-code flow, which can.
-    sign_in_requested = Signal()
 
     def __init__(self, appearance: Appearance, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -427,7 +394,6 @@ class YouTubeTab(QWidget):
         # Enabling fullscreen support only lets the page ask. Without this the
         # button in YouTube's player does nothing at all.
         page.fullScreenRequested.connect(self._on_fullscreen_requested)
-        page.sign_in_requested.connect(self.sign_in_requested)
         return page
 
     # ── The bar across the top ────────────────────────────────────

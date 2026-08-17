@@ -57,7 +57,6 @@ from rose_bouquet.ui.views import (
 )
 from rose_bouquet.ui.visualizer import FullscreenVisualizer, Shape, Visualizer
 from rose_bouquet.ui.widgets import Banner, CoverArt, UpdateBar
-from rose_bouquet.ui.youtube_native import YouTubeNativeView
 from rose_bouquet.ui.youtube_tab import YouTubeTab
 
 logger = logging.getLogger(__name__)
@@ -370,17 +369,16 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.views: dict[str, QWidget] = {}
 
-        # YouTube as widgets: no browser engine, no ads to block, and a
-        # sign-in Google will actually accept. See `ui/youtube_native.py`.
-        watch = YouTubeNativeView(self.appearance)
+        # YouTube is YouTube: the site itself, in the web view, because that is
+        # the only thing that looks exactly like YouTube. Ads and telemetry are
+        # stripped by the request interceptor before the page renders.
+        watch = YouTubeTab(self.appearance)
         watch.status.connect(self.notify)
-        watch.play_requested.connect(self.watch_video)
-        watch.download_requested.connect(self.download_candidate)
-        watch.web_view_requested.connect(lambda: self.show_section("webview"))
+        watch.download_requested.connect(self.download_watching)
         self._register("watch", watch)
 
-        # A player for video: a film on a disc, a file, and now YouTube too,
-        # which is what the web view used to do for itself.
+        # A player for video that is not YouTube's — a film on a disc, a file.
+        # It has no nav entry of its own; the disc reader switches to it.
         video = VideoStage(self.youtube, self.appearance)
         video.playback_requested.connect(self.playback.pause)
         video.status.connect(self.notify)
@@ -438,27 +436,6 @@ class MainWindow(QMainWindow):
     def _register(self, key: str, view: QWidget) -> None:
         self.views[key] = view
         self.stack.addWidget(view)
-
-    def _web_view(self) -> QWidget:
-        """The embedded browser, built the first time it is actually asked for.
-
-        Deferred rather than built with the others, because building it starts
-        Chromium — several processes and a few hundred megabytes — and the
-        native tab exists precisely so that does not happen on every launch.
-        Importing the module early is still required (Qt insists on it before
-        the application object exists); it is only the *construction* that
-        waits.
-        """
-        web = self.views.get("webview")
-        if web is None:
-            logger.info("starting the embedded browser for the first time")
-            web = YouTubeTab(self.appearance)
-            web.status.connect(self.notify)
-            web.download_requested.connect(self.download_watching)
-            web.sign_in_requested.connect(self.sign_in_to_youtube)
-            web.apply_appearance(self.appearance)
-            self._register("webview", web)
-        return web
 
     def _queue_panel(self) -> QWidget:
         panel = QWidget()
@@ -671,12 +648,9 @@ class MainWindow(QMainWindow):
         # The local feed, the Shorts reel, Following and Browse were all
         # replaced by the one YouTube tab. A preference saved before that
         # should land there rather than silently dumping you in the library.
-        if key in ("feed", "shorts", "browse", "subscriptions", "youtube"):
+        if key in ("feed", "shorts", "browse", "subscriptions", "youtube",
+                   "webview"):
             key = "watch"
-
-        # Built on demand, so a launch that never opens it never pays for it.
-        if key == "webview":
-            self._web_view()
 
         view = self.views.get(key)
         if view is None:
@@ -684,11 +658,6 @@ class MainWindow(QMainWindow):
 
         self.stack.setCurrentWidget(view)
         self.preferences.section = key
-
-        # The YouTube tab fills itself the first time it is opened rather than
-        # during startup, so a launch straight into the library costs nothing.
-        if key == "watch" and hasattr(view, "first_load"):
-            view.first_load()
 
         button = self.nav_buttons.get(key)
         if button is not None:
@@ -1102,37 +1071,6 @@ class MainWindow(QMainWindow):
             ))
         self.show_section("downloads")
 
-    def sign_in_to_youtube(self) -> None:
-        """Send someone signing in from the web view to the flow that works.
-
-        Google refuses to authenticate an embedded browser, so the web view's
-        sign-in could only ever end on "This browser or app may not be secure".
-        Pressing it now leaves that tab and opens the device-code panel — a
-        short code typed into google.com/device on a phone — which Google
-        accepts, because it is the flow it wrote for devices that have no
-        browser to sign in with.
-        """
-        self.show_section("watch")
-        self.views["watch"].open_sign_in()
-        self.notify("Signing in happens here — YouTube will not accept the "
-                    "embedded browser", "info")
-
-    def download_candidate(self, item: Candidate) -> None:
-        """Download something picked in the YouTube tab.
-
-        Separate from `download_watching` because the two callers know
-        different amounts. The web view can only offer the address bar and the
-        tab's title; the native tab has the channel as well, so the file gets a
-        real artist tag rather than whatever yt-dlp infers.
-        """
-        self._download(ytmusic.DownloadRequest(
-            video_id=item.id,
-            title=item.title or item.id,
-            artist=item.artist,
-            fmt=self.preferences.download_format,
-        ))
-        self.show_section("downloads")
-
     def download_watching(self, url: str, page_title: str = "") -> None:
         """Download whatever the web view is showing.
 
@@ -1277,20 +1215,6 @@ class MainWindow(QMainWindow):
         """
         if self.video.isVisible():
             self.video.close_player()
-
-    def watch_video(self, item: Candidate) -> None:
-        """Watch something picked in the YouTube tab, in the app's own player.
-
-        The stream is resolved by yt-dlp and handed to the player directly,
-        which is why there is nothing to block: an ad break is inserted by
-        YouTube's player, and this is not YouTube's player. Video rather than
-        audio-only — the music side has its own path through
-        `play_candidate`, and someone clicking a video wants to see it.
-        """
-        self.playback.pause()
-        self.cd.stop()
-        self.show_section("player")
-        self.video.watch(item, audio_only=False)
 
     def play_candidate(self, item: Candidate, context=None) -> None:
         """Stream something from the feed without downloading it first.

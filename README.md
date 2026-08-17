@@ -48,39 +48,19 @@ which is usually more use than the terminal.
 
 ## What it does
 
-**YouTube** — an actual app, not a browser in a costume. Home, subscriptions,
-history and search are Qt widgets drawing on YouTube's own private API, and the
-video plays in Rose Bouquet's player. There is no browser engine in the
-process, which is worth about 800 MB of RAM (measured: 335 MB with the native
-tab, 1.1 GB once an embedded Chromium has youtube.com open).
+**YouTube** — YouTube itself, with the hostile parts taken out on the way
+through. Not a reimplementation and not a scraper: it is YouTube's own site in
+a web view, with ads, trackers and Shorts removed before the page renders. Sign
+in and you get *your* recommendations, your subscriptions and your history —
+the real algorithm, without the client that reports on you. Ads and telemetry
+are blocked at the network layer, so nothing is requested and nothing is
+measured; the app adds no analytics of its own and sends nothing anywhere but
+YouTube. YouTube Music is a button away in the same tab — the dedicated tab it used to
+have is gone, because it was the same site. Download works from either: the
+Download button takes whatever is on screen.
 
-Three things follow from that, and the first is the one that matters:
-
-- **No ads.** Not blocked, not skipped — absent. An ad break is something a
-  player is told to insert, and this is not YouTube's player.
-- **No telemetry.** The only requests made are the ones something on screen
-  needs an answer to. There is no beacon to block, because nothing here wants
-  to send one, and no third party is contacted at all.
-- **Signing in works.** Google refuses to sign you in from an embedded browser
-  — "this browser or app may not be secure" — so this uses the device-code
-  flow instead: the app shows a short code, you type it into
-  `google.com/device` on your phone, and the account is yours. The app never
-  sees your password. It is the same flow a smart TV uses, for the same reason.
-
-Signed in, the feeds are *your* feeds: YouTube's own recommendations, your
-subscriptions, your history. Signed out, search still works — YouTube has no
-anonymous feeds left to show.
-
-The old embedded web view is still one button away, for comments, channel
-pages and live chat, which the native tab cannot draw yet. It is built the
-first time you press that button and never before, so a launch that does not
-use it does not pay for it. When the native tab reaches parity it goes.
-Pressing Sign in over there brings you back here rather than to Google's
-refusal — an embedded browser cannot be signed in to, whatever it calls
-itself, so the app does not pretend otherwise.
-
-This all replaced a feed built on this machine, which said why every item was
-there but only ever knew what it had been told — always going to be a worse
+This replaced a feed built on this machine, which said why every item was there
+but only ever knew what it had been told — always going to be a worse
 recommender than the one with a billion hours of watch time behind it.
 
 **Albums show the whole record** — not just the part you have. The tracklist
