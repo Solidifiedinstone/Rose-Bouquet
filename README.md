@@ -59,6 +59,17 @@ YouTube. YouTube Music is a button away in the same tab — the dedicated tab it
 have is gone, because it was the same site. Download works from either: the
 Download button takes whatever is on screen.
 
+**Signing in** works by borrowing, not by asking. Google refuses to
+authenticate an embedded browser — it fingerprints the engine, so no user agent
+changes it, and any login form here would end on "this browser or app may not
+be secure". But a sign-in is just cookies, and you already have them in
+Waterfox or Firefox. Press **Sign in** and the app copies the YouTube and
+Google ones across; the tab is then signed in, in YouTube's own interface, with
+your feed and your subscriptions, and no password was ever typed into anything
+of ours. The profile is persistent, so it is a one-off. Nothing else in the jar
+is touched, it is read through a copy so an open browser cannot block it, and
+nothing leaves the machine.
+
 This replaced a feed built on this machine, which said why every item was there
 but only ever knew what it had been told — always going to be a worse
 recommender than the one with a billion hours of watch time behind it.

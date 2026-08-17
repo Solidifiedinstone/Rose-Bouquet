@@ -282,6 +282,31 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
             info.block(True)
 
 
+def _as_qt_cookie(cookie):
+    """One of our cookies as the QNetworkCookie the web view's store wants.
+
+    Qt takes names and values as bytes rather than text, and an expiry as a
+    QDateTime — a session cookie is left with no expiry at all rather than
+    given one in the past, which would delete it on the way in.
+    """
+    from PySide6.QtCore import QByteArray, QDateTime
+    from PySide6.QtNetwork import QNetworkCookie
+
+    qt_cookie = QNetworkCookie(QByteArray(cookie.name.encode()),
+                               QByteArray(cookie.value.encode()))
+    qt_cookie.setDomain(cookie.domain)
+    qt_cookie.setPath(cookie.path)
+    qt_cookie.setSecure(cookie.secure)
+    qt_cookie.setHttpOnly(cookie.http_only)
+    if cookie.expires:
+        qt_cookie.setExpirationDate(
+            QDateTime.fromSecsSinceEpoch(int(cookie.expires)))
+    # Google's session cookies are sent from embedded contexts all over its
+    # own sites; the restrictive default would drop them where it matters.
+    qt_cookie.setSameSitePolicy(QNetworkCookie.SameSite.None_)
+    return qt_cookie
+
+
 class _Page(QWebEnginePage):
     """A page that does not silently drop the windows the site asks for.
 
@@ -440,12 +465,60 @@ class YouTubeTab(QWidget):
                 self.view.url().toString(), self.view.title()))
         row.addWidget(self.download)
 
+        self.sign_in_button = QPushButton("Sign in")
+        self.sign_in_button.setObjectName("Quiet")
+        self.sign_in_button.setToolTip(
+            "Bring your sign-in over from Firefox or Waterfox. Google will not "
+            "accept a login typed into an embedded browser, so this copies the "
+            "session you already have instead.")
+        self.sign_in_button.clicked.connect(self.sign_in)
+        row.addWidget(self.sign_in_button)
+
         self.blocked_label = QLabel("")
         self.blocked_label.setObjectName("Subtle")
         self.blocked_label.setToolTip("Ad and tracking requests stopped this session")
         row.addWidget(self.blocked_label)
 
         return bar
+
+    # ── Signing in ────────────────────────────────────────────────
+
+    def sign_in(self) -> None:
+        """Copy the sign-in out of the browser you already use.
+
+        There is no login form here and there cannot be one: Google refuses to
+        authenticate an embedded browser, fingerprinting the engine rather than
+        trusting the user agent, so any form of ours ends at "this browser or
+        app may not be secure" no matter what it claims to be.
+
+        A sign-in is a handful of cookies, though, and you already have them in
+        Waterfox or Firefox. Copying those into this profile signs the tab in —
+        in YouTube's own interface, with your feed and your subscriptions —
+        without a password being typed into anything of ours. The profile is
+        persistent, so this is a one-off rather than something to press again
+        every launch.
+        """
+        from rose_bouquet.core import cookies as jar
+
+        found = jar.read()
+        if not found:
+            self.status.emit(
+                "No Firefox or Waterfox profile found to copy a sign-in from",
+                "warning")
+            return
+
+        if not jar.signed_in(found):
+            self.status.emit(
+                "That browser has been to YouTube but is not signed in — "
+                "sign in there first, then press this again", "warning")
+            return
+
+        store = self.profile.cookieStore()
+        for cookie in found:
+            store.setCookie(_as_qt_cookie(cookie), QUrl(cookie.url))
+
+        self.status.emit(f"Signed in — copied {len(found)} cookies", "success")
+        self.view.reload()
 
     # ── Going places ──────────────────────────────────────────────
 
