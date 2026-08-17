@@ -48,19 +48,39 @@ which is usually more use than the terminal.
 
 ## What it does
 
-**YouTube** — YouTube itself, with the hostile parts taken out on the way
-through. Not a reimplementation and not a scraper: it is YouTube's own site in
-a web view, with ads, trackers and Shorts removed before the page renders. Sign
-in and you get *your* recommendations, your subscriptions and your history —
-the real algorithm, without the client that reports on you. Ads and telemetry
-are blocked at the network layer, so nothing is requested and nothing is
-measured; the app adds no analytics of its own and sends nothing anywhere but
-YouTube. YouTube Music is a button away in the same tab — the dedicated tab it used to
-have is gone, because it was the same site. Download works from either: the
-Download button takes whatever is on screen.
+**YouTube** — an actual app, not a browser in a costume. Home, subscriptions,
+history and search are Qt widgets drawing on YouTube's own private API, and the
+video plays in Rose Bouquet's player. There is no browser engine in the
+process, which is worth about 800 MB of RAM (measured: 335 MB with the native
+tab, 1.1 GB once an embedded Chromium has youtube.com open).
 
-This replaced a feed built on this machine, which said why every item was there
-but only ever knew what it had been told — always going to be a worse
+Three things follow from that, and the first is the one that matters:
+
+- **No ads.** Not blocked, not skipped — absent. An ad break is something a
+  player is told to insert, and this is not YouTube's player.
+- **No telemetry.** The only requests made are the ones something on screen
+  needs an answer to. There is no beacon to block, because nothing here wants
+  to send one, and no third party is contacted at all.
+- **Signing in works.** Google refuses to sign you in from an embedded browser
+  — "this browser or app may not be secure" — so this uses the device-code
+  flow instead: the app shows a short code, you type it into
+  `google.com/device` on your phone, and the account is yours. The app never
+  sees your password. It is the same flow a smart TV uses, for the same reason.
+
+Signed in, the feeds are *your* feeds: YouTube's own recommendations, your
+subscriptions, your history. Signed out, search still works — YouTube has no
+anonymous feeds left to show.
+
+The old embedded web view is still one button away, for comments, channel
+pages and live chat, which the native tab cannot draw yet. It is built the
+first time you press that button and never before, so a launch that does not
+use it does not pay for it. When the native tab reaches parity it goes.
+Pressing Sign in over there brings you back here rather than to Google's
+refusal — an embedded browser cannot be signed in to, whatever it calls
+itself, so the app does not pretend otherwise.
+
+This all replaced a feed built on this machine, which said why every item was
+there but only ever knew what it had been told — always going to be a worse
 recommender than the one with a billion hours of watch time behind it.
 
 **Albums show the whole record** — not just the part you have. The tracklist
@@ -242,7 +262,7 @@ those two folders removes every trace.
 The visualiser has a fullscreen button beside it, and `Esc` comes back.
 
 ```sh
-rose-bouquet --section feed       # open on a section
+rose-bouquet --section watch      # open on a section
 rose-bouquet --serve              # start the server on launch
 rose-bouquet --theme matrix       # try a theme without changing the setting
 ```
@@ -257,7 +277,8 @@ rose-bouquet --theme matrix       # try a theme without changing the setting
   logs/            a rolling log, the first thing to look at when something breaks
   imports/         one record per playlist import, so they can resume
   tracklists/      album tracklists from MusicBrainz, cached
-  youtube/         the YouTube tab's own profile — cookies, so a sign-in sticks
+  youtube-auth.json  the YouTube account token, owner-only — delete it to sign out
+  youtube/         the old web view's browser profile, only if you have opened it
   playlists/       M3U files
   downloads/       only used if you have no music folder set
 ~/.config/rose-bouquet/
@@ -270,12 +291,21 @@ next scan.
 
 ## Two things worth knowing
 
-**YouTube blocks anonymous downloads** with "Sign in to confirm you're not a
-bot" on its default client. Rose Bouquet asks the Android client first, which
-still answers with URLs that actually play — the TV and web clients hand back
-links that 403 on fetch. If that stops working, Settings → Downloads can read cookies
-from a local Firefox or Waterfox profile — off by default, because an app should
-not touch your cookie jar unasked.
+**Good audio does not need Premium — it needs the right client.** YouTube
+offers different formats to different clients, and the obvious ones (`android`,
+`tv`, `ios`, `web`) are offered no audio-only stream at all when signed out. Ask
+them for the best audio and you get a muxed 360p video carrying about 96 kbps of
+AAC, which is then re-encoded: eleven megabytes fetched and thrown away for the
+worst audio on the platform. Ask `web_embedded` or `tv_embedded` and the same
+track arrives as 3.3 MB of 129 kbps Opus, with no account at all. Premium buys
+itag 141, the 256 kbps one, and that is absent either way — so there is nothing
+to work around, only a list to get right. Rose Bouquet keeps two such lists,
+because downloading and streaming disagree about which clients work; both are
+commented with the measurements.
+
+If a download fails anyway, Settings → Downloads can read cookies from a local
+Firefox or Waterfox profile — off by default, because an app should not touch
+your cookie jar unasked.
 
 **Spotify caps unauthenticated playlist reads at 100 tracks.** Their public
 token endpoints are now signed and refuse anonymous requests, so a longer

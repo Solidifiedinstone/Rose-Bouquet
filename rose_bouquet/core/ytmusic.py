@@ -4,7 +4,7 @@ Two libraries do the work, and the split matters. `ytmusicapi` talks to the same
 private API the YouTube Music web app uses, which is what makes browsing feel
 like the real thing — home feed, charts, related artists, real playlists. It
 cannot download. `yt-dlp` downloads, and knows nothing about browsing. Rose
-Music uses each for the half it is good at.
+Bouquet uses each for the half it is good at.
 
 Both are optional. Without them the app is a local music player that says so,
 rather than an app that fails to start.
@@ -36,16 +36,52 @@ PROGRESS_INTERVAL = 0.4
 
 #: Which YouTube player clients to try, in order.
 #:
-#: The default web client now answers anonymous requests with "Sign in to
-#: confirm you're not a bot", which fails every download on a machine that is
-#: not logged in. The TV and mobile clients still serve them, so they are tried
-#: first. This is the sort of thing YouTube changes without notice, which is
-#: why it is a list and why browser cookies remain available as a fallback.
-PLAYER_CLIENTS = ["tv", "android", "ios", "web"]
+#: YouTube does not offer every client the same formats, and the ones this app
+#: used to ask — `tv`, `android`, `ios`, `web` — are offered no audio-only
+#: stream at all when signed out. So `bestaudio` matched nothing, fell through
+#: to itag 18 (a muxed 360p MP4 carrying about 96 kbps of AAC), and re-encoded
+#: that to MP3. Eleven megabytes of video fetched and thrown away, to end up
+#: with the worst audio on the platform.
+#:
+#: Other clients are given itag 251 (129 kbps Opus) and 140 (129 kbps AAC) with
+#: no account at all. Same track: 3.3 MB instead of 11.3 MB, from a better
+#: source. That is the whole trick — and it *is* the free tier. Itag 141, the
+#: 256 kbps one, is what Premium actually buys, and it is absent either way.
+#:
+#: Offering a format and then serving it are separate questions, though, and
+#: the second is why the order below is what it is. Downloading four tracks
+#: with each client on its own, 2026-08-17:
+#:
+#: | client                        | got the audio |
+#: |-------------------------------|---------------|
+#: | `web_embedded`                | 4/4           |
+#: | `tv_embedded`, `android_vr`   | 3/4           |
+#: | `ios_music`, `android_music`  | 1/4           |
+#: | `android`                     | 4/4, muxed    |
+#: | `tv`                          | 0/4           |
+#:
+#: The failures are 403s on a URL that was handed over willingly, so the answer
+#: is to ask the next client rather than to give up — which is what a list is
+#: for. `android` stays at the end because a muxed stream is still the song,
+#: and the tail of this list should be worse rather than nothing. `tv` is gone:
+#: it no longer serves downloads at all.
+#:
+#: Streaming asks a *different* list, for a reason worth knowing before editing
+#: this one — see `youtube.STREAM_CLIENTS`.
+PLAYER_CLIENTS = [
+    "web_embedded", "tv_embedded", "android_vr", "ios_music", "android_music",
+    "android", "web",
+]
 
-#: The message YouTube returns when it wants a login. Recognised so the app can
-#: say something useful instead of showing a wall of yt-dlp output.
-BOT_CHECK = "not a bot"
+#: What to ask yt-dlp for, in order of preference.
+#:
+#: `bestaudio` is not a formality: with the clients above it resolves to a real
+#: audio-only stream, and the `/best` tail only matters when a video offers
+#: nothing but muxed formats. Keeping the fallback is deliberate — it is what
+#: Pear Desktop does for *every* download, because it asks clients that never
+#: offer anything else, and a muxed stream with the picture thrown away is
+#: still the song.
+FORMAT = "bestaudio/best"
 
 
 def browser_cookies() -> Optional[tuple]:
@@ -351,7 +387,7 @@ def download(
             progress(fraction, "downloading")
 
     options = {
-        "format": "bestaudio/best",
+        "format": FORMAT,
         "extractor_args": {"youtube": {"player_client": PLAYER_CLIENTS}},
         "outtmpl": str(folder / f"{stem}.%(ext)s"),
         "quiet": True,
@@ -380,15 +416,7 @@ def download(
         with yt_dlp.YoutubeDL(options) as downloader:
             downloader.extract_info(url, download=True)
     except Exception as exc:                      # noqa: BLE001 — yt-dlp raises widely
-        message = str(exc)
-        if BOT_CHECK in message and not cookies:
-            # Every client was refused. Browser cookies are the way through,
-            # and saying so beats showing the raw extractor error.
-            message = (
-                "YouTube asked for a sign-in to prove the request is not a bot. "
-                "Turn on 'Use cookies from my browser' in Settings → Downloads."
-            )
-        return DownloadResult(error=message, request=request)
+        return DownloadResult(error=str(exc), request=request)
 
     final = folder / f"{stem}.{request.fmt}"
     if not final.exists():
