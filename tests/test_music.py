@@ -749,8 +749,7 @@ def test_fullscreen_returns_the_picture_to_the_stage():
     """
     import os
 
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
+    # Offscreen is forced in conftest.py, before Qt is imported anywhere.
     from PySide6.QtWidgets import QApplication
 
     from rose_bouquet.ui.theme import Appearance
@@ -784,21 +783,6 @@ def test_fullscreen_returns_the_picture_to_the_stage():
 
 
 
-def _column_rows(stage):
-    """The row widgets currently in the up-next column."""
-    rows = [stage.related_layout.itemAt(i).widget()
-            for i in range(stage.related_layout.count())]
-    return [row for row in rows if row is not None and row.objectName() == "TrackRow"]
-
-
-def _candidate(video_id, title="Something", artist="Someone"):
-    from rose_bouquet.core.recommend import Candidate
-
-    return Candidate(id=video_id, title=title, artist=artist)
-
-
-
-
 
 
 # ── Loading an Exportify CSV from disk ────────────────────────────
@@ -807,8 +791,7 @@ def _import_view():
     """A real ImportView, offscreen."""
     import os
 
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
+    # Offscreen is forced in conftest.py, before Qt is imported anywhere.
     from PySide6.QtWidgets import QApplication
 
     from rose_bouquet.ui.theme import Appearance
@@ -996,8 +979,7 @@ def test_a_failed_row_keeps_the_request_so_it_can_be_retried():
     """A row with no payload shows no Retry button — nothing to send."""
     import os
 
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
+    # Offscreen is forced in conftest.py, before Qt is imported anywhere.
     from PySide6.QtWidgets import QApplication
 
     from rose_bouquet.core import ytmusic
@@ -1030,8 +1012,7 @@ def test_a_failed_row_keeps_the_request_so_it_can_be_retried():
 def _update_bar():
     import os
 
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
+    # Offscreen is forced in conftest.py, before Qt is imported anywhere.
     from PySide6.QtWidgets import QApplication
 
     from rose_bouquet.ui.theme import Appearance
@@ -1114,8 +1095,7 @@ def test_a_check_that_fails_says_nothing_on_its_own():
 def _library_view(count: int):
     import os
 
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
+    # Offscreen is forced in conftest.py, before Qt is imported anywhere.
     from PySide6.QtWidgets import QApplication
 
     from rose_bouquet.ui.theme import Appearance

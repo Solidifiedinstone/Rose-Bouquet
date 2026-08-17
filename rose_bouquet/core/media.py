@@ -1,15 +1,13 @@
-"""The small shapes that outlived the local recommender.
+"""The one small shape that outlived the local recommender.
 
-These two dataclasses used to live in `recommend.py` and `tastes.py`, which
-were the feed built on this machine — a ranker, an interest filter and a store
-of everything you had watched. All of that is gone: the YouTube tab is
-YouTube's own site now, so the recommendations, the subscriptions and the
-history are YouTube's too.
+`Candidate` used to live in `recommend.py`, alongside a ranker, an interest
+filter and a store of everything you had watched — the feed built on this
+machine. All of that is gone: the feeds come from the account now, so the
+recommendations, the subscriptions and the history are YouTube's too.
 
-What survived is only what still has a job. `Candidate` is a thing that can be
-streamed or downloaded, which the YouTube Music tab still hands around, and
-`Channel` is who uploaded it. They are here rather than back in a module named
-after a recommender that no longer exists.
+What survived is only what still has a job: something that can be played or
+downloaded, which is what every YouTube row hands around. It is here rather
+than back in a module named after a recommender that no longer exists.
 """
 
 from __future__ import annotations
@@ -32,14 +30,3 @@ class Candidate:
     thumbnail: str = ""
     #: Where it was found — kept for the downloads list, not for scoring.
     source: str = ""
-
-
-@dataclass
-class Channel:
-    """Whoever published something — an artist, a channel, a label."""
-
-    id: str = ""
-    title: str = ""
-    thumbnail: str = ""
-    #: artist | channel — artists come from YouTube Music, channels from YouTube.
-    kind: str = "channel"

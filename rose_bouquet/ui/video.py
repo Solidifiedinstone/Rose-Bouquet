@@ -62,30 +62,17 @@ class VideoStage(QWidget):
     #: The thing being watched reached its end. A reel uses this to roll on.
     finished = Signal()
 
-    download_requested = Signal(object)   # Candidate
-    like_toggled = Signal(object)         # Candidate
-    #: Something in the up-next column was clicked. Emitted rather than played
-    #: here, so watching from the column goes through the same path as watching
-    #: from the feed — including recording the play, which is what every
-    #: recommendation downstream is built from.
-    watch_requested = Signal(object)      # Candidate
-
     def __init__(self, youtube, appearance: Appearance,
                  parent: Optional[QWidget] = None) -> None:
-        """`recommend` is what fills the up-next column.
+        """`youtube` resolves a video id to a stream, and may be None.
 
-        A callable taking `(video_id, title)` and returning ranked `Scored`
-        items, run on a worker thread. Injected because ordering them is the
-        local ranker's job and that needs the taste profile, which this widget
-        is deliberately not given — and because a reel has no use for a column
-        of other videos, so the Shorts stage simply passes nothing and gets no
-        column.
+        It is given one now: the YouTube tab plays here rather than in a
+        browser, which is what makes it ad-free. None is still allowed, for the
+        disc reader and for playing a video file — neither needs resolving.
         """
         super().__init__(parent)
         self.youtube = youtube
         self.appearance = appearance
-
-        #: What is in the up-next column, so it can be redrawn on a theme change.
 
         #: The Candidate being watched, or None.
         self.current = None
@@ -106,10 +93,9 @@ class VideoStage(QWidget):
         self.setVisible(False)
 
     def _build(self) -> None:
-        # The picture and its transport in a column, with the up-next list
-        # beside them rather than under them — the same shape YouTube uses, and
-        # for the same reason: a list below the video is a list nobody sees
-        # without scrolling away from the thing they are watching.
+        # The picture with its transport under it. There was an up-next column
+        # beside it once, filled by the local ranker; YouTube's own site does
+        # that job now, so the picture gets the whole width.
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 10)
         outer.setSpacing(14)
@@ -182,18 +168,6 @@ class VideoStage(QWidget):
             "Fullscreen  (F, or double-click the picture)\n\nEsc comes back.")
         self.fullscreen_button.clicked.connect(self.toggle_fullscreen)
         row.addWidget(self.fullscreen_button)
-
-        for text, signal, tip in (
-            ("↓", self.download_requested, "Download the audio"),
-            ("♡", self.like_toggled, "Like — this shapes your feed"),
-        ):
-            button = QPushButton(text)
-            button.setObjectName("Quiet")
-            button.setToolTip(tip)
-            button.clicked.connect(
-                lambda _checked=False, signal=signal: self.current and signal.emit(self.current)
-            )
-            row.addWidget(button)
 
         close = QPushButton("✕")
         close.setObjectName("Quiet")
