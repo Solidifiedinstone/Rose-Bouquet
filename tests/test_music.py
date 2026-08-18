@@ -1374,3 +1374,81 @@ def test_no_source_knows_it_and_nothing_pretends_otherwise(monkeypatch):
     assert tracklists.lookup("Nobody", "Nothing", _FakeYTM([])) is None
     # And with no YouTube Music at all — the offline install.
     assert tracklists.lookup("Nobody", "Nothing", None) is None
+
+
+# ── Playback gives up instead of tearing through the library ──────
+
+def _playback():
+    """A real Playback over an empty library, offscreen."""
+    # Offscreen is forced in conftest.py, before Qt is imported anywhere.
+    from PySide6.QtWidgets import QApplication
+
+    from rose_bouquet.ui.playback import Playback
+
+    app = QApplication.instance() or QApplication([])
+    return Playback(Library()), app
+
+
+def test_a_missing_drive_is_named_not_the_file_on_it(tmp_path):
+    from rose_bouquet.ui.playback import Playback
+
+    gone = tmp_path / "drive" / "Music" / "Someone - A song.mp3"
+    # The outermost folder that vanished is the one worth naming.
+    assert Playback._missing_folder(str(gone)) == str(tmp_path / "drive")
+
+
+def test_a_single_missing_file_does_not_accuse_the_drive(tmp_path):
+    from rose_bouquet.ui.playback import Playback
+
+    assert Playback._missing_folder(str(tmp_path / "gone.mp3")) is None
+    (tmp_path / "here.mp3").write_bytes(b"")
+    assert Playback._missing_folder(str(tmp_path / "here.mp3")) is None
+
+
+def test_one_bad_file_is_skipped_but_a_run_of_them_stops_playback(tmp_path):
+    from PySide6.QtMultimedia import QMediaPlayer
+
+    from rose_bouquet.ui.playback import FAILURE_LIMIT, Playback
+
+    playback, app = _playback()
+    try:
+        playback.queue.set_tracks([
+            Track(path=str(tmp_path / "drive" / "Music" / f"{i}.mp3"), title=f"T{i}",
+                  artist="Someone", album="An album", duration=180, track_number=i)
+            for i in range(1, 20)
+        ])
+
+        reasons: list[str] = []
+        playback.failed.connect(reasons.append)
+
+        # Under the limit, the queue steps past the dead files and says nothing.
+        for _ in range(FAILURE_LIMIT - 1):
+            playback._on_error(QMediaPlayer.Error.ResourceError, "Could not open file")
+        assert reasons == []
+
+        # At the limit it stops, once, naming the folder that is missing.
+        playback._on_error(QMediaPlayer.Error.ResourceError, "Could not open file")
+        assert len(reasons) == 1
+        assert str(tmp_path / "drive") in reasons[0]
+
+        # And having stopped, it is not still counting down to a second report.
+        assert playback._failures == 0
+    finally:
+        playback.deleteLater()
+        app.processEvents()
+
+
+def test_a_track_that_opens_clears_the_failure_count():
+    from PySide6.QtMultimedia import QMediaPlayer
+
+    from rose_bouquet.ui.playback import Playback
+
+    playback, app = _playback()
+    try:
+        playback._failures = 2
+        playback._on_status(QMediaPlayer.MediaStatus.LoadedMedia)
+        # Two unplayable files scattered through an evening are not a run.
+        assert playback._failures == 0
+    finally:
+        playback.deleteLater()
+        app.processEvents()

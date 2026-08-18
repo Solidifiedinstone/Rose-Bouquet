@@ -618,6 +618,7 @@ class MainWindow(QMainWindow):
         self.playback.position_changed.connect(self._on_position)
         self.playback.queue_changed.connect(self._refresh_queue)
         self.playback.finished.connect(self._queue_finished)
+        self.playback.failed.connect(lambda message: self.notify(message, "error"))
 
         # Shuffle, repeat and volume can now be changed from outside this
         # window — a bar, `playerctl`, a headset button — so the controls have

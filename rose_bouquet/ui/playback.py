@@ -14,6 +14,7 @@ somewhere testable.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QObject, QTimer, QUrl, Signal
@@ -29,6 +30,12 @@ logger = logging.getLogger(__name__)
 PLAYED_FRACTION = 0.5
 PLAYED_SECONDS = 120
 
+#: How many unplayable tracks in a row before the queue stops trying. One dead
+#: file is worth stepping over; a whole run of them means the music itself is
+#: absent — an unmounted drive, a folder moved — and racing on through the
+#: library only reports the same problem another thousand times.
+FAILURE_LIMIT = 3
+
 
 class Playback(QObject):
     """Plays the queue."""
@@ -38,6 +45,9 @@ class Playback(QObject):
     position_changed = Signal(int, int)  # position ms, duration ms
     queue_changed = Signal()
     finished = Signal()                 # the queue ran out
+    #: Playback gave up, with a sentence saying why. Distinct from `finished`:
+    #: the queue did not end, it stopped being playable.
+    failed = Signal(str)
     volume_changed = Signal(float)      # 0.0 – 1.0
     #: A seek the user asked for, in ms. Distinct from `position_changed`,
     #: which also fires as a track plays normally: desktop media controls need
@@ -68,6 +78,8 @@ class Playback(QObject):
         #: the *previous* track cannot advance the queue a second time.
         self._loading = False
         self._counted = False
+        #: Unplayable tracks since the last one that opened.
+        self._failures = 0
 
         # Qt emits positionChanged very often; the interface does not need it
         # more than a few times a second.
@@ -222,6 +234,14 @@ class Playback(QObject):
     # ── Qt signals ────────────────────────────────────────────────
 
     def _on_status(self, status: QMediaPlayer.MediaStatus) -> None:
+        # A file that opened is proof the music is reachable again, so the run
+        # of failures that came before it no longer counts against the queue.
+        if status in (
+            QMediaPlayer.MediaStatus.LoadedMedia,
+            QMediaPlayer.MediaStatus.BufferedMedia,
+        ):
+            self._failures = 0
+
         if status == QMediaPlayer.MediaStatus.EndOfMedia and not self._loading:
             track = self.queue.next()
             if track is None:
@@ -251,18 +271,62 @@ class Playback(QObject):
             self.library.note_played(self.track)
 
     def _on_error(self, error, message: str = "") -> None:
-        """A file that will not play should not stall the queue.
+        """A file that will not play should not stall the queue — or run away with it.
 
         Missing codec, deleted file, unreadable permissions — whatever the
         reason, the useful behaviour is to say so and move on, not to sit on a
-        dead track with the play button lit.
+        dead track with the play button lit. But moving on has to stop
+        somewhere: when the drive holding the library is not mounted, *every*
+        track fails, and skipping each one in turn tears through the whole
+        library at a few tracks a second, saying nothing useful while it goes.
         """
         if error == QMediaPlayer.Error.NoError:
             return
 
         track = self.track
         logger.warning("could not play %s: %s", track.path if track else "?", message)
+
+        self._failures += 1
+        if self._failures >= FAILURE_LIMIT:
+            self._give_up(track)
+            return
+
         QTimer.singleShot(50, self.next)
+
+    def _give_up(self, track: Optional[Track]) -> None:
+        """Stop, and say what is actually wrong rather than naming a file."""
+        self._player.stop()
+        self._failures = 0
+        logger.warning("stopped after %d unplayable tracks in a row", FAILURE_LIMIT)
+        self.failed.emit(self._diagnosis(track))
+
+    @staticmethod
+    def _diagnosis(track: Optional[Track]) -> str:
+        if track is None:
+            return "Nothing in the queue would play."
+
+        missing = Playback._missing_folder(track.path)
+        if missing is not None:
+            return f"{missing} is not there — is the drive mounted?"
+        return "Several tracks in a row would not play, so playback stopped."
+
+    @staticmethod
+    def _missing_folder(path: str) -> Optional[str]:
+        """The outermost folder on this track's path that has gone missing.
+
+        Naming the file is no help when an entire drive is absent; naming the
+        folder that vanished is the part someone can act on.
+        """
+        candidate = Path(path)
+        if candidate.exists():
+            return None
+
+        missing = None
+        for parent in candidate.parents:
+            if parent.exists():
+                break
+            missing = parent
+        return str(missing) if missing is not None else None
 
     # ── State that outlives the process ───────────────────────────
 
