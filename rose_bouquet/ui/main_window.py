@@ -1573,6 +1573,11 @@ class MainWindow(QMainWindow):
         if skipped:
             self.notify(f"{skipped} were already in your library", "info")
 
+        # Whatever is on screen came from an earlier run and is now out of
+        # date by definition. Replaced with this job's own state, so resuming
+        # cannot leave you reading the numbers you resumed to get away from.
+        self.views["import"].show_report(job.as_report())
+
         if ignore_wait:
             job.blocked_until = ""
             job.save()

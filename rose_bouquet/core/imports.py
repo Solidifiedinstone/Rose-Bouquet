@@ -270,6 +270,32 @@ class ImportJob:
             forgotten += 1
         return forgotten
 
+    def as_report(self):
+        """This job as it stands, in the shape the screen wants to show.
+
+        The report on screen used to be whatever the last *fresh* import
+        produced, and resuming never replaced it — so a job that had since
+        found almost everything went on displaying the numbers from the run
+        that had not. Reading them off the job instead means the screen
+        cannot disagree with the record.
+        """
+        from rose_bouquet.core.spotify import ImportReport, SpotifyTrack
+
+        report = ImportReport(title=self.title)
+        for entry in self.entries:
+            track = SpotifyTrack(title=entry.title, artist=entry.artist, album="")
+            if entry.state == MISSING:
+                report.missed.append(track)
+            elif entry.state == FAILED:
+                report.failed.append((track, entry.error))
+            elif entry.state == PENDING:
+                # Never searched, or searched and never answered. Either way
+                # not a song that is known to be absent.
+                report.unreachable.append(track)
+            else:
+                report.matched.append((track, None))
+        return report
+
     # ── Persistence ───────────────────────────────────────────────
 
     def to_dict(self) -> dict:
