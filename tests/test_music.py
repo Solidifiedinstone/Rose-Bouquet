@@ -1583,3 +1583,86 @@ def test_a_finished_import_asks_again_for_files_that_have_gone(tmp_path):
 
     # Asked twice, it does not keep re-reporting the same rows.
     assert job.forget_downloads_that_are_gone() == 0
+
+
+# ── A refused search is not a missing song ────────────────────────
+
+def test_a_search_that_never_answered_is_not_recorded_as_missing():
+    """The failure that turned 6 missing songs into 132.
+
+    YouTube Music does not answer a run of searches reliably — it resets
+    connections and returns bodies that are not JSON. That was being swallowed
+    into an empty result list, and an empty result list is exactly what a song
+    that does not exist looks like. The songs were all there; nobody ever
+    managed to ask about them.
+    """
+    from rose_bouquet.core.spotify import ImportReport, match_all
+    from rose_bouquet.core.ytmusic import SearchUnavailable
+
+    tracks = [
+        spotify.SpotifyTrack(title="Found", artist="A", album=""),
+        spotify.SpotifyTrack(title="Genuinely absent", artist="B", album=""),
+        spotify.SpotifyTrack(title="Never asked", artist="C", album=""),
+    ]
+
+    def finder(title, _artist):
+        if title == "Found":
+            return SimpleNamespace(id="vid")
+        if title == "Never asked":
+            raise SearchUnavailable("Connection reset by peer")
+        return None
+
+    report = match_all(tracks, finder, workers=1)
+
+    assert [t.title for t, _ in report.matched] == ["Found"]
+    assert [t.title for t in report.missed] == ["Genuinely absent"]
+    assert [t.title for t in report.unreachable] == ["Never asked"]
+    # All three are still accounted for.
+    assert report.total == 3
+    assert "1 missing" in report.summary and "1 not searched yet" in report.summary
+
+    # And the one nobody could ask about is not written into the playlist as a
+    # song that does not exist.
+    missing_text = " ".join(ImportReport.missed_lines(report))
+    assert "Genuinely absent" in missing_text
+    assert "Never asked" not in missing_text
+
+
+def test_a_search_is_asked_again_before_it_counts_as_unanswerable(monkeypatch):
+    from rose_bouquet.core import ytmusic
+
+    calls = []
+
+    class FlakyApi:
+        def search(self, query, filter=None, limit=25):
+            calls.append(query)
+            if len(calls) < 3:
+                raise ValueError("Expecting value: line 1 column 1 (char 0)")
+            return [{"videoId": "v", "title": "A song", "artists": [{"name": "A"}]}]
+
+    music = ytmusic.YouTubeMusic.__new__(ytmusic.YouTubeMusic)
+    music._api, music._failed = FlakyApi(), False
+    monkeypatch.setattr(ytmusic.time, "sleep", lambda _s: None)
+
+    found = music.best_match("A song", "A")
+    assert found is not None
+    assert len(calls) == 3          # two refusals, then an answer
+
+
+def test_a_search_that_never_works_says_so_rather_than_finding_nothing(monkeypatch):
+    from rose_bouquet.core import ytmusic
+
+    class DeadApi:
+        def search(self, query, filter=None, limit=25):
+            raise ConnectionResetError(104, "Connection reset by peer")
+
+    music = ytmusic.YouTubeMusic.__new__(ytmusic.YouTubeMusic)
+    music._api, music._failed = DeadApi(), False
+    monkeypatch.setattr(ytmusic.time, "sleep", lambda _s: None)
+
+    with pytest.raises(ytmusic.SearchUnavailable):
+        music.best_match("A song", "A")
+
+    # The search box still gets an empty list, because there is nothing useful
+    # to show someone typing either way.
+    assert music.search("A song") == []

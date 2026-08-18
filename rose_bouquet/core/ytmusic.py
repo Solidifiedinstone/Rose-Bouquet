@@ -22,6 +22,7 @@ nothing here circumvents DRM or paywalled content.
 from __future__ import annotations
 
 import logging
+import random
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -239,6 +240,23 @@ def to_result(entry: dict) -> Result:
     )
 
 
+class SearchUnavailable(RuntimeError):
+    """The search could not be made. Not the same as it finding nothing.
+
+    Worth its own type because the two were indistinguishable, and the
+    consequences are opposite: nothing found means write the song down as
+    missing, whereas nothing asked means ask again later.
+    """
+
+
+#: How many goes a search gets before it counts as unanswerable, and the
+#: delay before the second one. YouTube Music does not answer a run of
+#: searches reliably — it resets connections and returns bodies that are not
+#: JSON — and none of that means anything about the song being looked for.
+SEARCH_ATTEMPTS = 4
+SEARCH_BACKOFF = 0.6
+
+
 class YouTubeMusic:
     """Browsing and searching. Constructed lazily so a missing library is survivable."""
 
@@ -277,14 +295,46 @@ class YouTubeMusic:
     # ── Reading ───────────────────────────────────────────────────
 
     def search(self, query: str, kind: Optional[str] = None, limit: int = 25) -> list[Result]:
-        if not query.strip() or self.api is None:
-            return []
+        """Search, with an empty list for an answer if it could not be done.
+
+        Right for a search box, where a failed request and no results look
+        the same to the person typing. Wrong for matching an import, which
+        wants `demand` and the difference.
+        """
         try:
-            rows = self.api.search(query, filter=kind, limit=limit)
-        except Exception as exc:                  # noqa: BLE001
+            return self.demand(query, kind, limit)
+        except SearchUnavailable as exc:
             logger.warning("search failed: %s", exc)
             return []
-        return [to_result(row) for row in rows if isinstance(row, dict)]
+
+    def demand(self, query: str, kind: Optional[str] = None, limit: int = 25,
+               *, attempts: int = SEARCH_ATTEMPTS) -> list[Result]:
+        """Search, retrying a failure, and raising if it never went through.
+
+        A swallowed failure here is what made an import record a hundred and
+        thirty songs as missing when every one of them was there: the request
+        was refused, the result was an empty list, and an empty list is what
+        a song that does not exist looks like. Most of them succeed on the
+        second or third ask.
+        """
+        if not query.strip() or self.api is None:
+            return []
+
+        last: Optional[Exception] = None
+        for attempt in range(max(1, attempts)):
+            try:
+                rows = self.api.search(query, filter=kind, limit=limit)
+            except Exception as exc:              # noqa: BLE001 — any failure is a retry
+                last = exc
+                logger.debug("search %r attempt %d failed: %s", query, attempt + 1, exc)
+                if attempt + 1 < attempts:
+                    # Backing off, and jittered, so six workers that were all
+                    # refused together do not all come back together.
+                    time.sleep(SEARCH_BACKOFF * (2 ** attempt) + random.uniform(0, 0.4))
+                continue
+            return [to_result(row) for row in rows if isinstance(row, dict)]
+
+        raise SearchUnavailable(str(last))
 
     def home(self, limit: int = 6) -> list[tuple[str, list[Result]]]:
         """The home feed, as (section title, items) — what YT Music opens on."""
@@ -329,9 +379,14 @@ class YouTubeMusic:
         return data.get("title", ""), tracks
 
     def best_match(self, title: str, artist: str = "") -> Optional[Result]:
-        """The closest song to a title and artist — what the importers match on."""
+        """The closest song to a title and artist — what the importers match on.
+
+        Raises `SearchUnavailable` rather than returning None when the search
+        could not be made, so a track is only called missing on the strength
+        of an answer.
+        """
         query = f"{artist} {title}".strip()
-        for result in self.search(query, kind="songs", limit=5):
+        for result in self.demand(query, kind="songs", limit=5):
             return result
         return None
 

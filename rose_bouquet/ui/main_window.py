@@ -1468,7 +1468,8 @@ class MainWindow(QMainWindow):
         job.partial = next_offset is not None
         if wait:
             job.block_for(wait)
-        job.add_tracks([source for source, _found in report.matched] + report.missed)
+        job.add_tracks([source for source, _found in report.matched]
+                       + report.missed + report.unreachable)
 
         for source, found in report.matched:
             entry = next((e for e in job.entries if e.key == _entry_key(source)), None)
@@ -1478,6 +1479,15 @@ class MainWindow(QMainWindow):
             entry = next((e for e in job.entries if e.key == _entry_key(source)), None)
             if entry is not None:
                 entry.state = imports.MISSING
+
+        # Tracks YouTube Music never answered about are left pending, which is
+        # what makes resuming pick them up. Marking them missing would have
+        # written a song that exists into the playlist's missing list, where it
+        # survives a restart and is never looked for again.
+        if report.unreachable:
+            self.notify(
+                f"YouTube Music did not answer for {len(report.unreachable)} tracks — "
+                "resume the import to look for them again", "warning")
 
         already = job.skip_already_downloaded(self.library)
         job.save()

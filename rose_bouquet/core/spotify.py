@@ -32,6 +32,8 @@ from dataclasses import dataclass, field
 from io import StringIO
 from typing import Callable, Optional
 
+from rose_bouquet.core.ytmusic import SearchUnavailable
+
 logger = logging.getLogger(__name__)
 
 PLAYLIST_ID = re.compile(r"(?:playlist[/:])([A-Za-z0-9]+)")
@@ -83,12 +85,17 @@ class ImportReport:
     #: Matched on YouTube, but the audio never arrived: (track, why).
     #: Filled in after the report is first shown, as downloads come back.
     failed: list[tuple[SpotifyTrack, str]] = field(default_factory=list)
+    #: Looked for, but YouTube Music never answered — so nothing is known
+    #: about them either way. Kept apart from `missed` because a song we
+    #: could not ask about must not be written down as one that is not
+    #: there: the first is worth another go, the second is a fact.
+    unreachable: list[SpotifyTrack] = field(default_factory=list)
     #: Set when the source probably had more tracks than we could read.
     truncated: bool = False
 
     @property
     def total(self) -> int:
-        return len(self.matched) + len(self.missed)
+        return len(self.matched) + len(self.missed) + len(self.unreachable)
 
     @property
     def summary(self) -> str:
@@ -97,6 +104,8 @@ class ImportReport:
         parts = []
         if self.missed:
             parts.append(f"{len(self.missed)} missing")
+        if self.unreachable:
+            parts.append(f"{len(self.unreachable)} not searched yet")
         if self.failed:
             parts.append(f"{len(self.failed)} failed to download")
         if not parts:
@@ -604,6 +613,11 @@ def looks_truncated(tracks: list[SpotifyTrack]) -> bool:
 
 # ── Matching ──────────────────────────────────────────────────────
 
+#: Stands for "we never got an answer", so it can travel back through the
+#: pool as an ordinary return value alongside a match and a None.
+UNREACHED = object()
+
+
 def match_all(
     tracks: list[SpotifyTrack],
     finder: Callable[[str, str], Optional[object]],
@@ -626,6 +640,11 @@ def match_all(
         index, track = index_and_track
         try:
             return index, track, finder(track.title, track.artist)
+        except SearchUnavailable:
+            # Asked, and not answered. Reported as such rather than as a song
+            # that is not there, which is what it used to become.
+            logger.debug("could not search for %s", track)
+            return index, track, UNREACHED
         except Exception as exc:                  # noqa: BLE001
             logger.debug("match failed for %s: %s", track, exc)
             return index, track, None
@@ -645,7 +664,9 @@ def match_all(
     # Sorted back into playlist order — the pool returns them as they finish.
     results.sort(key=lambda row: row[0])
     for _index, track, found in results:
-        if found is None:
+        if found is UNREACHED:
+            report.unreachable.append(track)
+        elif found is None:
             report.missed.append(track)
         else:
             report.matched.append((track, found))
