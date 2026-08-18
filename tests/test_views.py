@@ -156,3 +156,33 @@ def test_the_expensive_sections_are_not_built_until_they_are_opened(app):
     assert views.get("nonsense") is None
     with pytest.raises(KeyError):
         views["nonsense"]
+
+
+# ── A download is refused only for music you actually have ────────
+
+def test_a_download_is_not_refused_because_of_a_file_that_is_gone(tmp_path):
+    """The failure that made a nine-hundred-track import fetch about twenty.
+
+    Every request was checked against the library, and the library still
+    listed every track, pointing at files that had been deleted. So nearly
+    every download was declined as one you already had, and the only ones that
+    got through were the handful that happened not to be listed.
+    """
+    from rose_bouquet.ui.main_window import MainWindow
+
+    here = tmp_path / "here.mp3"
+    here.write_bytes(b"audio")
+
+    # The real method, on an object with only what it reads — building a whole
+    # window would test Qt rather than this.
+    window = MainWindow.__new__(MainWindow)
+    window.library = Library()
+    window.library.add(Track(path=str(here), title="Here", artist="A",
+                             source="youtube", source_id="have"))
+    window.library.add(Track(path=str(tmp_path / "gone.mp3"), title="Gone",
+                             artist="A", source="youtube", source_id="lost"))
+
+    assert window.already_have("have")
+    assert not window.already_have("lost")        # the file went; fetch it again
+    assert not window.already_have("never-seen")
+    assert not window.already_have("")

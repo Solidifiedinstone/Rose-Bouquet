@@ -1048,8 +1048,7 @@ class MainWindow(QMainWindow):
             self.notify(f"Already downloading {request.title}", "info")
             return
 
-        # Already in the library, from a previous run or a previous import.
-        if any(t.source_id == key for t in self.library.tracks.values()):
+        if self.already_have(key):
             self.notify(f"{request.title} is already in your library", "info")
             return
         label = f"{request.artist} — {request.title}" if request.artist else request.title
@@ -1077,6 +1076,21 @@ class MainWindow(QMainWindow):
                 key, label, message, request),
             pool=self.downloads_pool,
         )
+
+    def already_have(self, video_id: str) -> bool:
+        """Whether this recording is in the library *and* still on disk.
+
+        Both halves matter. A library entry outlives the file it names, so
+        asking the library alone meant that once the music was gone every
+        download of a track still listed was refused as one you already had:
+        an import of nine hundred fetched the twenty that happened not to be
+        listed and declined the rest, one polite notification at a time.
+        """
+        if not video_id:
+            return False
+        track = next((t for t in self.library.tracks.values()
+                      if t.source_id == video_id), None)
+        return track is not None and Path(track.path).exists()
 
     def _downloaded(self, outcome: ytmusic.DownloadResult, key: str, label: str) -> None:
         downloads = self.views["downloads"]
