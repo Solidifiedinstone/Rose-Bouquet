@@ -1856,7 +1856,6 @@ class MainWindow(QMainWindow):
         dialog.appearance_changed.connect(self.apply_appearance)
         dialog.library_changed.connect(self._library_folders_changed)
         dialog.visualizer_changed.connect(self._visualizer_changed)
-        dialog.interests_changed.connect(self.refresh)
         dialog.server_changed.connect(self._server_settings_changed)
         dialog.exec()
 

@@ -186,3 +186,49 @@ def test_a_download_is_not_refused_because_of_a_file_that_is_gone(tmp_path):
     assert not window.already_have("lost")        # the file went; fetch it again
     assert not window.already_have("never-seen")
     assert not window.already_have("")
+
+
+# ── Settings opens ────────────────────────────────────────────────
+
+def test_every_signal_settings_is_wired_to_actually_exists(app):
+    """Settings would not open at all, and said nothing about why.
+
+    `interests_changed` was removed from the dialog when the recommender it
+    belonged to was taken out, but the line connecting to it stayed behind in
+    the window. Reaching for a signal that is not there raises, and it raised
+    before the dialog was ever shown — so pressing Settings did nothing, with
+    no window, no error on screen and nothing in the log.
+
+    Signals are looked up by name at runtime, which is exactly the kind of
+    wiring a type checker never sees, so it is checked here instead.
+    """
+    import inspect
+    import re
+
+    from rose_bouquet.ui.main_window import MainWindow
+    from rose_bouquet.ui.preferences import Preferences
+    from rose_bouquet.ui.settings import SettingsDialog
+
+    source = inspect.getsource(MainWindow.open_settings)
+    wanted = set(re.findall(r"dialog\.(\w+)\.connect", source))
+    assert wanted, "open_settings connects nothing — has it moved?"
+
+    dialog = SettingsDialog(Preferences(), None)
+    try:
+        missing = sorted(name for name in wanted if not hasattr(dialog, name))
+        assert not missing, f"open_settings connects signals the dialog lacks: {missing}"
+    finally:
+        dialog.deleteLater()
+
+
+def test_the_handlers_settings_is_wired_to_exist_too(app):
+    """The other half of the same wiring, and the same kind of silent break."""
+    import inspect
+    import re
+
+    from rose_bouquet.ui.main_window import MainWindow
+
+    source = inspect.getsource(MainWindow.open_settings)
+    handlers = set(re.findall(r"\.connect\(self\.(\w+)\)", source))
+    missing = sorted(name for name in handlers if not hasattr(MainWindow, name))
+    assert not missing, f"open_settings connects to methods that do not exist: {missing}"
