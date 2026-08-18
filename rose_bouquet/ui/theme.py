@@ -698,6 +698,28 @@ def stylesheet(theme: Theme, style: Optional[Style] = None) -> str:
         font-weight: 600;
     }}
 
+    /* Cards — an album wall is hundreds of these, and every rule they used to
+       write for themselves was a stylesheet parsed hundreds of times over to
+       say the same thing. Said once here, they cost nothing to make. */
+    #Card {{
+        background-color: transparent;
+        border-radius: {style.radius}px;
+    }}
+
+    #Card:hover {{
+        background-color: {theme.panel};
+    }}
+
+    #CardArt {{
+        background: transparent;
+    }}
+
+    #CardTitle {{
+        color: {theme.text};
+        font-weight: 600;
+        background: transparent;
+    }}
+
     QPushButton#Quiet[liked="true"] {{
         color: {theme.accent};
     }}

@@ -111,6 +111,37 @@ class ScrollingView(QWidget):
     def refresh(self, *_args) -> None:
         raise NotImplementedError
 
+    # ── Building a long list in blocks ────────────────────────────
+    #
+    # A thousand tracks or six hundred album covers is a second of Qt making
+    # widgets nobody has scrolled to yet. Views with that problem call
+    # `paged()` once, then answer `_more_to_build()` and implement `_extend()`;
+    # the block after the one on screen arrives as the scroll reaches for it.
+
+    def paged(self) -> None:
+        """Build this view's list in blocks, as it is scrolled."""
+        self.scroll.verticalScrollBar().valueChanged.connect(self._maybe_extend)
+
+    def _more_to_build(self) -> bool:
+        return False
+
+    def _extend(self) -> None:
+        raise NotImplementedError
+
+    def _fill_viewport(self) -> None:
+        """A window taller than one block would otherwise sit there with no
+        scrollbar to move and nothing more coming."""
+        if self._more_to_build() and self.scroll.verticalScrollBar().maximum() <= 0:
+            self._extend()
+
+    def _maybe_extend(self, value: int) -> None:
+        """Another block once the scroll is within a screenful of the end."""
+        if not self._more_to_build():
+            return
+        bar = self.scroll.verticalScrollBar()
+        if value >= bar.maximum() - bar.pageStep():
+            self._extend()
+
     def set_playing(self, playing_path: str) -> None:
         """Move the highlight to whatever is playing now.
 
@@ -168,7 +199,7 @@ class LibraryView(ScrollingView):
         #: The list is all of it; the widgets arrive as you reach them.
         self._tracks: list = []
         self._built = 0
-        self.scroll.verticalScrollBar().valueChanged.connect(self._maybe_extend)
+        self.paged()
 
     def refresh(self, playing_path: str = "") -> None:
         self.playing_path = playing_path or self.playing_path
@@ -240,23 +271,10 @@ class LibraryView(ScrollingView):
             at += 1
 
         self._built = end
-
-        # A window taller than the first block would otherwise sit there with
-        # no scrollbar to move and nothing more coming.
         QTimer.singleShot(0, self._fill_viewport)
 
-    def _fill_viewport(self) -> None:
-        bar = self.scroll.verticalScrollBar()
-        if self._built < len(self._tracks) and bar.maximum() <= 0:
-            self._extend()
-
-    def _maybe_extend(self, value: int) -> None:
-        """More rows once the scroll is within a screenful of the end."""
-        if self._built >= len(self._tracks):
-            return
-        bar = self.scroll.verticalScrollBar()
-        if value >= bar.maximum() - bar.pageStep():
-            self._extend()
+    def _more_to_build(self) -> bool:
+        return self._built < len(self._tracks)
 
 
 class AlbumsView(ScrollingView):
@@ -270,6 +288,8 @@ class AlbumsView(ScrollingView):
     fetch_requested = Signal(str, str, str)
 
     COLUMNS = 5
+    #: Covers built per block — a few rows of the grid at a time.
+    CHUNK = 60
 
     def __init__(self, library: Library, appearance: Appearance,
                  parent: Optional[QWidget] = None) -> None:
@@ -288,6 +308,14 @@ class AlbumsView(ScrollingView):
         self.back.clicked.connect(lambda: self.show_album(None))
         self.back.setVisible(False)
         self.header_layout.addWidget(self.back)
+
+        #: The whole wall, and how much of it has been made into cards. Six
+        #: hundred covers built at once was over half a second of nothing
+        #: happening every time this tab was opened.
+        self._albums: list = []
+        self._built = 0
+        self._grid = None
+        self.paged()
 
     def show_album(self, key: Optional[tuple[str, str]]) -> None:
         self.open_album = key
@@ -414,6 +442,10 @@ class AlbumsView(ScrollingView):
         self.clear(self.body_layout)
         albums = self.library.albums()
 
+        self._grid = None
+        self._albums = []
+        self._built = 0
+
         if self.open_album is not None and self.open_album in albums:
             self._render_album(albums[self.open_album], playing_path)
             return
@@ -427,20 +459,37 @@ class AlbumsView(ScrollingView):
             return
 
         grid_holder = QWidget()
-        grid = QGridLayout(grid_holder)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setSpacing(4)
+        self._grid = QGridLayout(grid_holder)
+        self._grid.setContentsMargins(0, 0, 0, 0)
+        self._grid.setSpacing(4)
 
-        for index, ((artist, album), tracks) in enumerate(albums.items()):
+        self._albums = list(albums.items())
+        self._built = 0
+
+        self.body_layout.addWidget(grid_holder)
+        self.body_layout.addStretch(1)
+        self._extend()
+
+    def _more_to_build(self) -> bool:
+        return self._grid is not None and self._built < len(self._albums)
+
+    def _extend(self) -> None:
+        """Make the next row of covers, and no more than that."""
+        start, end = self._built, min(self._built + self.CHUNK, len(self._albums))
+        if self._grid is None or start >= end:
+            return
+
+        for index in range(start, end):
+            (artist, album), tracks = self._albums[index]
             card = Card(
                 (artist, album), album, artist,
                 tracks[0].cover if tracks else "", self.appearance,
             )
             card.activated.connect(self.show_album)
-            grid.addWidget(card, index // self.COLUMNS, index % self.COLUMNS)
+            self._grid.addWidget(card, index // self.COLUMNS, index % self.COLUMNS)
 
-        self.body_layout.addWidget(grid_holder)
-        self.body_layout.addStretch(1)
+        self._built = end
+        QTimer.singleShot(0, self._fill_viewport)
 
 
 # ── Playlists ─────────────────────────────────────────────────────

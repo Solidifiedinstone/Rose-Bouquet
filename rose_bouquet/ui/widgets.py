@@ -234,16 +234,14 @@ class Card(QWidget):
         layout.setSpacing(6)
 
         art = QLabel()
+        art.setObjectName("CardArt")
         art.setPixmap(cover_pixmap(cover, size, appearance))
         art.setFixedSize(size, size)
-        art.setStyleSheet("background: transparent;")
         layout.addWidget(art)
 
         name = QLabel(title)
+        name.setObjectName("CardTitle")
         name.setWordWrap(True)
-        name.setStyleSheet(
-            f"color: {appearance.theme.text}; font-weight: 600; background: transparent;"
-        )
         layout.addWidget(name)
 
         if subtitle:
@@ -253,15 +251,17 @@ class Card(QWidget):
             layout.addWidget(caption)
 
         layout.addStretch(1)
-        self.apply_appearance(appearance)
 
     def apply_appearance(self, appearance: Appearance) -> None:
+        """Adopt a palette.
+
+        Nothing to set, for the same reason a track row has nothing to set:
+        every colour on a card now comes from the window's stylesheet by
+        object name. Each card used to write three stylesheets of its own in
+        its constructor, which on a wall of six hundred albums was three
+        hundred milliseconds of Qt parsing the same rules over and over.
+        """
         self.appearance = appearance
-        self.setStyleSheet(
-            f"#Card {{ background-color: transparent;"
-            f" border-radius: {appearance.style.radius}px; }}"
-            f"#Card:hover {{ background-color: {appearance.theme.panel}; }}"
-        )
 
     def mouseDoubleClickEvent(self, event) -> None:
         self.activated.emit(self.payload)

@@ -14,8 +14,8 @@ from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
 from rose_bouquet.core.library import Library, Track
 from rose_bouquet.ui.preferences import Preferences
-from rose_bouquet.ui.views import LibraryView
-from rose_bouquet.ui.widgets import TrackRow
+from rose_bouquet.ui.views import AlbumsView, LibraryView
+from rose_bouquet.ui.widgets import Card, TrackRow
 
 
 @pytest.fixture(scope="module")
@@ -47,7 +47,7 @@ def _library(count: int) -> Library:
 def test_the_playing_highlight_moves_without_rebuilding_the_list(app, appearance):
     view = LibraryView(_library(300), appearance)
     view.refresh("")
-    while view._built < len(view._tracks):
+    while view._more_to_build():
         view._extend()
 
     rows = view.body.findChildren(TrackRow)
@@ -76,6 +76,45 @@ def test_a_redraw_that_was_not_told_what_is_playing_keeps_the_highlight(app, app
 
     lit = [row.track.path for row in view.body.findChildren(TrackRow) if row.playing]
     assert lit == ["/music/0003.mp3"]
+
+
+# ── Long lists arrive in blocks ───────────────────────────────────
+
+def test_a_thousand_tracks_do_not_all_become_widgets_at_once(app, appearance):
+    view = LibraryView(_library(1000), appearance)
+    view.refresh("")
+
+    assert len(view._tracks) == 1000
+    assert view._built <= 300          # a block or two, not the library
+    assert view._more_to_build()
+
+    while view._more_to_build():
+        view._extend()
+    assert view._built == 1000         # scrolling to the end still gets you there
+
+
+def test_an_album_wall_is_built_a_few_rows_at_a_time(app, appearance):
+    view = AlbumsView(_library(1200), appearance)   # 100 albums of 12
+    view.refresh("")
+
+    assert len(view._albums) == 100
+    assert view._built <= AlbumsView.CHUNK
+    assert 0 < len(view.body.findChildren(Card)) <= AlbumsView.CHUNK
+
+    while view._more_to_build():
+        view._extend()
+    assert len(view.body.findChildren(Card)) == 100
+
+
+def test_opening_one_album_leaves_no_half_built_wall_behind(app, appearance):
+    view = AlbumsView(_library(1200), appearance)
+    view.refresh("")
+    view.show_album(("Artist 0", "Album 0"))
+
+    # The wall is gone, so a stray scroll must not try to extend it into a
+    # layout that was deleted underneath it.
+    assert not view._more_to_build()
+    view._maybe_extend(0)
 
 
 # ── The sections that are not built until they are opened ─────────
