@@ -84,6 +84,33 @@ PLAYER_CLIENTS = [
 FORMAT = "bestaudio/best"
 
 
+#: Refusals that are not really about the video: an age wall, a bot check, a
+#: recording only a signed-in account may fetch. YouTube phrases them
+#: differently and means the same thing every time — prove who you are — and
+#: the answer is always the same too: the cookies from the browser you are
+#: already signed in with.
+SIGN_IN_WALLED = (
+    "sign in to confirm your age",
+    "sign in to confirm you",
+    "inappropriate for some users",
+    "age-restricted",
+    "age restricted",
+    "sign in to view",
+    "login required",
+    "private video",
+    "is private",
+    "members-only",
+    "join this channel",
+    "account associated with this video",
+)
+
+
+def is_a_sign_in_wall(message: str) -> bool:
+    """Whether a failure is YouTube asking who you are rather than saying no."""
+    lowered = message.lower().replace("\u2019", "'")
+    return any(phrase in lowered for phrase in SIGN_IN_WALLED)
+
+
 def browser_cookies() -> Optional[tuple]:
     """A yt-dlp `cookiesfrombrowser` tuple for a browser profile on this machine.
 
@@ -412,11 +439,29 @@ def download(
 
     url = f"https://music.youtube.com/watch?v={request.video_id}"
 
-    try:
-        with yt_dlp.YoutubeDL(options) as downloader:
+    def fetch(with_options) -> None:
+        with yt_dlp.YoutubeDL(with_options) as downloader:
             downloader.extract_info(url, download=True)
+
+    try:
+        fetch(options)
     except Exception as exc:                      # noqa: BLE001 — yt-dlp raises widely
-        return DownloadResult(error=str(exc), request=request)
+        # An age wall is not a refusal to serve the song, it is a request to
+        # say who is asking — and you are already signed in, in the browser
+        # on this machine. Passing that on and trying once more is the whole
+        # of it. Reported as "cannot download this" instead, it read as the
+        # app deciding what you are allowed to listen to.
+        retry = None if cookies else browser_cookies()
+        if retry is None or not is_a_sign_in_wall(str(exc)):
+            return DownloadResult(error=str(exc), request=request)
+
+        logger.info("%s is behind a sign-in; asking again with your browser's "
+                    "session", request.video_id)
+        options["cookiesfrombrowser"] = retry
+        try:
+            fetch(options)
+        except Exception as second:               # noqa: BLE001
+            return DownloadResult(error=str(second), request=request)
 
     final = folder / f"{stem}.{request.fmt}"
     if not final.exists():

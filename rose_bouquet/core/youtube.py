@@ -22,7 +22,7 @@ from typing import Optional
 
 #: Shared with the downloader rather than copied from it: the reasoning behind
 #: the order is long, measured, and only worth keeping in one place.
-from rose_bouquet.core.ytmusic import PLAYER_CLIENTS
+from rose_bouquet.core.ytmusic import PLAYER_CLIENTS, is_a_sign_in_wall
 
 logger = logging.getLogger(__name__)
 
@@ -138,8 +138,40 @@ class YouTube:
             with yt_dlp.YoutubeDL(_options(options)) as extractor:
                 return extractor.extract_info(url, download=False)
         except Exception as exc:                  # noqa: BLE001 — yt-dlp raises widely
+            if is_a_sign_in_wall(str(exc)):
+                signed_in = self._with_your_session(url, options)
+                if signed_in is not None:
+                    return signed_in
             logger.warning("could not read %s: %s", url, exc)
             return None
+
+    def _with_your_session(self, url: str, options: Optional[dict]) -> Optional[dict]:
+        """Ask again as the browser you are already signed in with.
+
+        An age wall is not YouTube declining to serve a song; it is YouTube
+        asking who wants it. Answering with the session already on this
+        machine is the difference between a track that plays and one the app
+        appears to have decided you may not hear.
+        """
+        import yt_dlp
+
+        from rose_bouquet.core.ytmusic import browser_cookies
+
+        jar = browser_cookies()
+        if jar is None:
+            return None
+
+        signed_in = _options(options)
+        signed_in["cookiesfrombrowser"] = jar
+        try:
+            with yt_dlp.YoutubeDL(signed_in) as extractor:
+                data = extractor.extract_info(url, download=False)
+        except Exception as exc:                  # noqa: BLE001
+            logger.warning("still refused with your session: %s", exc)
+            return None
+
+        logger.info("%s needed a sign-in; used your browser's session", url)
+        return data
 
     # ── Streaming ─────────────────────────────────────────────────
 

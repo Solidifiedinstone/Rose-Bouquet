@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import sys
 import types
+from types import SimpleNamespace
 
 from rose_bouquet.core import ytmusic
 
@@ -107,3 +108,109 @@ def test_the_downloader_hands_yt_dlp_that_list(tmp_path, monkeypatch):
     assert result.ok, result.error
     assert seen["format"] == ytmusic.FORMAT
     assert seen["extractor_args"]["youtube"]["player_client"] == ytmusic.PLAYER_CLIENTS
+
+
+# ── An age wall is a question, not a refusal ──────────────────────
+
+def test_a_sign_in_wall_is_told_apart_from_a_real_failure():
+    """YouTube says "prove who you are" in several different sentences.
+
+    All of them are answered by the same thing — the session already in the
+    browser on this machine — and none of the others are, so the app must not
+    go rummaging in a cookie jar every time a download fails for an ordinary
+    reason like a dead video or a full disk.
+    """
+    from rose_bouquet.core.ytmusic import is_a_sign_in_wall
+
+    walls = [
+        "ERROR: [youtube] x: Sign in to confirm your age. This video may be "
+        "inappropriate for some users.",
+        "ERROR: Sign in to confirm you’re not a bot",
+        "ERROR: Sign in to confirm you're not a bot",
+        "ERROR: This video is private",
+        "ERROR: Join this channel to get access to members-only content",
+        "ERROR: Sign in to view this video",
+    ]
+    for message in walls:
+        assert is_a_sign_in_wall(message), message
+
+    ordinary = [
+        "ERROR: Video unavailable",
+        "ERROR: HTTP Error 403: Forbidden",
+        "ERROR: unable to write data: No space left on device",
+        "ERROR: Unsupported URL",
+        "ERROR: Postprocessing: ffmpeg not found",
+        "",
+    ]
+    for message in ordinary:
+        assert not is_a_sign_in_wall(message), message
+
+
+def test_an_age_walled_download_is_asked_for_again_with_your_session(tmp_path, monkeypatch):
+    """The retry happens once, and only for the failure it is meant for."""
+    from rose_bouquet.core import ytmusic
+
+    attempts = []
+
+    class FakeYDL:
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def extract_info(self, url, download=False):
+            attempts.append(self.options.get("cookiesfrombrowser"))
+            if self.options.get("cookiesfrombrowser") is None:
+                raise RuntimeError("ERROR: Sign in to confirm your age.")
+            (tmp_path / "Somebody - A song.mp3").write_bytes(b"audio")
+            return {"title": "A song"}
+
+    monkeypatch.setitem(sys.modules, "yt_dlp", SimpleNamespace(YoutubeDL=FakeYDL))
+    monkeypatch.setattr(ytmusic, "browser_cookies",
+                        lambda: ("firefox", "/a/profile", None, None))
+    monkeypatch.setattr(ytmusic, "_write_tags", lambda *a, **k: None)
+
+    request = ytmusic.DownloadRequest(video_id="v", title="A song",
+                                      artist="Somebody", album="", fmt="mp3")
+    result = ytmusic.download(request, folder=tmp_path, progress=lambda *a: None)
+
+    assert result.ok, result.error
+    # Tried without a session first, then once with it. Not more.
+    assert attempts == [None, ("firefox", "/a/profile", None, None)]
+
+
+def test_an_ordinary_failure_does_not_go_looking_for_cookies(tmp_path, monkeypatch):
+    from rose_bouquet.core import ytmusic
+
+    attempts = []
+
+    class FakeYDL:
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def extract_info(self, url, download=False):
+            attempts.append(self.options.get("cookiesfrombrowser"))
+            raise RuntimeError("ERROR: Video unavailable")
+
+    asked = []
+    monkeypatch.setitem(sys.modules, "yt_dlp", SimpleNamespace(YoutubeDL=FakeYDL))
+    monkeypatch.setattr(ytmusic, "browser_cookies",
+                        lambda: asked.append(True) or ("firefox", "/p", None, None))
+
+    request = ytmusic.DownloadRequest(video_id="v", title="A song",
+                                      artist="Somebody", album="", fmt="mp3")
+    result = ytmusic.download(request, folder=tmp_path, progress=lambda *a: None)
+
+    assert not result.ok
+    assert "Video unavailable" in result.error
+    assert attempts == [None]          # asked once, and not asked again
