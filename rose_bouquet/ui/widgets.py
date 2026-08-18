@@ -180,6 +180,10 @@ class TrackRow(QWidget):
         self._mark_playing()
 
     def set_playing(self, playing: bool) -> None:
+        # Re-polishing is the expensive half of this, and in a list of a
+        # thousand rows exactly two of them are ever changing.
+        if playing == self.playing:
+            return
         self.playing = playing
         self._mark_playing()
 

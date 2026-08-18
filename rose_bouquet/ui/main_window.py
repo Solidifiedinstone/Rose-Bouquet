@@ -826,7 +826,22 @@ class MainWindow(QMainWindow):
             if track else APP_NAME
         )
         self._refresh_queue()
-        self.refresh()
+        self._mark_playing()
+
+    def _mark_playing(self) -> None:
+        """Tell the section on screen which track is playing now.
+
+        Not `refresh`: a section that rebuilds itself on every track change
+        stalls for as long as its list is long, and scrolls itself back to the
+        top while it is at it. Sections that only need to move a highlight say
+        so by having `set_playing`.
+        """
+        current = self.stack.currentWidget()
+        mark = getattr(current, "set_playing", None)
+        if mark is None:
+            self.refresh()
+            return
+        mark(self.playback.track.path if self.playback.track else "")
 
     def _on_state_changed(self, playing: bool) -> None:
         self.play_button.setText("⏸" if playing else "⏵")

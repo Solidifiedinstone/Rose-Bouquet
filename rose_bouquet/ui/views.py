@@ -73,6 +73,10 @@ class ScrollingView(QWidget):
         #: else — the Shorts reel takes the whole view this way.
         self.scroll = scroll
 
+        #: The track currently playing, so the highlight survives a redraw
+        #: that was not told about it.
+        self.playing_path = ""
+
     @staticmethod
     def clear(layout) -> None:
         """Empty a layout and let the widgets go.
@@ -107,6 +111,22 @@ class ScrollingView(QWidget):
     def refresh(self, *_args) -> None:
         raise NotImplementedError
 
+    def set_playing(self, playing_path: str) -> None:
+        """Move the highlight to whatever is playing now.
+
+        A track change used to go through `refresh`, which threw away every
+        row widget in the view and made them all again — a visible stall on a
+        large library, and it dropped your scroll position on the floor every
+        time a song ended. Which row is lit is one property on at most two
+        rows, so that is all this touches. A view whose *contents* really do
+        depend on what is playing can still override it.
+        """
+        if playing_path == self.playing_path:
+            return
+        self.playing_path = playing_path
+        for row in self.body.findChildren(TrackRow):
+            row.set_playing(row.track.path == playing_path)
+
 
 # ── Library ───────────────────────────────────────────────────────
 
@@ -121,7 +141,6 @@ class LibraryView(ScrollingView):
                  parent: Optional[QWidget] = None) -> None:
         super().__init__(appearance, parent)
         self.library = library
-        self.playing_path = ""
 
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search your library…")
@@ -390,6 +409,8 @@ class AlbumsView(ScrollingView):
         return row
 
     def refresh(self, playing_path: str = "") -> None:
+        self.playing_path = playing_path or self.playing_path
+        playing_path = self.playing_path
         self.clear(self.body_layout)
         albums = self.library.albums()
 
@@ -469,6 +490,8 @@ class PlaylistsView(ScrollingView):
         self.refresh()
 
     def refresh(self, playing_path: str = "") -> None:
+        self.playing_path = playing_path or self.playing_path
+        playing_path = self.playing_path
         self.clear(self.body_layout)
         playlists = self.store.all(self.library)
 
