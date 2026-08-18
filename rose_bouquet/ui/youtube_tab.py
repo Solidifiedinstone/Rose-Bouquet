@@ -2,7 +2,7 @@
 
 This is not a YouTube client. There is no scraping, no reimplemented feed and
 no algorithm of our own: it is YouTube's own desktop site in a web view, with
-ads, telemetry and Shorts removed before the page renders. Sign in and you get
+ads and telemetry removed before the page renders. Sign in and you get
 *your* recommendations, subscriptions and history — the real thing, minus the
 client that reports on you.
 
@@ -11,19 +11,18 @@ with the left rail: Home, Subscriptions, You, your playlists, all where they
 belong. YouTube hides that rail behind a hamburger whenever it thinks the
 window is narrow, so it is opened for you on every page that can hold it. The
 phone site's bottom bar is worth keeping too, so a small one is drawn on top —
-ours, four buttons, no page of Google's involved.
+ours, three buttons, no page of Google's involved.
 
 Four layers do the work, and they are deliberately separate:
 
 * **A request interceptor**, which never lets an ad or a telemetry beacon leave
   the machine. This is the layer that matters: blocking at the network is not
   defeatable by a page that changes its class names next week.
-* **Injected CSS**, which hides what did load — Shorts shelves, promoted rows,
-  the "turn off your ad blocker" dialog. Cosmetic, and expected to rot; the
-  interceptor is what keeps the promise.
+* **Injected CSS**, which hides what did load — promoted rows, the "turn off
+  your ad blocker" dialog. Cosmetic, and expected to rot; the interceptor is
+  what keeps the promise.
 * **Injected JavaScript**, which skips an ad that got through, dismisses the
-  anti-adblock nag, opens the left rail, sends `/shorts/…` to the ordinary
-  player, and draws the bottom bar.
+  anti-adblock nag, opens the left rail once, and draws the bottom bar.
 * **A persistent profile**, so a sign-in survives closing the app, kept in Rose
   Bouquet's own data folder rather than anywhere shared.
 
@@ -136,70 +135,110 @@ tp-yt-paper-dialog:has(ytd-enforcement-message-view-model),
 ytd-popup-container:has(ytd-enforcement-message-view-model),
 tp-yt-iron-overlay-backdrop { display: none !important; }
 
-/* Shorts: the shelves, the rows, the rail entry and the tab. */
-ytd-rich-shelf-renderer[is-shorts], ytd-reel-shelf-renderer,
-ytm-reel-shelf-renderer, ytm-shorts-lockup-view-model,
-ytd-rich-section-renderer:has(ytd-rich-shelf-renderer[is-shorts]),
-ytd-guide-entry-renderer:has(a[title="Shorts"]),
-ytd-mini-guide-entry-renderer[aria-label="Shorts"],
-ytm-pivot-bar-item-renderer:has(.pivot-bar-item-tab.shorts),
-.pivot-bar-item-tab.shorts { display: none !important; }
-
 /* Room for our own bottom bar, so the last row of the page is not under it. */
-html { --rb-bar-height: 46px; }
+html { --rb-bar-height: 48px; }
 ytd-app, #content.ytd-app { padding-bottom: var(--rb-bar-height) !important; }
 """
 
 #: The bar across the bottom — the one thing the phone site had that the
-#: desktop site does not. Ours, not Google's: four links and no reporting.
+#: desktop site does not. Ours, not Google's: three destinations and no
+#: reporting, drawn the way the app draws them, outline for where you are
+#: not and solid for where you are.
 BAR_JS = """
 (function () {
+  // Home, Shorts, Subscriptions — the phone app's bar, minus the upload
+  // button, because there is nothing here to upload from. Each entry carries
+  // both of YouTube's icons for it: the outline for where you are not, the
+  // solid one for where you are, which is the whole of how that bar reads.
   const ITEMS = [
-    ['Home', 'https://www.youtube.com/'],
-    ['Subscriptions', 'https://www.youtube.com/feed/subscriptions'],
-    ['You', 'https://www.youtube.com/feed/you'],
-    ['Music', 'https://music.youtube.com/'],
+    {
+      label: 'Home',
+      href: 'https://www.youtube.com/',
+      at: (p) => p === '/',
+      line: 'M12 4.44l7 6.09V20h-4v-6H9v6H5v-9.47l7-6.09m0-1.32L4 10.09V21h6v-6h4v6h6V10.09l-8-6.97z',
+      solid: 'M4 21V10.08l8-6.96 8 6.96V21h-7v-6h-2v6H4z',
+    },
+    {
+      label: 'Shorts',
+      href: 'https://www.youtube.com/shorts',
+      at: (p) => p.startsWith('/shorts'),
+      line: 'M10 14.65v-5.3L15 12l-5 2.65zm7.77-4.33c-.77-.32-1.2-.5-1.2-.5L18 9.06c1.84-.96 2.53-3.23 1.56-5.06s-3.24-2.53-5.07-1.56L6.11 6.87c-1.36.72-2.19 2.16-2.12 3.7.07 1.53.99 2.9 2.42 3.48.77.32 1.2.5 1.2.5L6 15.19c-1.84.96-2.53 3.23-1.56 5.06.97 1.83 3.24 2.53 5.07 1.56l8.38-4.43c1.36-.72 2.19-2.16 2.12-3.7-.07-1.53-.99-2.9-2.24-3.36zm-7.16 3.16l4.5-2.38c.68-.36 1.5.14 1.5.88s-.82 1.24-1.5.88l-4.5-2.38z',
+      solid: 'M10 14.65v-5.3L15 12l-5 2.65zm7.77-4.33c-.77-.32-1.2-.5-1.2-.5L18 9.06c1.84-.96 2.53-3.23 1.56-5.06s-3.24-2.53-5.07-1.56L6.11 6.87c-1.36.72-2.19 2.16-2.12 3.7.07 1.53.99 2.9 2.42 3.48.77.32 1.2.5 1.2.5L6 15.19c-1.84.96-2.53 3.23-1.56 5.06.97 1.83 3.24 2.53 5.07 1.56l8.38-4.43c1.36-.72 2.19-2.16 2.12-3.7-.07-1.53-.99-2.9-2.24-3.36z',
+    },
+    {
+      label: 'Subscriptions',
+      href: 'https://www.youtube.com/feed/subscriptions',
+      at: (p) => p.startsWith('/feed/subscriptions'),
+      line: 'M18.77 7.63H5.23v-1.5h13.54v1.5zm-1.54-4.5H6.77v1.5h10.46v-1.5zM21 10.13v9c0 1.1-.9 2-2 2H5c-1.1 0-2-.9-2-2v-9c0-1.1.9-2 2-2h14c1.1 0 2 .9 2 2zm-1.5 0c0-.28-.22-.5-.5-.5H5c-.28 0-.5.22-.5.5v9c0 .28.22.5.5.5h14c.28 0 .5-.22.5-.5v-9zM14.5 14.63l-5 3v-6l5 3z',
+      solid: 'M18.77 7.63H5.23v-1.5h13.54v1.5zm-1.54-4.5H6.77v1.5h10.46v-1.5zM21 10.13v9c0 1.1-.9 2-2 2H5c-1.1 0-2-.9-2-2v-9c0-1.1.9-2 2-2h14c1.1 0 2 .9 2 2zM14.5 14.63l-5 3v-6l5 3z',
+    },
   ];
 
+  const icon = (path) =>
+    '<svg viewBox="0 0 24 24" width="24" height="24" focusable="false" ' +
+    'style="pointer-events:none;display:block;fill:currentColor">' +
+    '<path d="' + path + '"></path></svg>';
+
+  const paint = (bar) => {
+    const here = location.pathname;
+    for (const link of bar.children) {
+      const item = ITEMS[Number(link.dataset.rbIndex)];
+      const on = item.at(here);
+      link.style.color = on ? '#f1f1f1' : '#aaaaaa';
+      link.firstChild.innerHTML = icon(on ? item.solid : item.line);
+      link.lastChild.style.fontWeight = on ? '500' : '400';
+    }
+  };
+
   const draw = () => {
-    if (document.getElementById('rb-bottom-bar') || !document.body) { return; }
     // Not on YouTube Music: its own player controls live along the bottom of
     // the window, and a bar of ours on top of them would cover play and skip.
     if (location.hostname !== 'www.youtube.com') { return; }
+    if (!document.body) { return; }
+
+    const existing = document.getElementById('rb-bottom-bar');
+    if (existing) { paint(existing); return; }
 
     const bar = document.createElement('nav');
     bar.id = 'rb-bottom-bar';
     bar.style.cssText = [
-      'position:fixed', 'left:0', 'right:0', 'bottom:0', 'height:46px',
-      'display:flex', 'align-items:stretch', 'justify-content:space-around',
-      'z-index:2147483000', 'background:#0f0f0f',
-      'border-top:1px solid rgba(255,255,255,0.12)',
-      'font-family:Roboto,Arial,sans-serif', 'font-size:12px',
+      'position:fixed', 'left:0', 'right:0', 'bottom:0', 'height:48px',
+      'display:flex', 'align-items:stretch', 'z-index:2147483000',
+      'background:#0f0f0f', 'border-top:1px solid rgba(255,255,255,0.12)',
+      'font-family:Roboto,Arial,sans-serif',
     ].join(';');
 
-    for (const [label, href] of ITEMS) {
+    ITEMS.forEach((item, index) => {
       const link = document.createElement('a');
-      link.textContent = label;
-      link.href = href;
+      link.href = item.href;
+      link.dataset.rbIndex = String(index);
+      link.setAttribute('title', item.label);
       link.style.cssText = [
-        'flex:1', 'display:flex', 'align-items:center', 'justify-content:center',
-        'color:#f1f1f1', 'text-decoration:none', 'cursor:pointer',
+        'flex:1', 'display:flex', 'flex-direction:column',
+        'align-items:center', 'justify-content:center', 'gap:2px',
+        'text-decoration:none', 'cursor:pointer', 'padding-top:4px',
       ].join(';');
-      // Current page gets the accent, so the bar says where you are.
-      if (location.href.replace(/\\/$/, '') === href.replace(/\\/$/, '')) {
-        link.style.color = '#ff6a8a';
-      }
+
+      const glyph = document.createElement('span');
+      glyph.innerHTML = icon(item.line);
+      const label = document.createElement('span');
+      label.textContent = item.label;
+      label.style.cssText = 'font-size:10px;line-height:12px;letter-spacing:0.2px';
+
+      link.appendChild(glyph);
+      link.appendChild(label);
       bar.appendChild(link);
-    }
+    });
 
     document.body.appendChild(bar);
+    paint(bar);
   };
 
   draw();
   document.addEventListener('DOMContentLoaded', draw);
   // YouTube is a single page app: it swaps the page out without a load, so
   // the bar is redrawn on its own navigation event rather than only on load.
-  document.addEventListener('yt-navigate-finish', () => { draw(); });
+  document.addEventListener('yt-navigate-finish', draw);
 })();
 """
 
@@ -614,23 +653,16 @@ class YouTubeTab(QWidget):
         self.view.setUrl(query)
 
     def _on_url_changed(self, url: QUrl) -> None:
-        """Follow the page, and send a Short to the ordinary player.
+        """Follow the page.
 
-        `/shorts/<id>` is the same video as `/watch?v=<id>`, played in a
-        full-screen vertical feed with no controls worth the name. Since the
-        Shorts shelves are hidden anyway, a link that lands on one — from a
-        search result, or from outside the app — is rewritten rather than
-        followed.
+        A `/shorts/<id>` link used to be rewritten to `/watch?v=<id>`, on the
+        grounds that it is the same video with a better player. That was only
+        defensible while Shorts were being stripped out entirely; now that
+        they are a destination on the bar, sending one to a different player
+        than the one YouTube opens it in is the app disagreeing with the site
+        it is showing.
         """
-        text = url.toString()
-        path = url.path()
-        if path.startswith("/shorts/"):
-            video_id = path[len("/shorts/"):].split("/")[0]
-            if video_id:
-                self.view.setUrl(QUrl(f"{WATCH_URL}/watch?v={video_id}"))
-                return
-
-        self.address.setText(text)
+        self.address.setText(url.toString())
 
     def _on_load_finished(self, ok: bool) -> None:
         if not ok:
