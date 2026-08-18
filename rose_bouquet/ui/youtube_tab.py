@@ -207,15 +207,34 @@ BAR_JS = """
 #: Only ever presses buttons the page itself provides.
 GUIDE_JS = """
 (function () {
+  // Whether the rail has been opened on your behalf yet, and whether you have
+  // since had an opinion of your own about it.
+  //
+  // Both matter because this used to run on every DOM mutation with no memory
+  // at all: closing the rail *is* a mutation, so the hamburger was undone in
+  // the same frame you pressed it and the button looked broken. Opening it is
+  // a one-off courtesy for a window YouTube thinks is too narrow to pin it —
+  // after that the rail is yours.
+  let opened = false;
+  let yours = false;
+
+  document.addEventListener('click', (event) => {
+    const target = event.target;
+    if (target && target.closest && target.closest('#guide-button')) {
+      yours = true;
+    }
+  }, true);
+
   const openGuide = () => {
+    if (opened || yours) { return; }
     const app = document.querySelector('ytd-app');
     if (!app) { return; }
     // Already pinned open — nothing to do. YouTube only pins the rail when it
     // thinks the window is wide enough; otherwise it leaves a strip of icons.
-    if (app.hasAttribute('guide-persistent-and-visible')) { return; }
+    if (app.hasAttribute('guide-persistent-and-visible')) { opened = true; return; }
     if (!document.querySelector('ytd-mini-guide-renderer')) { return; }
     const button = document.querySelector('#guide-button button, #guide-button');
-    if (button) { button.click(); }
+    if (button) { button.click(); opened = true; }
   };
 
   const tidy = () => {
@@ -244,11 +263,15 @@ GUIDE_JS = """
     }
   };
 
-  const tick = () => { openGuide(); tidy(); };
-  tick();
-  document.addEventListener('yt-navigate-finish', tick);
-  new MutationObserver(tick).observe(document.documentElement,
-                                     {childList: true, subtree: true});
+  openGuide();
+  tidy();
+  document.addEventListener('yt-navigate-finish', () => { openGuide(); tidy(); });
+  // Ads have to be watched for continuously — they arrive mid-page and
+  // mid-video. The rail does not: it is looked at until it has been opened
+  // once, and then left alone, because reacting to every mutation is what
+  // made the hamburger impossible to use.
+  new MutationObserver(() => { openGuide(); tidy(); })
+      .observe(document.documentElement, {childList: true, subtree: true});
 })();
 """
 
