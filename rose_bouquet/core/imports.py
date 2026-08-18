@@ -35,6 +35,11 @@ DONE = "done"
 MISSING = "missing"
 FAILED = "failed"
 
+
+def _on_disk(path: str) -> bool:
+    """Whether a recorded path still names a file that is there."""
+    return bool(path) and Path(path).exists()
+
 _UNSAFE = re.compile(r"[^\w\-]+")
 
 
@@ -212,16 +217,24 @@ class ImportJob:
         return None
 
     def skip_already_downloaded(self, library) -> int:
-        """Mark rows whose audio is already in the library. Returns how many.
+        """Mark rows whose audio is already on disk. Returns how many.
 
         Checked by YouTube id first, then by artist and title, so a track ripped
         from a CD counts as already had — the point is to end up with the music,
         not to collect duplicates of it.
+
+        A library entry is only evidence if its file is still there. The
+        library outlives the files it points at — a drive that does not come
+        up, a folder emptied underneath it — and taking its word for it meant
+        an import of nine hundred tracks marked all nine hundred as already
+        downloaded and fetched none of them, which looks exactly like matching
+        working and downloading being broken.
         """
-        by_source = {t.source_id: t for t in library.tracks.values() if t.source_id}
+        present = [t for t in library.tracks.values() if _on_disk(t.path)]
+        by_source = {t.source_id: t for t in present if t.source_id}
         by_name = {
             f"{t.display_artist.lower().strip()}|{t.display_title.lower().strip()}": t
-            for t in library.tracks.values()
+            for t in present
         }
 
         skipped = 0
@@ -236,6 +249,26 @@ class ImportJob:
                 skipped += 1
 
         return skipped
+
+    def forget_downloads_that_are_gone(self) -> int:
+        """Send rows back to pending when the file they claim is not there.
+
+        A job remembers what it downloaded, and on its own that memory is
+        enough — but a file can go afterwards, and a job resumed after that
+        would otherwise never fetch it again, having already ticked it off.
+        The match is kept, so nothing has to be looked up a second time; only
+        the download is asked for again.
+        """
+        forgotten = 0
+        for entry in self.entries:
+            if entry.state != DONE:
+                continue
+            if _on_disk(entry.path):
+                continue
+            entry.state = MATCHED if entry.video_id else PENDING
+            entry.path = ""
+            forgotten += 1
+        return forgotten
 
     # ── Persistence ───────────────────────────────────────────────
 

@@ -1534,10 +1534,18 @@ class MainWindow(QMainWindow):
         `ignore_wait` skips the recorded rate-limit window, which is the right
         thing to do after changing network: the limit was on the old connection.
         """
+        # Before anything else: a row this job already ticked off, whose file
+        # is no longer on disk, has to be asked for again. Otherwise resuming
+        # an import that finished once can only ever report that it is done.
+        regained = job.forget_downloads_that_are_gone()
         skipped = job.skip_already_downloaded(self.library)
         job.save()
         self.import_job = job
 
+        if regained:
+            self.notify(
+                f"{regained} downloaded tracks are no longer on disk — "
+                "fetching them again", "info")
         if skipped:
             self.notify(f"{skipped} were already in your library", "info")
 

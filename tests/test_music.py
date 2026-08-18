@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import random
+from types import SimpleNamespace
 
 import pytest
 
@@ -1521,3 +1522,64 @@ def test_a_track_outside_every_folder_is_still_pruned(tmp_path):
 
     assert removed == 1
     assert not library.tracks
+
+
+# ── An import fetches what is not actually there ──────────────────
+
+def _spotify_job(tmp_path, count=3):
+    from rose_bouquet.core import imports
+    job = imports.ImportJob(title="Tunes")
+    job.add_tracks([
+        SimpleNamespace(title=f"Song {i}", artist="Somebody", album="An album",
+                        duration=180)
+        for i in range(count)
+    ])
+    return job
+
+
+def test_a_library_entry_whose_file_is_gone_is_not_evidence_of_a_download(tmp_path):
+    """The failure that made an import of 909 tracks download none of them.
+
+    Every row matched, every row was marked already-downloaded off the back of
+    a library that still listed the tracks, and not one file was fetched — the
+    files those library entries named had been deleted.
+    """
+    from rose_bouquet.core import imports
+
+    job = _spotify_job(tmp_path)
+    library = Library()
+    for index in range(3):
+        library.add(Track(path=str(tmp_path / f"{index}.mp3"),
+                          title=f"Song {index}", artist="Somebody"))
+
+    # Nothing is on disk, so nothing counts as already had — every row is
+    # still work to do rather than a tick.
+    assert job.skip_already_downloaded(library) == 0
+    assert job.count(imports.DONE) == 0
+
+    # One of them really is there; that one, and only that one, is skipped.
+    (tmp_path / "1.mp3").write_bytes(b"x")
+    assert job.skip_already_downloaded(library) == 1
+    assert job.count(imports.DONE) == 1
+    assert [e.title for e in job.entries if e.state == imports.DONE] == ["Song 1"]
+
+
+def test_a_finished_import_asks_again_for_files_that_have_gone(tmp_path):
+    from rose_bouquet.core import imports
+
+    job = _spotify_job(tmp_path)
+    for index, entry in enumerate(job.entries):
+        entry.state = imports.DONE
+        entry.video_id = f"vid{index}"
+        entry.path = str(tmp_path / f"{index}.mp3")
+    (tmp_path / "2.mp3").write_bytes(b"x")
+
+    # The two whose files went come back as work; the one still there does not.
+    assert job.forget_downloads_that_are_gone() == 2
+    assert job.count(imports.DONE) == 1
+    # And they keep the match, so nothing is looked up on Spotify twice.
+    assert all(e.video_id for e in job.pending())
+    assert {e.state for e in job.pending()} == {imports.MATCHED}
+
+    # Asked twice, it does not keep re-reporting the same rows.
+    assert job.forget_downloads_that_are_gone() == 0
