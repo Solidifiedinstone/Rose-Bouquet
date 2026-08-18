@@ -38,7 +38,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from PySide6.QtCore import Qt, QUrl, QUrlQuery, Signal
+from PySide6.QtCore import Qt, QTimer, QUrl, QUrlQuery, Signal
 from PySide6.QtWebEngineCore import (
     QWebEnginePage,
     QWebEngineProfile,
@@ -282,6 +282,11 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
             info.block(True)
 
 
+#: How long the cookie store has to go quiet before the page is reloaded, and
+#: the longest we wait for that quiet in the first place.
+COOKIE_SETTLE_MS = 400
+COOKIE_CEILING_MS = 5000
+
 def _as_qt_cookie(cookie):
     """One of our cookies as the QNetworkCookie the web view's store wants.
 
@@ -302,8 +307,18 @@ def _as_qt_cookie(cookie):
         qt_cookie.setExpirationDate(
             QDateTime.fromSecsSinceEpoch(int(cookie.expires)))
     # Google's session cookies are sent from embedded contexts all over its
-    # own sites; the restrictive default would drop them where it matters.
-    qt_cookie.setSameSitePolicy(QNetworkCookie.SameSite.None_)
+    # own sites, which is what SameSite=None is for — but Chromium refuses
+    # SameSite=None on a cookie that is not also Secure, and refuses it
+    # silently, dropping the cookie on the way in. SID, HSID and APISID are
+    # exactly that shape: not Secure, and exactly the three cookies that
+    # constitute a Google session. Asking for None threw away the sign-in we
+    # came here to copy and left the tab looking signed out with no error
+    # anywhere. Those get Lax instead — Chromium's own default for a cookie
+    # that says nothing, and enough for a top-level navigation to YouTube.
+    qt_cookie.setSameSitePolicy(
+        QNetworkCookie.SameSite.None_ if cookie.secure
+        else QNetworkCookie.SameSite.Lax
+    )
     return qt_cookie
 
 
@@ -518,7 +533,39 @@ class YouTubeTab(QWidget):
             store.setCookie(_as_qt_cookie(cookie), QUrl(cookie.url))
 
         self.status.emit(f"Signed in — copied {len(found)} cookies", "success")
-        self.view.reload()
+        self._reload_once_cookies_land()
+
+    def _reload_once_cookies_land(self) -> None:
+        """Reload when the cookies are actually in, not when we asked.
+
+        `setCookie` is a request, not a write: the store applies it on another
+        thread and says so afterwards through `cookieAdded`. Reloading on the
+        line after the loop therefore reloaded a page that was still signed
+        out, and the sign-in only appeared if you happened to navigate again
+        later — which read exactly like it had not worked.
+
+        So the reload waits for the arrivals to stop. Each cookie that lands
+        pushes the timer back; the reload happens once none have landed for a
+        moment, or after a ceiling, so a cookie Chromium quietly refuses
+        cannot leave the page waiting forever.
+        """
+        store = self.profile.cookieStore()
+
+        settled = QTimer(self)
+        settled.setSingleShot(True)
+        settled.setInterval(COOKIE_SETTLE_MS)
+
+        def finish() -> None:
+            try:
+                store.cookieAdded.disconnect(settled.start)
+            except (RuntimeError, TypeError):
+                pass
+            self.view.reload()
+
+        settled.timeout.connect(finish)
+        store.cookieAdded.connect(settled.start)
+        settled.start()
+        QTimer.singleShot(COOKIE_CEILING_MS, lambda: settled.isActive() and finish())
 
     # ── Going places ──────────────────────────────────────────────
 

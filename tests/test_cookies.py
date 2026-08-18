@@ -101,3 +101,42 @@ def test_the_browser_being_open_does_not_stop_it(tmp_path):
     finally:
         holding.rollback()
         holding.close()
+
+
+# ── Getting them past Chromium ────────────────────────────────────
+
+def test_a_session_cookie_that_is_not_secure_is_not_asked_to_be_samesite_none():
+    """The reason a copied sign-in still showed YouTube as signed out.
+
+    Chromium refuses SameSite=None on a cookie that is not also Secure, and
+    refuses it silently. SID, HSID and APISID are exactly that — not Secure,
+    and exactly the three cookies that make up a Google session — so asking
+    for None on everything dropped the sign-in on the way in and left five of
+    the eight auth cookies to look like a working copy.
+    """
+    from PySide6.QtNetwork import QNetworkCookie
+
+    from rose_bouquet.ui.youtube_tab import _as_qt_cookie
+
+    insecure = cookies.Cookie(name="SID", value="x", domain=".google.com",
+                              secure=False)
+    secure = cookies.Cookie(name="__Secure-1PSID", value="x",
+                            domain=".google.com", secure=True)
+
+    assert _as_qt_cookie(insecure).sameSitePolicy() is QNetworkCookie.SameSite.Lax
+    assert _as_qt_cookie(secure).sameSitePolicy() is QNetworkCookie.SameSite.None_
+
+
+def test_the_values_a_cookie_carries_survive_the_conversion():
+    from rose_bouquet.ui.youtube_tab import _as_qt_cookie
+
+    cookie = cookies.Cookie(name="LOGIN_INFO", value="abc123",
+                            domain=".youtube.com", path="/", secure=True,
+                            http_only=True, expires=2000000000)
+    converted = _as_qt_cookie(cookie)
+
+    assert bytes(converted.name()).decode() == "LOGIN_INFO"
+    assert bytes(converted.value()).decode() == "abc123"
+    assert converted.domain() == ".youtube.com"
+    assert converted.isSecure() and converted.isHttpOnly()
+    assert converted.expirationDate().toSecsSinceEpoch() == 2000000000
