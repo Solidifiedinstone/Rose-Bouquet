@@ -1452,3 +1452,72 @@ def test_a_track_that_opens_clears_the_failure_count():
     finally:
         playback.deleteLater()
         app.processEvents()
+
+
+# ── An unmounted drive is not an emptied library ──────────────────
+
+def test_a_missing_folder_does_not_empty_the_library(tmp_path):
+    """The failure that started this: a drive that came up under a new name.
+
+    `/dev/sdb1` in fstab named one disk on Monday and a different one on
+    Friday, so the music folder was simply not there. A scan that treated
+    "cannot read the folder" as "the folder is empty" would have deleted the
+    whole library and every play count in it.
+    """
+    music = tmp_path / "drive" / "Music"
+    music.mkdir(parents=True)
+    (music / "a.mp3").write_bytes(b"x")
+    (music / "b.mp3").write_bytes(b"x")
+
+    library = Library(folders=[str(music)])
+    assert library.rescan() == (2, 0)
+    library.track(str(music / "a.mp3")).play_count = 7
+
+    # The drive goes away — the folder with it.
+    for track in list(music.iterdir()):
+        track.unlink()
+    music.rmdir()
+
+    added, removed = library.rescan()
+    assert (added, removed) == (0, 0)
+    assert len(library.tracks) == 2
+    assert library.track(str(music / "a.mp3")).play_count == 7
+    assert library.missing_roots() == [music]
+
+    # And when it comes back, the library is simply itself again.
+    music.mkdir(parents=True)
+    (music / "a.mp3").write_bytes(b"x")
+    (music / "b.mp3").write_bytes(b"x")
+    assert library.rescan() == (0, 0)
+    assert library.missing_roots() == []
+
+
+def test_a_folder_that_is_there_still_loses_its_deleted_files(tmp_path):
+    """The guard is about unreadable folders, not about never pruning."""
+    library = Library(folders=[str(tmp_path)])
+    (tmp_path / "a.mp3").write_bytes(b"x")
+    (tmp_path / "b.mp3").write_bytes(b"x")
+    library.rescan()
+
+    (tmp_path / "b.mp3").unlink()
+    _added, removed = library.rescan()
+
+    assert removed == 1
+    assert list(library.tracks) == [str(tmp_path / "a.mp3")]
+
+
+def test_a_track_outside_every_folder_is_still_pruned(tmp_path):
+    """Dropping a folder from settings still drops the tracks that were in it."""
+    old = tmp_path / "old"
+    old.mkdir()
+    library = Library(folders=[str(old)])
+    library.add(Track(path=str(old / "gone.mp3"), title="Gone", source="local"))
+
+    # The folder is no longer scanned, and it is not missing either — it is
+    # simply not ours any more.
+    library.folders = [str(tmp_path / "new")]
+    (tmp_path / "new").mkdir()
+    _added, removed = library.rescan()
+
+    assert removed == 1
+    assert not library.tracks

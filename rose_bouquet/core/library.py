@@ -226,6 +226,17 @@ def scan(folders: Iterable[Path]) -> Iterator[Path]:
                     yield Path(root) / name
 
 
+def _inside(folder: Path, path: str) -> bool:
+    """Whether `path` names a file under `folder`.
+
+    Compared as text: the folder is missing, so nothing about it can be
+    resolved on disk, and asking the filesystem would answer about the
+    mountpoint standing in for it rather than about the folder itself.
+    """
+    prefix = str(folder).rstrip(os.sep) + os.sep
+    return path.startswith(prefix)
+
+
 # ── The library ───────────────────────────────────────────────────
 
 @dataclass
@@ -242,6 +253,15 @@ class Library:
     def roots(self) -> list[Path]:
         return [Path(f).expanduser() for f in self.folders] or [music_dir()]
 
+    def missing_roots(self) -> list[Path]:
+        """Configured folders that are not there right now.
+
+        A drive that did not come up, a path that was renamed, a share that is
+        not reachable — from here they all look the same, and they all mean the
+        same thing: what is under this folder is unknown, not gone.
+        """
+        return [root for root in self.roots() if not root.is_dir()]
+
     def rescan(self, *, progress=None) -> tuple[int, int]:
         """Bring the library in step with the disk. Returns (added, removed).
 
@@ -251,6 +271,7 @@ class Library:
         """
         added = 0
         seen: set[str] = set()
+        absent = self.missing_roots()
 
         for index, file in enumerate(scan(self.roots())):
             key = str(file)
@@ -269,11 +290,21 @@ class Library:
 
         # Anything gone from disk goes from the library. Play counts go with it,
         # which is the honest outcome: the file is not there any more.
+        #
+        # Except when the folder it lived in is the thing that is missing. An
+        # unmounted drive walks exactly like a library someone emptied, and
+        # treating the two alike would delete a thousand tracks and every play
+        # count on them the first time a disk came up late or a name moved
+        # from one disk to another. A folder we cannot read is unknown, not
+        # empty, and its tracks are left where they are until it comes back.
         removed = 0
         for key in list(self.tracks):
-            if key not in seen and self.tracks[key].source == "local":
-                del self.tracks[key]
-                removed += 1
+            if key in seen or self.tracks[key].source != "local":
+                continue
+            if any(_inside(root, key) for root in absent):
+                continue
+            del self.tracks[key]
+            removed += 1
 
         return added, removed
 

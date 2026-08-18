@@ -869,6 +869,20 @@ class MainWindow(QMainWindow):
         added, removed = result if isinstance(result, tuple) else (0, 0)
         self.library.save()
 
+        # A folder that is not there is the likeliest reason a scan found
+        # nothing, and it is worth saying before "no music found" — one of
+        # those sends you to Settings to add a folder you already added.
+        absent = self.library.missing_roots()
+        if absent:
+            names = ", ".join(str(root) for root in absent)
+            self.notify(
+                f"{names} is not there — is the drive mounted?"
+                if len(absent) == 1 else f"These folders are not there: {names}",
+                "error",
+            )
+            self.refresh()
+            return
+
         if added or removed:
             parts = []
             if added:

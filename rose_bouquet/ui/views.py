@@ -158,6 +158,15 @@ class LibraryView(ScrollingView):
         tracks = self.library.search(self.search.text())
         self.count.setText(f"{len(tracks)} track{'' if len(tracks) == 1 else 's'}")
 
+        # A library full of tracks whose files are not reachable looks exactly
+        # like a working one until you press play on the first of them. Saying
+        # so at the top of the list is the difference between "this app is
+        # broken" and "that drive is not mounted".
+        absent = self.library.missing_roots()
+        if absent:
+            for root in absent:
+                self.body_layout.addWidget(self._missing_folder_notice(root))
+
         self._tracks = tracks
         self._built = 0
 
@@ -173,6 +182,17 @@ class LibraryView(ScrollingView):
 
         self.body_layout.addStretch(1)
         self._extend()
+
+    def _missing_folder_notice(self, root) -> QLabel:
+        notice = QLabel(
+            f"{root} is not there. The tracks below are still listed, and "
+            "will play again once that folder is back — nothing has been "
+            "removed from your library."
+        )
+        notice.setObjectName("Subtle")
+        notice.setWordWrap(True)
+        notice.setContentsMargins(10, 8, 10, 8)
+        return notice
 
     def _extend(self) -> None:
         """Build the next block of rows, above the trailing stretch.
