@@ -57,7 +57,6 @@ from rose_bouquet.ui.views import (
 )
 from rose_bouquet.ui.visualizer import FullscreenVisualizer, Shape, Visualizer
 from rose_bouquet.ui.widgets import Banner, CoverArt, UpdateBar
-from rose_bouquet.ui.youtube_tab import YouTubeTab
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +101,66 @@ RELATED_SHOWN = 10
 #: window on a laptop hits it too — and the user's own choice is remembered
 #: separately, so widening the window gives them back what they had.
 NARROW_WIDTH = 720
+
+
+class Sections(dict):
+    """The stack's views, some of which are not built until first opened.
+
+    Most sections are a handful of labels and cost nothing to make up front.
+    The YouTube tab is a whole Chromium — a profile, a render process and a
+    page load — and the video stage is a second media pipeline, and someone
+    who opened the app to play an album pays for both of those at every
+    launch and then leaves them running in the background all evening.
+
+    Registering a factory instead of a widget defers that to the first time
+    the section is actually asked for. Everything that reaches into
+    `views[key]` gets a built widget either way, so nothing else has to know
+    which sections are lazy; the one deliberate difference is `values()`,
+    which yields only what exists — restyling a section nobody has opened
+    would build it, which is the cost we are avoiding.
+    """
+
+    def __init__(self, adopt) -> None:
+        super().__init__()
+        #: Called with each newly built view, to put it in the stack.
+        self._adopt = adopt
+        self._factories: dict = {}
+
+    def add(self, key: str, view) -> None:
+        self[key] = view
+        self._adopt(view)
+
+    def add_lazy(self, key: str, factory) -> None:
+        self._factories[key] = factory
+
+    def build(self, key: str):
+        """The view for `key`, made now if it has not been made yet."""
+        view = super().get(key)
+        if view is None:
+            factory = self._factories.get(key)
+            if factory is None:
+                return None
+            view = factory()
+            self[key] = view
+            self._adopt(view)
+        return view
+
+    def built(self, key: str):
+        """The view for `key` only if it already exists — never builds one."""
+        return super().get(key)
+
+    def __missing__(self, key: str):
+        view = self.build(key)
+        if view is None:
+            raise KeyError(key)
+        return view
+
+    def get(self, key, default=None):
+        view = self.build(key)
+        return default if view is None else view
+
+    def __contains__(self, key) -> bool:
+        return super().__contains__(key) or key in self._factories
 
 
 class MainWindow(QMainWindow):
@@ -367,23 +426,21 @@ class MainWindow(QMainWindow):
 
     def _sections(self) -> QWidget:
         self.stack = QStackedWidget()
-        self.views: dict[str, QWidget] = {}
+        self.views = Sections(self.stack.addWidget)
 
         # YouTube is YouTube: the site itself, in the web view, because that is
         # the only thing that looks exactly like YouTube. Ads and telemetry are
         # stripped by the request interceptor before the page renders.
-        watch = YouTubeTab(self.appearance)
-        watch.status.connect(self.notify)
-        watch.download_requested.connect(self.download_watching)
-        self._register("watch", watch)
+        #
+        # Built on first open rather than at startup: a browser engine is by
+        # far the most expensive thing in the app to start, and it used to be
+        # started — and pointed at youtube.com — for everyone, including the
+        # people who never leave the library.
+        self.views.add_lazy("watch", self._build_watch)
 
         # A player for video that is not YouTube's — a film on a disc, a file.
         # It has no nav entry of its own; the disc reader switches to it.
-        video = VideoStage(self.youtube, self.appearance)
-        video.playback_requested.connect(self.playback.pause)
-        video.status.connect(self.notify)
-        self.video = video
-        self._register("player", video)
+        self.views.add_lazy("player", self._build_video)
 
         disc = DiscView(self.appearance, self.preferences.downloads_path)
         disc.status.connect(self.notify)
@@ -434,8 +491,40 @@ class MainWindow(QMainWindow):
         return self.stack
 
     def _register(self, key: str, view: QWidget) -> None:
-        self.views[key] = view
-        self.stack.addWidget(view)
+        self.views.add(key, view)
+
+    def _build_watch(self) -> QWidget:
+        # Imported here rather than at the top of the file: pulling in
+        # QtWebEngine costs tens of megabytes and a tenth of a second before
+        # a single widget exists, and the whole point of building this tab
+        # late is not to pay for a browser nobody opened.
+        from rose_bouquet.ui.youtube_tab import YouTubeTab
+
+        watch = YouTubeTab(self.appearance)
+        watch.status.connect(self.notify)
+        watch.download_requested.connect(self.download_watching)
+        return watch
+
+    def _build_video(self) -> QWidget:
+        video = VideoStage(self.youtube, self.appearance)
+        video.playback_requested.connect(self.playback.pause)
+        video.status.connect(self.notify)
+        return video
+
+    @property
+    def video(self) -> QWidget:
+        """The video stage, built if this is the first thing to want it."""
+        return self.views["player"]
+
+    def _stop_video(self) -> None:
+        """Silence the video stage, without starting one to silence.
+
+        Every track played calls this, and building a media pipeline just to
+        tell it to stop would undo the point of deferring it.
+        """
+        stage = self.views.built("player")
+        if stage is not None:
+            stage.stop()
 
     def _queue_panel(self) -> QWidget:
         panel = QWidget()
@@ -680,7 +769,7 @@ class MainWindow(QMainWindow):
     def play_track(self, track: Track, context: Optional[list[Track]] = None) -> None:
         """Play a track in the context of the list it was clicked in."""
         # Music and a video playing over each other is nobody's intent.
-        self.video.stop()
+        self._stop_video()
         self.cd.stop()
         tracks = list(context) if context else [track]
         try:
@@ -1228,8 +1317,9 @@ class MainWindow(QMainWindow):
         shortcut that steals Escape from every dialog would be worse than no
         shortcut.
         """
-        if self.video.isVisible():
-            self.video.close_player()
+        stage = self.views.built("player")
+        if stage is not None and stage.isVisible():
+            stage.close_player()
 
     def play_candidate(self, item: Candidate, context=None) -> None:
         """Stream something from the feed without downloading it first.
@@ -1240,7 +1330,7 @@ class MainWindow(QMainWindow):
         What follows it lives here instead.
         """
         # Taking the audio into the music player means the video is done.
-        self.video.stop()
+        self._stop_video()
         self.cd.stop()
 
         self._streaming = list(context) or [item]
@@ -1545,7 +1635,7 @@ class MainWindow(QMainWindow):
         disc while it runs.
         """
         self.playback.pause()
-        self.video.stop()
+        self._stop_video()
         self.cd.set_volume(self.playback.volume)
         self.cd.play_disc(disc, device)
         self.notify(f"Playing the disc — {len(disc)} tracks", "success")
@@ -1905,7 +1995,7 @@ class MainWindow(QMainWindow):
         if self.import_job is not None:
             self.import_job.save()
         self.playback.stop()
-        self.video.stop()
+        self._stop_video()
         self.streams.close()
         self.cd.stop()
         self.visualizer.stop()
