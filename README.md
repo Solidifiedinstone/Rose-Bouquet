@@ -18,12 +18,9 @@
 
 # Rose Bouquet
 
-**Everything you listen to, and everything you follow.**
+**All your media, bundled in a beautiful bouquet.**
 
-A music player, a YouTube client, and a music server for your own network —
-YouTube without Google's client, your own music library, and a server for
-your own network.
-
+A music player/importer, a YouTube client, and a media server for your own network —
 </div>
 
 ---
