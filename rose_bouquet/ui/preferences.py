@@ -135,6 +135,10 @@ class Preferences:
     download_format: str = "mp3"
     #: Rescan on startup. Off for anyone with a very large library on a spinner.
     scan_on_start: bool = True
+    #: Whether Playlists gets a place in the sidebar. On for most people; off
+    #: for anyone who keeps one library and never makes a playlist, and would
+    #: rather not walk past the tab every day.
+    show_playlists: bool = True
     #: Read cookies from a local browser profile when YouTube demands a login.
     #: Off by default — an app should not touch a cookie jar unasked.
     use_browser_cookies: bool = False
@@ -341,6 +345,7 @@ class Preferences:
             "download_dir": self.download_dir,
             "download_format": self.download_format,
             "scan_on_start": self.scan_on_start,
+            "show_playlists": self.show_playlists,
             "use_browser_cookies": self.use_browser_cookies,
             "add_downloads_to_library": self.add_downloads_to_library,
             "check_updates_on_start": self.check_updates_on_start,
@@ -384,7 +389,7 @@ class Preferences:
 
         for name in ("scan_on_start", "add_downloads_to_library", "visualizer",
                      "visualizer_blur", "remote_control", "use_browser_cookies",
-                     "check_updates_on_start"):
+                     "check_updates_on_start", "show_playlists"):
             if name in data:
                 setattr(prefs, name, bool(data[name]))
 

@@ -81,6 +81,8 @@ class SettingsDialog(QDialog):
     library_changed = Signal()
     visualizer_changed = Signal()
     server_changed = Signal()
+    #: A section was shown or hidden, so the sidebar no longer matches.
+    sections_changed = Signal()
 
     def __init__(self, preferences: Preferences,
                  parent: Optional[QWidget] = None) -> None:
@@ -623,6 +625,13 @@ class SettingsDialog(QDialog):
         self.scan_on_start.toggled.connect(self._on_library_changed)
         layout.addWidget(self.scan_on_start)
 
+        self.show_playlists = QCheckBox("Show Playlists in the sidebar")
+        self.show_playlists.setChecked(self.preferences.show_playlists)
+        self.show_playlists.setToolTip(
+            "Your playlists are kept either way — this only hides the tab")
+        self.show_playlists.toggled.connect(self._on_sections_changed)
+        layout.addWidget(self.show_playlists)
+
         note = QLabel(
             "With no folders listed, your XDG music folder is used. Files are "
             "never moved or modified — the library is a cache of what was found, "
@@ -644,6 +653,12 @@ class SettingsDialog(QDialog):
         for item in self.folders.selectedItems():
             self.folders.takeItem(self.folders.row(item))
         self._on_library_changed()
+
+    def _on_sections_changed(self) -> None:
+        """A tab appearing or disappearing, which the sidebar has to be told."""
+        self.preferences.show_playlists = self.show_playlists.isChecked()
+        self.preferences.save()
+        self.sections_changed.emit()
 
     def _on_library_changed(self) -> None:
         self.preferences.folders = [

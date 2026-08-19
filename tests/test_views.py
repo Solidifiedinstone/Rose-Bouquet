@@ -287,3 +287,25 @@ def test_playing_everything_skips_the_rows_whose_files_are_gone(tmp_path):
     kept = [t for t in tracks if Path(t.path).exists()]
     assert [t.title for t in kept] == ["Here"]
     assert hasattr(MainWindow, "play_all")
+
+
+# ── Sections you can switch off ───────────────────────────────────
+
+def test_the_playlists_tab_can_be_switched_off_without_losing_playlists(app):
+    from rose_bouquet.ui.preferences import Preferences
+    from rose_bouquet.ui.settings import SettingsDialog
+
+    prefs = Preferences()
+    assert prefs.show_playlists is True          # on unless you say otherwise
+
+    dialog = SettingsDialog(prefs, None)
+    try:
+        assert dialog.show_playlists.isChecked()
+        # The dialog owns the preference; the window owns the sidebar.
+        assert hasattr(dialog, "sections_changed")
+    finally:
+        dialog.deleteLater()
+
+    prefs.show_playlists = False
+    assert prefs.to_dict()["show_playlists"] is False
+    assert Preferences.from_dict(prefs.to_dict()).show_playlists is False

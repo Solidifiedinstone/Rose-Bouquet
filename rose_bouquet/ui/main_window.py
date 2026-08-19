@@ -246,6 +246,7 @@ class MainWindow(QMainWindow):
         self._shortcuts()
         self._connect_playback()
         self.apply_appearance(self.appearance)
+        self._apply_section_visibility()
         self.show_section(self.preferences.section)
 
         if self.preferences.sidebar_collapsed:
@@ -351,6 +352,21 @@ class MainWindow(QMainWindow):
         self.nav_items.append(settings)
 
         return rail
+
+    def _apply_section_visibility(self) -> None:
+        """Hide the sections that are switched off, and leave the rest alone.
+
+        Hidden rather than never built: the playlists are still there, the
+        tab is just not in the way. Anything already open that has just been
+        hidden hands you back to the library rather than leaving you on a
+        page you can no longer navigate to.
+        """
+        hidden = {"playlists"} if not self.preferences.show_playlists else set()
+        for key, button in self.nav_buttons.items():
+            button.setVisible(key not in hidden)
+
+        if self.preferences.section in hidden:
+            self.show_section("library")
 
     # ── Pulling the sidebar in and out ────────────────────────────
 
@@ -1895,6 +1911,7 @@ class MainWindow(QMainWindow):
         dialog.library_changed.connect(self._library_folders_changed)
         dialog.visualizer_changed.connect(self._visualizer_changed)
         dialog.server_changed.connect(self._server_settings_changed)
+        dialog.sections_changed.connect(self._apply_section_visibility)
         dialog.exec()
 
     def _library_folders_changed(self) -> None:
