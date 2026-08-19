@@ -176,10 +176,23 @@ BAR_JS = """
     },
   ];
 
-  const icon = (path) =>
-    '<svg viewBox="0 0 24 24" width="24" height="24" focusable="false" ' +
-    'style="pointer-events:none;display:block;fill:currentColor">' +
-    '<path d="' + path + '"></path></svg>';
+  // Built as DOM rather than as a string of HTML. YouTube sets a Trusted
+  // Types policy, so assigning innerHTML throws — "this document requires
+  // TrustedHTML assignment" — and the bar was being half-drawn and redrawn on
+  // every navigation because of it.
+  const SVG = 'http://www.w3.org/2000/svg';
+  const icon = (path) => {
+    const svg = document.createElementNS(SVG, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('width', '24');
+    svg.setAttribute('height', '24');
+    svg.setAttribute('focusable', 'false');
+    svg.style.cssText = 'pointer-events:none;display:block;fill:currentColor';
+    const shape = document.createElementNS(SVG, 'path');
+    shape.setAttribute('d', path);
+    svg.appendChild(shape);
+    return svg;
+  };
 
   const paint = (bar) => {
     const here = location.pathname;
@@ -187,7 +200,7 @@ BAR_JS = """
       const item = ITEMS[Number(link.dataset.rbIndex)];
       const on = item.at(here);
       link.style.color = on ? '#f1f1f1' : '#aaaaaa';
-      link.firstChild.innerHTML = icon(on ? item.solid : item.line);
+      link.firstChild.replaceChildren(icon(on ? item.solid : item.line));
       link.lastChild.style.fontWeight = on ? '500' : '400';
     }
   };
@@ -222,7 +235,7 @@ BAR_JS = """
       ].join(';');
 
       const glyph = document.createElement('span');
-      glyph.innerHTML = icon(item.line);
+      glyph.appendChild(icon(item.line));
       const label = document.createElement('span');
       label.textContent = item.label;
       label.style.cssText = 'font-size:10px;line-height:12px;letter-spacing:0.2px';
