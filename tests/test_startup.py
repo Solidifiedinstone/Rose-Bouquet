@@ -21,7 +21,13 @@ import time
 from pathlib import Path
 
 #: How long to give a cold start before calling it hung.
-STARTUP_TIMEOUT = 30
+#:
+#: Generous on purpose. This test asks whether the app comes up at all, not
+#: whether it comes up quickly — and a cold start is a Qt import, a media
+#: backend and a window, on whatever else the machine happens to be doing. At
+#: thirty seconds it failed about one run in five on a loaded machine, which
+#: teaches you to ignore the suite. A hang still fails, just later.
+STARTUP_TIMEOUT = 120
 
 
 def _launch(tmp_path: Path, *args: str) -> subprocess.Popen:
@@ -89,11 +95,23 @@ def _settle(process: subprocess.Popen, tmp_path: Path) -> tuple[bool, str]:
     except (ProcessLookupError, PermissionError):
         pass
 
+    code = process.poll()
     try:
         output = process.communicate(timeout=15)[0] or ""
     except subprocess.TimeoutExpired:
         process.kill()
         output = process.communicate()[0] or ""
+
+    if not alive:
+        # "It never finished starting" on its own sends you to read a wall of
+        # Qt and PipeWire chatter for a fact the process already knew: whether
+        # it died, when, and what it had managed to log first.
+        log = tmp_path / "data" / "rose-bouquet" / "logs" / "rose-bouquet.log"
+        lines = log.read_text(errors="replace").splitlines() if log.exists() else []
+        output = (
+            f"exit code: {code if code is not None else 'still running (timed out)'}\n"
+            f"log tail: {lines[-6:] or 'the log was never written'}\n\n" + output
+        )
     return alive, output
 
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from PySide6.QtCore import QEvent
 from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
 from rose_bouquet.core.library import Library, Track
@@ -23,6 +24,35 @@ from rose_bouquet.ui.widgets import Card, TrackRow
 @pytest.fixture(scope="module")
 def app():
     return QApplication.instance() or QApplication([])
+
+
+@pytest.fixture
+def built(app):
+    """Views that get destroyed when the test is done with them.
+
+    These tests make a thousand rows and a hundred covers at a time. Left
+    alive they accumulate across the module, and the process ends up heavy
+    enough that the app `test_startup` launches afterwards segfaults inside Qt
+    about one run in ten — a flake in a different file, with no clue pointing
+    back here.
+
+    `deleteLater` alone is not enough: `processEvents` does not flush
+    `DeferredDelete`, so the posted events have to be sent explicitly or the
+    widgets outlive the test regardless.
+    """
+    made: list = []
+
+    def make(view):
+        made.append(view)
+        return view
+
+    yield make
+
+    for view in made:
+        view.deleteLater()
+    app.processEvents()
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    app.processEvents()
 
 
 @pytest.fixture
@@ -46,8 +76,8 @@ def _library(count: int) -> Library:
 
 # ── A track change is not a redraw ────────────────────────────────
 
-def test_the_playing_highlight_moves_without_rebuilding_the_list(app, appearance):
-    view = LibraryView(_library(300), appearance)
+def test_the_playing_highlight_moves_without_rebuilding_the_list(built, app, appearance):
+    view = built(LibraryView(_library(300), appearance))
     view.refresh("")
     while view._more_to_build():
         view._extend()
@@ -71,8 +101,8 @@ def test_the_playing_highlight_moves_without_rebuilding_the_list(app, appearance
     assert not any(row.playing for row in rows)
 
 
-def test_a_redraw_that_was_not_told_what_is_playing_keeps_the_highlight(app, appearance):
-    view = LibraryView(_library(20), appearance)
+def test_a_redraw_that_was_not_told_what_is_playing_keeps_the_highlight(built, app, appearance):
+    view = built(LibraryView(_library(20), appearance))
     view.set_playing("/music/0003.mp3")
     view.refresh()
 
@@ -82,8 +112,8 @@ def test_a_redraw_that_was_not_told_what_is_playing_keeps_the_highlight(app, app
 
 # ── Long lists arrive in blocks ───────────────────────────────────
 
-def test_a_thousand_tracks_do_not_all_become_widgets_at_once(app, appearance):
-    view = LibraryView(_library(1000), appearance)
+def test_a_thousand_tracks_do_not_all_become_widgets_at_once(built, app, appearance):
+    view = built(LibraryView(_library(1000), appearance))
     view.refresh("")
 
     assert len(view._tracks) == 1000
@@ -95,8 +125,8 @@ def test_a_thousand_tracks_do_not_all_become_widgets_at_once(app, appearance):
     assert view._built == 1000         # scrolling to the end still gets you there
 
 
-def test_an_album_wall_is_built_a_few_rows_at_a_time(app, appearance):
-    view = AlbumsView(_library(1200), appearance)   # 100 albums of 12
+def test_an_album_wall_is_built_a_few_rows_at_a_time(built, app, appearance):
+    view = built(AlbumsView(_library(1200), appearance))   # 100 albums of 12
     view.refresh("")
 
     assert len(view._albums) == 100
@@ -108,8 +138,8 @@ def test_an_album_wall_is_built_a_few_rows_at_a_time(app, appearance):
     assert len(view.body.findChildren(Card)) == 100
 
 
-def test_opening_one_album_leaves_no_half_built_wall_behind(app, appearance):
-    view = AlbumsView(_library(1200), appearance)
+def test_opening_one_album_leaves_no_half_built_wall_behind(built, app, appearance):
+    view = built(AlbumsView(_library(1200), appearance))
     view.refresh("")
     view.show_album(("Artist 0", "Album 0"))
 
@@ -121,37 +151,37 @@ def test_opening_one_album_leaves_no_half_built_wall_behind(app, appearance):
 
 # ── The sections that are not built until they are opened ─────────
 
-def test_the_expensive_sections_are_not_built_until_they_are_opened(app):
+def test_the_expensive_sections_are_not_built_until_they_are_opened(built, app):
     from rose_bouquet.ui.main_window import Sections
 
     adopted: list = []
-    built: list = []
+    made: list = []
     views = Sections(adopted.append)
 
-    eager = QWidget()
+    eager = built(QWidget())
     views.add("library", eager)
 
     def factory():
-        built.append("watch")
+        made.append("watch")
         return QLabel("a browser engine, pretend")
 
     views.add_lazy("watch", factory)
 
     # Registering costs nothing, and restyling every built section must not
     # quietly build the one section we are trying not to build.
-    assert built == []
+    assert made == []
     assert list(views.values()) == [eager]
     assert "watch" in views
     assert views.built("watch") is None
 
     watch = views["watch"]
-    assert built == ["watch"]
+    assert made == ["watch"]
     assert watch in adopted
 
     # Asked for twice, built once.
     assert views["watch"] is watch
     assert views.get("watch") is watch
-    assert built == ["watch"]
+    assert made == ["watch"]
     assert views.built("watch") is watch
 
     # And a section nobody registered is still simply absent.
@@ -221,6 +251,8 @@ def test_every_signal_settings_is_wired_to_actually_exists(app):
         assert not missing, f"open_settings connects signals the dialog lacks: {missing}"
     finally:
         dialog.deleteLater()
+        app.processEvents()
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 def test_the_handlers_settings_is_wired_to_exist_too(app):
@@ -238,14 +270,14 @@ def test_the_handlers_settings_is_wired_to_exist_too(app):
 
 # ── Playing the whole library from the top of it ──────────────────
 
-def test_play_all_carries_what_is_listed_not_the_whole_library(app, appearance, tmp_path):
+def test_play_all_carries_what_is_listed_not_the_whole_library(built, app, appearance, tmp_path):
     """Search first, then press Play, and you mean the search.
 
     The button carries the list on screen rather than the library, so
     narrowing to "shoegaze" and pressing Play does not hand back everything.
     """
     library = _library(30)
-    view = LibraryView(library, appearance)
+    view = built(LibraryView(library, appearance))
     view.refresh("")
 
     asked: list = []
@@ -265,8 +297,8 @@ def test_play_all_carries_what_is_listed_not_the_whole_library(app, appearance, 
     assert [t.title for t in asked[-1][0]] == ["Track 7"]
 
 
-def test_there_is_nothing_to_play_when_nothing_is_listed(app, appearance):
-    view = LibraryView(Library(), appearance)
+def test_there_is_nothing_to_play_when_nothing_is_listed(built, app, appearance):
+    view = built(LibraryView(Library(), appearance))
     view.refresh("")
 
     assert not view.play_all.isEnabled()
