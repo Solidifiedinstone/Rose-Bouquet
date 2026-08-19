@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPixmap
+from PySide6.QtGui import QColor, QImageReader, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -27,6 +27,33 @@ _COVER_CACHE: dict[tuple[str, int], QPixmap] = {}
 _CACHE_LIMIT = 400
 
 
+def _decoded(path: str, size: int) -> QPixmap:
+    """The cover, decoded straight to the size it will be drawn at.
+
+    YouTube hands over 1280x720 artwork and a row draws it at 38 pixels.
+    Decoding the whole thing and scaling afterwards is most of a millisecond
+    of work per cover thrown away — a visible pause the first time a library
+    with real artwork is scrolled. A reader told the size it needs decodes
+    the image at that size instead.
+
+    Twice the target, so the rounding and the smooth scale below still have
+    pixels to work with on a high-DPI screen.
+    """
+    if not path or not Path(path).exists():
+        return QPixmap()
+
+    reader = QImageReader(path)
+    reader.setAutoTransform(True)
+    natural = reader.size()
+    wanted = size * 2
+    if natural.isValid() and max(natural.width(), natural.height()) > wanted:
+        scaled = natural.scaled(wanted, wanted, Qt.AspectRatioMode.KeepAspectRatio)
+        reader.setScaledSize(scaled)
+
+    image = reader.read()
+    return QPixmap.fromImage(image) if not image.isNull() else QPixmap()
+
+
 def cover_pixmap(path: str, size: int, appearance: Appearance) -> QPixmap:
     """Rounded cover art at a given size, or a themed placeholder."""
     key = (path or "", size)
@@ -34,7 +61,7 @@ def cover_pixmap(path: str, size: int, appearance: Appearance) -> QPixmap:
     if cached is not None:
         return cached
 
-    source = QPixmap(path) if path and Path(path).exists() else QPixmap()
+    source = _decoded(path, size)
 
     result = QPixmap(size, size)
     result.fill(Qt.GlobalColor.transparent)

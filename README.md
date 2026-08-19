@@ -47,7 +47,8 @@ which is usually more use than the terminal.
 
 **YouTube** — YouTube itself, with the hostile parts taken out on the way
 through. Not a reimplementation and not a scraper: it is YouTube's own site in
-a web view, with ads, trackers and Shorts removed before the page renders. Sign
+a web view, with ads and trackers removed before the page renders, and Home,
+Shorts and Subscriptions along the bottom the way the phone app has them. Sign
 in and you get *your* recommendations, your subscriptions and your history —
 the real algorithm, without the client that reports on you. Ads and telemetry
 are blocked at the network layer, so nothing is requested and nothing is
@@ -87,7 +88,8 @@ shuffled *order* rather than a random pick, so nothing repeats before the album
 is through and "previous" means something.
 
 **Playlists** — extended M3U files in a folder, readable by every other player
-ever written.
+ever written. The tab can be switched off in Settings → Library if you keep one
+library and never make one; the files stay where they are either way.
 
 **Import from Spotify** — imports bring the track list across and find each
 song on YouTube Music; the ones it *cannot* find are listed and saved with the
