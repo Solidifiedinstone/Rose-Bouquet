@@ -196,39 +196,58 @@ def test_a_profile_folder_that_cannot_be_written_is_not_fatal(tmp_path):
         folder.chmod(0o700)
 
 
-# ── Signing in through the front door ─────────────────────────────
+# ── Signing in, by the only route Google allows ───────────────────
 
-def test_the_sign_in_button_goes_to_googles_own_login():
-    """No device code, no cookie copying — Google's login page, in the tab.
+def test_the_login_url_points_at_a_real_browser_not_ours():
+    """Measured twice, and the second time properly.
 
-    Both workarounds this app has carried existed for one reason: Google used
-    to refuse to authenticate an embedded browser. It does not any more, and
-    a workaround for a wall that is no longer there is just a worse way in.
+    The login page loads fine inside the web view, which is what made this
+    look solved. The refusal lands at the step *after* the email address —
+    `/v3/signin/rejected`, "this browser or app may not be secure" — and every
+    user agent gets the same answer, so it is the engine being recognised. An
+    app that offers a login page here offers a wall with a form in front of it.
     """
     from rose_bouquet.ui import youtube_tab
 
     assert youtube_tab.SIGN_IN_URL.startswith("https://accounts.google.com/")
-    # Told to come back to YouTube, so signing in leaves you where you started.
-    assert "continue=https%3A%2F%2Fwww.youtube.com%2F" in youtube_tab.SIGN_IN_URL
-    assert "service=youtube" in youtube_tab.SIGN_IN_URL
+    # Opened in the user's own browser, so there is no `continue` back into
+    # ours to be had — the session is copied afterwards, not redirected.
+    assert "continue=" not in youtube_tab.SIGN_IN_URL
 
 
-def test_a_refusal_is_recognised_however_google_spells_it():
-    """The fallback has to fire on the page Google actually serves."""
-    from rose_bouquet.ui.youtube_tab import REFUSALS
+def test_a_jar_that_is_signed_in_is_copied_and_one_that_is_not_sends_you_to_the_browser(tmp_path, monkeypatch):
+    """One press when the browser is signed in, two when it is not."""
+    from rose_bouquet.ui import youtube_tab
 
-    pages = [
-        "<h1>Couldn&#39;t sign you in</h1><p>This browser or app may not be secure.</p>",
-        "<div>Couldn't sign you in</div>",
-        "<span>this browser or app may not be secure</span>",
-    ]
-    for page in pages:
-        assert any(phrase in page.lower() for phrase in REFUSALS), page
+    tab = youtube_tab.YouTubeTab.__new__(youtube_tab.YouTubeTab)
+    said: list = []
+    opened: list = []
+    adopted: list = []
+    tab._open_a_real_browser = lambda: opened.append(True)
+    tab._adopt = adopted.append
+    monkeypatch.setattr(youtube_tab.YouTubeTab, "status",
+                        property(lambda self: type("S", (), {
+                            "emit": staticmethod(lambda t, k: said.append(k))})()))
 
-    ordinary = [
-        "<title>YouTube</title><input name=\"identifier\">",
-        "<h1>Sign in</h1><p>Use your Google Account</p>",
-        "",
-    ]
-    for page in ordinary:
-        assert not any(phrase in page.lower() for phrase in REFUSALS), page
+    session = [cookies.Cookie(name=n, value="x", domain=".youtube.com", secure=True)
+               for n in ("SID", "HSID", "SSID", "APISID", "SAPISID", "LOGIN_INFO")]
+
+    # Signed in over there: copied, nothing opened, done in one press.
+    monkeypatch.setattr(cookies, "read", lambda *a: session)
+    youtube_tab.YouTubeTab.sign_in(tab)
+    assert adopted and not opened
+
+    # Been to YouTube but not signed in: the browser opens instead.
+    adopted.clear()
+    monkeypatch.setattr(cookies, "read",
+                        lambda *a: [cookies.Cookie(name="PREF", value="x",
+                                                   domain=".youtube.com")])
+    youtube_tab.YouTubeTab.sign_in(tab)
+    assert opened and not adopted
+
+    # No profile at all: still opens the browser, and says why.
+    opened.clear()
+    monkeypatch.setattr(cookies, "read", lambda *a: [])
+    youtube_tab.YouTubeTab.sign_in(tab)
+    assert opened
+    assert "warning" in said

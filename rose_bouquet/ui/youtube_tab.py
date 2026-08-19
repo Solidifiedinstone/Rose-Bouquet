@@ -404,24 +404,16 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
 
 #: How long the cookie store has to go quiet before the page is reloaded, and
 #: the longest we wait for that quiet in the first place.
-#: Google's own login, told to come back to YouTube afterwards.
+#: Where to send someone to sign in — in their own browser, not in this one.
 #:
-#: Signing in used to be impossible here: Google refused an embedded browser
-#: outright — "this browser or app may not be secure" — which is why this app
-#: once had a device-code flow and, later, borrowed cookies out of Firefox.
-#: That refusal is gone; the login page now loads and works like any other.
-#: Neither workaround is a thing to ship if the front door is open, so the
-#: button is a link to the front door, and the borrow is what it falls back
-#: to if the door shuts again.
-SIGN_IN_URL = ("https://accounts.google.com/ServiceLogin"
-               "?service=youtube&continue=https%3A%2F%2Fwww.youtube.com%2F")
-
-#: How Google says no, when it says no.
-REFUSALS = (
-    "couldn't sign you in",
-    "couldn&#39;t sign you in",
-    "browser or app may not be secure",
-)
+#: Google refuses to authenticate an embedded browser and there is no way
+#: round it. Measured again 2026-08-19, properly this time: the login page
+#: itself loads, which is what made it look fixed, and the refusal only
+#: arrives at the step *after* the email address —
+#: `/v3/signin/rejected`, "this browser or app may not be secure". Every user
+#: agent gets the same answer, so it is the engine being recognised, not the
+#: string. Sending anyone into that is walking them into a wall.
+SIGN_IN_URL = "https://accounts.google.com/ServiceLogin?service=youtube"
 
 COOKIE_SETTLE_MS = 400
 COOKIE_CEILING_MS = 5000
@@ -667,7 +659,9 @@ class YouTubeTab(QWidget):
         self.sign_in_button = QPushButton("Sign in")
         self.sign_in_button.setObjectName("Quiet")
         self.sign_in_button.setToolTip(
-            "Sign in to YouTube with your Google account")
+            "Bring your YouTube sign-in over from your own browser. Google will "
+            "not accept a login typed into an embedded browser, so this copies "
+            "the session instead.")
         self.sign_in_button.clicked.connect(self.sign_in)
         row.addWidget(self.sign_in_button)
 
@@ -681,46 +675,54 @@ class YouTubeTab(QWidget):
     # ── Signing in ────────────────────────────────────────────────
 
     def sign_in(self) -> None:
-        """Open Google's login, in the tab, and let you sign in normally.
+        """Sign in, by the only route Google actually allows.
 
-        This is the whole of it now. Google used to refuse to authenticate an
-        embedded browser and say so, which is what all the machinery below
-        exists to work around; it does not refuse any more. If it starts
-        again, `_on_load_finished` notices the refusal and falls back to
-        borrowing the session from a browser on this machine.
-        """
-        self.view.setUrl(QUrl(SIGN_IN_URL))
+        There is no login form here and there cannot be one: Google refuses
+        to authenticate an embedded browser, fingerprinting the engine rather
+        than trusting the user agent, and the refusal lands *after* the email
+        step — so an app that offers a login page is offering a wall with a
+        form in front of it.
 
-    def sign_in_by_borrowing(self) -> None:
-        """Copy the sign-in out of the browser you already use.
-
-        There is no login form here and there cannot be one: Google refuses to
-        authenticate an embedded browser, fingerprinting the engine rather than
-        trusting the user agent, so any form of ours ends at "this browser or
-        app may not be secure" no matter what it claims to be.
-
-        A sign-in is a handful of cookies, though, and you already have them in
-        Waterfox or Firefox. Copying those into this profile signs the tab in —
-        in YouTube's own interface, with your feed and your subscriptions —
-        without a password being typed into anything of ours. The profile is
-        persistent, so this is a one-off rather than something to press again
-        every launch.
+        A sign-in is a handful of cookies, though, and your own browser has
+        them. So: if that browser is signed in, this copies the session
+        across and you are done in one press. If it is not, this opens your
+        browser at YouTube's login — the real one, which Google is perfectly
+        happy to authenticate — and asks you to press the button again
+        afterwards. Two presses in the worst case, no password typed into
+        anything of ours, and nothing that ends at "may not be secure".
         """
         from rose_bouquet.core import cookies as jar
 
         found = jar.read()
+        if found and jar.signed_in(found):
+            self._adopt(found)
+            return
+
         if not found:
             self.status.emit(
-                "No Firefox or Waterfox profile found to copy a sign-in from",
+                "No Firefox or Waterfox profile to copy a sign-in from. Sign in "
+                "there first — opening it now — then press Sign in again.",
                 "warning")
-            return
-
-        if not jar.signed_in(found):
+        else:
             self.status.emit(
-                "That browser has been to YouTube but is not signed in — "
-                "sign in there first, then press this again", "warning")
-            return
+                "Sign in to YouTube in the browser that just opened, then press "
+                "Sign in again here.", "info")
+        self._open_a_real_browser()
 
+    def _open_a_real_browser(self) -> None:
+        """Hand the login to the browser the machine already has."""
+        import webbrowser
+
+        try:
+            webbrowser.open(SIGN_IN_URL)
+        except Exception as exc:                  # noqa: BLE001
+            logger.warning("could not open a browser: %s", exc)
+            self.status.emit(
+                f"Open {SIGN_IN_URL} in your browser, sign in, then press "
+                "Sign in again here.", "warning")
+
+    def _adopt(self, found: list) -> None:
+        """Take a session out of the browser's cookie jar and into ours."""
         store = self.profile.cookieStore()
         for cookie in found:
             store.setCookie(_as_qt_cookie(cookie), QUrl(cookie.url))
@@ -800,26 +802,6 @@ class YouTubeTab(QWidget):
             self.status.emit("That page would not load", "warning")
         if self.blocker.blocked:
             self.blocked_label.setText(f"{self.blocker.blocked} blocked")
-
-        if "accounts.google.com" in self.view.url().host():
-            self.view.page().toHtml(self._check_for_a_refusal)
-
-    def _check_for_a_refusal(self, html: str) -> None:
-        """If Google has gone back to refusing us, take the other route.
-
-        Checked rather than assumed in either direction: the refusal came and
-        went once already, and an app that gives up on the front door because
-        it was locked last year is as wrong as one that never notices it is
-        locked now.
-        """
-        low = html.lower()
-        if not any(phrase in low for phrase in REFUSALS):
-            return
-
-        self.status.emit(
-            "Google will not accept a login typed in here — bringing your "
-            "sign-in over from your browser instead", "warning")
-        self.sign_in_by_borrowing()
 
     # ── Fullscreen ────────────────────────────────────────────────
 
