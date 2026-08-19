@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 
 from rose_bouquet.core import cava, imports, optical, spotify, ytmusic
 from rose_bouquet.core import youtube as yt
-from rose_bouquet.core.library import Library, Track, data_dir
+from rose_bouquet.core.library import Library, Track, data_dir, on_disk
 from rose_bouquet.core.media import Candidate
 from rose_bouquet.core.mpris import Mpris
 from rose_bouquet.core.playlists import PlaylistStore
@@ -794,7 +794,7 @@ class MainWindow(QMainWindow):
         builds its order when it is filled: setting it after would leave the
         first song playing out of an order that had already been decided.
         """
-        tracks = [t for t in (tracks or []) if Path(t.path).exists()]
+        tracks = [t for t in (tracks or []) if on_disk(t.path)]
         if not tracks:
             self.notify("Nothing here that can be played", "warning")
             return
@@ -1129,7 +1129,7 @@ class MainWindow(QMainWindow):
             return False
         track = next((t for t in self.library.tracks.values()
                       if t.source_id == video_id), None)
-        return track is not None and Path(track.path).exists()
+        return track is not None and on_disk(track.path)
 
     def _downloaded(self, outcome: ytmusic.DownloadResult, key: str, label: str) -> None:
         downloads = self.views["downloads"]
@@ -1795,7 +1795,7 @@ class MainWindow(QMainWindow):
 
     def burn_queue(self) -> None:
         """Write what is in the play queue to a blank, in queue order."""
-        tracks = [t for t in self.playback.queue.tracks if Path(t.path).exists()]
+        tracks = [t for t in self.playback.queue.tracks if on_disk(t.path)]
         if not tracks:
             self.notify("The queue is empty — add some music first", "warning")
             return

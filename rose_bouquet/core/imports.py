@@ -27,6 +27,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Optional
 
+from rose_bouquet.core.library import on_disk
+
 logger = logging.getLogger(__name__)
 
 PENDING = "pending"
@@ -36,9 +38,6 @@ MISSING = "missing"
 FAILED = "failed"
 
 
-def _on_disk(path: str) -> bool:
-    """Whether a recorded path still names a file that is there."""
-    return bool(path) and Path(path).exists()
 
 _UNSAFE = re.compile(r"[^\w\-]+")
 
@@ -230,7 +229,7 @@ class ImportJob:
         downloaded and fetched none of them, which looks exactly like matching
         working and downloading being broken.
         """
-        present = [t for t in library.tracks.values() if _on_disk(t.path)]
+        present = [t for t in library.tracks.values() if on_disk(t.path)]
         by_source = {t.source_id: t for t in present if t.source_id}
         by_name = {
             f"{t.display_artist.lower().strip()}|{t.display_title.lower().strip()}": t
@@ -263,7 +262,7 @@ class ImportJob:
         for entry in self.entries:
             if entry.state != DONE:
                 continue
-            if _on_disk(entry.path):
+            if on_disk(entry.path):
                 continue
             entry.state = MATCHED if entry.video_id else PENDING
             entry.path = ""

@@ -226,6 +226,19 @@ def scan(folders: Iterable[Path]) -> Iterator[Path]:
                     yield Path(root) / name
 
 
+def on_disk(path: str) -> bool:
+    """Whether a recorded path still names a file that is there.
+
+    Small enough to inline, and named because inlining it is what went wrong:
+    the library outlives the files it points at, and every place that forgot
+    to ask this turned into a bug of its own — an import that downloaded
+    nothing, a download refused for a file that was deleted, a library full
+    of rows that did nothing when clicked. One name, so the question is
+    recognisable the next time somebody trusts the record over the disk.
+    """
+    return bool(path) and Path(path).exists()
+
+
 def _folder_is_readable(path: str) -> bool:
     """Whether the folder that should hold this file is there to be looked in.
 
@@ -320,7 +333,7 @@ class Library:
                 continue
             if not _folder_is_readable(key):
                 continue
-            if Path(key).exists():
+            if on_disk(key):
                 continue
             del self.tracks[key]
             removed += 1
