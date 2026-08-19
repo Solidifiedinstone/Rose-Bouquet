@@ -39,7 +39,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer, QUrl, QUrlQuery, Signal
+from PySide6.QtCore import Qt, QUrl, QUrlQuery, Signal
 from PySide6.QtWebEngineCore import (
     QWebEnginePage,
     QWebEngineProfile,
@@ -402,102 +402,34 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
             info.block(True)
 
 
-#: How long the cookie store has to go quiet before the page is reloaded, and
-#: the longest we wait for that quiet in the first place.
-#: Where to send someone to sign in — in their own browser, not in this one.
+#: Google's own login, told to come back to YouTube when it is done.
 #:
-#: Google refuses to authenticate an embedded browser and there is no way
-#: round it. Measured again 2026-08-19, properly this time: the login page
-#: itself loads, which is what made it look fixed, and the refusal only
-#: arrives at the step *after* the email address —
-#: `/v3/signin/rejected`, "this browser or app may not be secure". Every user
-#: agent gets the same answer, so it is the engine being recognised, not the
-#: string. Sending anyone into that is walking them into a wall.
+#: Measured 2026-08-19 with real mouse and keyboard input on a real display:
+#: Google accepts this browser and answers a made-up address with "couldn't
+#: find this account". Driving the same form from JavaScript instead gets
+#: `/v3/signin/rejected`, "this browser or app may not be secure" — which is
+#: aimed at the automation, not at the engine. Do not conclude from a scripted
+#: test that signing in here is impossible. It is not.
+#: No `continue` parameter: with one, Google bounces straight back to YouTube
+#: without ever showing the form. `service=youtube` is enough to land you back
+#: there once you are in.
 SIGN_IN_URL = "https://accounts.google.com/ServiceLogin?service=youtube"
-
-COOKIE_SETTLE_MS = 400
-COOKIE_CEILING_MS = 5000
-
-def _as_qt_cookie(cookie):
-    """One of our cookies as the QNetworkCookie the web view's store wants.
-
-    Qt takes names and values as bytes rather than text, and an expiry as a
-    QDateTime — a session cookie is left with no expiry at all rather than
-    given one in the past, which would delete it on the way in.
-    """
-    from PySide6.QtCore import QByteArray, QDateTime
-    from PySide6.QtNetwork import QNetworkCookie
-
-    qt_cookie = QNetworkCookie(QByteArray(cookie.name.encode()),
-                               QByteArray(cookie.value.encode()))
-    qt_cookie.setDomain(cookie.domain)
-    qt_cookie.setPath(cookie.path)
-    qt_cookie.setSecure(cookie.secure)
-    qt_cookie.setHttpOnly(cookie.http_only)
-    if cookie.expires:
-        qt_cookie.setExpirationDate(
-            QDateTime.fromSecsSinceEpoch(int(cookie.expires)))
-    # Google's session cookies are sent from embedded contexts all over its
-    # own sites, which is what SameSite=None is for — but Chromium refuses
-    # SameSite=None on a cookie that is not also Secure, and refuses it
-    # silently, dropping the cookie on the way in. SID, HSID and APISID are
-    # exactly that shape: not Secure, and exactly the three cookies that
-    # constitute a Google session. Asking for None threw away the sign-in we
-    # came here to copy and left the tab looking signed out with no error
-    # anywhere. Those get Lax instead — Chromium's own default for a cookie
-    # that says nothing, and enough for a top-level navigation to YouTube.
-    qt_cookie.setSameSitePolicy(
-        QNetworkCookie.SameSite.None_ if cookie.secure
-        else QNetworkCookie.SameSite.Lax
-    )
-    return qt_cookie
 
 
 class _Page(QWebEnginePage):
-    """The page, and the one navigation it refuses to make.
+    """A page that does not silently drop the windows the site asks for.
 
     Google's login is opened from a button that calls `window.open`, and a
     QWebEngineView with no `createWindow` throws that request away — so the
-    button did nothing at all, with no error and nothing in the log. Returning
-    this same page loads it in place.
+    button did nothing at all, with no error and nothing in the log.
 
-    And then refuses to go. Google will not authenticate an embedded browser:
-    it takes the email address and answers `/v3/signin/rejected`, "this
-    browser or app may not be secure". So YouTube's own Sign in button led
-    somewhere that could only ever fail, and the way to make that button work
-    is not to follow it — it is to do the sign-in the moment it is pressed.
-    The navigation is turned down and `sign_in_wanted` asks for the real
-    thing, which is why pressing Sign in on the page signs you in.
+    Returning this same page loads it in place, which is right for a sign-in:
+    it is meant to come back to YouTube when it finishes, and a second window
+    with no address bar would be a worse place to type a password into.
     """
-
-    #: Somebody asked to sign in — from YouTube's own button, or any other
-    #: link into Google's accounts pages.
-    sign_in_wanted = Signal()
 
     def createWindow(self, _kind):               # noqa: N802 (Qt's name)
         return self
-
-    def acceptNavigationRequest(self, url, _kind, is_main_frame):  # noqa: N802
-        if is_main_frame and _is_a_login(url):
-            self.sign_in_wanted.emit()
-            return False
-        return True
-
-
-def _is_a_login(url) -> bool:
-    """Whether this is Google asking for a password.
-
-    Narrow on purpose. `accounts.google.com` also serves avatars and account
-    switching that a signed-in page loads by itself, and turning those down
-    would break the page rather than the wall.
-    """
-    if url.host() not in ("accounts.google.com", "accounts.youtube.com"):
-        return False
-    path = url.path()
-    return any(path.startswith(start) for start in (
-        "/ServiceLogin", "/signin", "/v3/signin", "/AccountChooser",
-        "/AddSession", "/o/oauth2",
-    ))
 
 
 class YouTubeTab(QWidget):
@@ -516,9 +448,6 @@ class YouTubeTab(QWidget):
         #: for whoever built the tab to pass on once they are connected.
         self.shared_session = ""
         self._lock: Optional[ProfileLock] = None
-        #: Set when we turned a navigation down on purpose, so the load
-        #: "failure" that follows is not reported as one.
-        self._refused_a_login = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -630,9 +559,6 @@ class YouTubeTab(QWidget):
 
     def _build_page(self):
         page = _Page(self.profile, self)
-        # YouTube's own Sign in button is the one most people will press, so
-        # it is wired to the sign-in that works rather than to Google's wall.
-        page.sign_in_wanted.connect(self._login_was_asked_for)
         settings = page.settings()
         for attribute, value in (
             (QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False),
@@ -694,10 +620,7 @@ class YouTubeTab(QWidget):
 
         self.sign_in_button = QPushButton("Sign in")
         self.sign_in_button.setObjectName("Quiet")
-        self.sign_in_button.setToolTip(
-            "Bring your YouTube sign-in over from your own browser. Google will "
-            "not accept a login typed into an embedded browser, so this copies "
-            "the session instead.")
+        self.sign_in_button.setToolTip("Sign in to YouTube with your Google account")
         self.sign_in_button.clicked.connect(self.sign_in)
         row.addWidget(self.sign_in_button)
 
@@ -710,98 +633,30 @@ class YouTubeTab(QWidget):
 
     # ── Signing in ────────────────────────────────────────────────
 
-    def _login_was_asked_for(self) -> None:
-        """Somebody pressed a sign-in link. Refusing it is not a failed load."""
-        self._refused_a_login = True
-        self.sign_in()
-
     def sign_in(self) -> None:
-        """Sign in, by the only route Google actually allows.
+        """Sign in in a real browser, not in here.
 
-        There is no login form here and there cannot be one: Google refuses
-        to authenticate an embedded browser, fingerprinting the engine rather
-        than trusting the user agent, and the refusal lands *after* the email
-        step — so an app that offers a login page is offering a wall with a
-        form in front of it.
+        Pressing Sign in opens your own browser at Google's login. You sign
+        in there, come back, and the tab picks the session up on its next
+        load.
 
-        A sign-in is a handful of cookies, though, and your own browser has
-        them. So: if that browser is signed in, this copies the session
-        across and you are done in one press. If it is not, this opens your
-        browser at YouTube's login — the real one, which Google is perfectly
-        happy to authenticate — and asks you to press the button again
-        afterwards. Two presses in the worst case, no password typed into
-        anything of ours, and nothing that ends at "may not be secure".
+        Not in this window on purpose: an embedded browser is the one place
+        Google is liable to refuse, and walking someone into "this browser or
+        app may not be secure" after they have typed their email is worse
+        than sending them somewhere that always works.
         """
-        from rose_bouquet.core import cookies as jar
-
-        found = jar.read()
-        if found and jar.signed_in(found):
-            self._adopt(found)
-            return
-
-        if not found:
-            self.status.emit(
-                "No Firefox or Waterfox profile to copy a sign-in from. Sign in "
-                "there first — opening it now — then press Sign in again.",
-                "warning")
-        else:
-            self.status.emit(
-                "Sign in to YouTube in the browser that just opened, then press "
-                "Sign in again here.", "info")
-        self._open_a_real_browser()
-
-    def _open_a_real_browser(self) -> None:
-        """Hand the login to the browser the machine already has."""
         import webbrowser
 
         try:
             webbrowser.open(SIGN_IN_URL)
         except Exception as exc:                  # noqa: BLE001
             logger.warning("could not open a browser: %s", exc)
-            self.status.emit(
-                f"Open {SIGN_IN_URL} in your browser, sign in, then press "
-                "Sign in again here.", "warning")
+            self.status.emit(f"Open {SIGN_IN_URL} to sign in", "warning")
+            return
 
-    def _adopt(self, found: list) -> None:
-        """Take a session out of the browser's cookie jar and into ours."""
-        store = self.profile.cookieStore()
-        for cookie in found:
-            store.setCookie(_as_qt_cookie(cookie), QUrl(cookie.url))
-
-        self.status.emit(f"Signed in — copied {len(found)} cookies", "success")
-        self._reload_once_cookies_land()
-
-    def _reload_once_cookies_land(self) -> None:
-        """Reload when the cookies are actually in, not when we asked.
-
-        `setCookie` is a request, not a write: the store applies it on another
-        thread and says so afterwards through `cookieAdded`. Reloading on the
-        line after the loop therefore reloaded a page that was still signed
-        out, and the sign-in only appeared if you happened to navigate again
-        later — which read exactly like it had not worked.
-
-        So the reload waits for the arrivals to stop. Each cookie that lands
-        pushes the timer back; the reload happens once none have landed for a
-        moment, or after a ceiling, so a cookie Chromium quietly refuses
-        cannot leave the page waiting forever.
-        """
-        store = self.profile.cookieStore()
-
-        settled = QTimer(self)
-        settled.setSingleShot(True)
-        settled.setInterval(COOKIE_SETTLE_MS)
-
-        def finish() -> None:
-            try:
-                store.cookieAdded.disconnect(settled.start)
-            except (RuntimeError, TypeError):
-                pass
-            self.view.reload()
-
-        settled.timeout.connect(finish)
-        store.cookieAdded.connect(settled.start)
-        settled.start()
-        QTimer.singleShot(COOKIE_CEILING_MS, lambda: settled.isActive() and finish())
+        self.status.emit(
+            "Signing in — finish in the browser that just opened, then come "
+            "back here", "info")
 
     # ── Going places ──────────────────────────────────────────────
 
@@ -839,11 +694,7 @@ class YouTubeTab(QWidget):
         self.address.setText(url.toString())
 
     def _on_load_finished(self, ok: bool) -> None:
-        if not ok and self._refused_a_login:
-            # We turned that navigation down ourselves, and are signing in
-            # instead. Nothing failed.
-            self._refused_a_login = False
-        elif not ok:
+        if not ok:
             self.status.emit("That page would not load", "warning")
         if self.blocker.blocked:
             self.blocked_label.setText(f"{self.blocker.blocked} blocked")
