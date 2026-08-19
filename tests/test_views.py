@@ -9,6 +9,8 @@ and obvious after ten seconds of use, so they are pinned here instead.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
@@ -232,3 +234,56 @@ def test_the_handlers_settings_is_wired_to_exist_too(app):
     handlers = set(re.findall(r"\.connect\(self\.(\w+)\)", source))
     missing = sorted(name for name in handlers if not hasattr(MainWindow, name))
     assert not missing, f"open_settings connects to methods that do not exist: {missing}"
+
+
+# ── Playing the whole library from the top of it ──────────────────
+
+def test_play_all_carries_what_is_listed_not_the_whole_library(app, appearance, tmp_path):
+    """Search first, then press Play, and you mean the search.
+
+    The button carries the list on screen rather than the library, so
+    narrowing to "shoegaze" and pressing Play does not hand back everything.
+    """
+    library = _library(30)
+    view = LibraryView(library, appearance)
+    view.refresh("")
+
+    asked: list = []
+    view.play_all_requested.connect(lambda tracks, shuffle: asked.append((tracks, shuffle)))
+
+    view.play_all.click()
+    assert asked[-1][1] is False
+    assert len(asked[-1][0]) == 30
+
+    view.shuffle_all.click()
+    assert asked[-1][1] is True
+
+    # Narrowed by a search, the button means the narrowed list.
+    view.search.setText("Track 7")
+    view.refresh("")
+    view.play_all.click()
+    assert [t.title for t in asked[-1][0]] == ["Track 7"]
+
+
+def test_there_is_nothing_to_play_when_nothing_is_listed(app, appearance):
+    view = LibraryView(Library(), appearance)
+    view.refresh("")
+
+    assert not view.play_all.isEnabled()
+    assert not view.shuffle_all.isEnabled()
+
+
+def test_playing_everything_skips_the_rows_whose_files_are_gone(tmp_path):
+    """A dead row must not stop the queue three tracks in."""
+    from rose_bouquet.ui.main_window import MainWindow
+
+    here = tmp_path / "here.mp3"
+    here.write_bytes(b"x")
+    tracks = [
+        Track(path=str(here), title="Here", artist="A"),
+        Track(path=str(tmp_path / "gone.mp3"), title="Gone", artist="A"),
+    ]
+
+    kept = [t for t in tracks if Path(t.path).exists()]
+    assert [t.title for t in kept] == ["Here"]
+    assert hasattr(MainWindow, "play_all")

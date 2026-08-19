@@ -456,6 +456,7 @@ class MainWindow(QMainWindow):
         library_view.play_requested.connect(self.play_track)
         library_view.menu_requested.connect(self.open_track_menu)
         library_view.scan_requested.connect(self.rescan)
+        library_view.play_all_requested.connect(self.play_all)
         self._register("library", library_view)
 
         albums = AlbumsView(self.library, self.appearance)
@@ -765,6 +766,28 @@ class MainWindow(QMainWindow):
                 current.refresh()
 
     # ── Playing ───────────────────────────────────────────────────
+
+    def play_all(self, tracks: list, shuffle: bool = False) -> None:
+        """Play a whole list, from the top or shuffled.
+
+        The list is whatever is on screen, so a search narrows what this
+        acts on — having typed a genre and then pressed Play, being given
+        the entire library instead would be the wrong answer.
+
+        Shuffle is set on the queue before the tracks are, because the queue
+        builds its order when it is filled: setting it after would leave the
+        first song playing out of an order that had already been decided.
+        """
+        tracks = [t for t in (tracks or []) if Path(t.path).exists()]
+        if not tracks:
+            self.notify("Nothing here that can be played", "warning")
+            return
+
+        self._stop_video()
+        self.cd.stop()
+        self.playback.set_shuffle(shuffle)
+        self._update_mode_buttons()
+        self.playback.play_tracks(tracks, 0)
 
     def play_track(self, track: Track, context: Optional[list[Track]] = None) -> None:
         """Play a track in the context of the list it was clicked in."""

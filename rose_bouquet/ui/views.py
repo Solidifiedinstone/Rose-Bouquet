@@ -167,6 +167,10 @@ class LibraryView(ScrollingView):
     play_requested = Signal(object, object)     # Track, list[Track]
     menu_requested = Signal(object, object)
     scan_requested = Signal()
+    #: Play everything currently listed, shuffled or in order. Carries the
+    #: list rather than the library, so a search narrows what Play acts on —
+    #: which is what someone who has just typed "shoegaze" means by it.
+    play_all_requested = Signal(object, bool)   # list[Track], shuffle?
 
     def __init__(self, library: Library, appearance: Appearance,
                  parent: Optional[QWidget] = None) -> None:
@@ -188,6 +192,20 @@ class LibraryView(ScrollingView):
         self.count = QLabel()
         self.count.setObjectName("Subtle")
         self.header_layout.addWidget(self.count)
+
+        self.play_all = QPushButton("▶  Play all")
+        self.play_all.setObjectName("Primary")
+        self.play_all.setToolTip("Play everything listed, in order")
+        self.play_all.clicked.connect(
+            lambda: self.play_all_requested.emit(self._tracks, False))
+        self.header_layout.addWidget(self.play_all)
+
+        self.shuffle_all = QPushButton("⇄  Shuffle")
+        self.shuffle_all.setObjectName("Quiet")
+        self.shuffle_all.setToolTip("Play everything listed, in a shuffled order")
+        self.shuffle_all.clicked.connect(
+            lambda: self.play_all_requested.emit(self._tracks, True))
+        self.header_layout.addWidget(self.shuffle_all)
 
         scan = QPushButton("Rescan")
         scan.setObjectName("Quiet")
@@ -219,6 +237,8 @@ class LibraryView(ScrollingView):
 
         self._tracks = tracks
         self._built = 0
+        for button in (self.play_all, self.shuffle_all):
+            button.setEnabled(bool(tracks))
 
         if not tracks:
             message = (
