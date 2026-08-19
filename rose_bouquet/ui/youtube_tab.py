@@ -404,6 +404,25 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
 
 #: How long the cookie store has to go quiet before the page is reloaded, and
 #: the longest we wait for that quiet in the first place.
+#: Google's own login, told to come back to YouTube afterwards.
+#:
+#: Signing in used to be impossible here: Google refused an embedded browser
+#: outright — "this browser or app may not be secure" — which is why this app
+#: once had a device-code flow and, later, borrowed cookies out of Firefox.
+#: That refusal is gone; the login page now loads and works like any other.
+#: Neither workaround is a thing to ship if the front door is open, so the
+#: button is a link to the front door, and the borrow is what it falls back
+#: to if the door shuts again.
+SIGN_IN_URL = ("https://accounts.google.com/ServiceLogin"
+               "?service=youtube&continue=https%3A%2F%2Fwww.youtube.com%2F")
+
+#: How Google says no, when it says no.
+REFUSALS = (
+    "couldn't sign you in",
+    "couldn&#39;t sign you in",
+    "browser or app may not be secure",
+)
+
 COOKIE_SETTLE_MS = 400
 COOKIE_CEILING_MS = 5000
 
@@ -648,9 +667,7 @@ class YouTubeTab(QWidget):
         self.sign_in_button = QPushButton("Sign in")
         self.sign_in_button.setObjectName("Quiet")
         self.sign_in_button.setToolTip(
-            "Bring your sign-in over from Firefox or Waterfox. Google will not "
-            "accept a login typed into an embedded browser, so this copies the "
-            "session you already have instead.")
+            "Sign in to YouTube with your Google account")
         self.sign_in_button.clicked.connect(self.sign_in)
         row.addWidget(self.sign_in_button)
 
@@ -664,6 +681,17 @@ class YouTubeTab(QWidget):
     # ── Signing in ────────────────────────────────────────────────
 
     def sign_in(self) -> None:
+        """Open Google's login, in the tab, and let you sign in normally.
+
+        This is the whole of it now. Google used to refuse to authenticate an
+        embedded browser and say so, which is what all the machinery below
+        exists to work around; it does not refuse any more. If it starts
+        again, `_on_load_finished` notices the refusal and falls back to
+        borrowing the session from a browser on this machine.
+        """
+        self.view.setUrl(QUrl(SIGN_IN_URL))
+
+    def sign_in_by_borrowing(self) -> None:
         """Copy the sign-in out of the browser you already use.
 
         There is no login form here and there cannot be one: Google refuses to
@@ -772,6 +800,26 @@ class YouTubeTab(QWidget):
             self.status.emit("That page would not load", "warning")
         if self.blocker.blocked:
             self.blocked_label.setText(f"{self.blocker.blocked} blocked")
+
+        if "accounts.google.com" in self.view.url().host():
+            self.view.page().toHtml(self._check_for_a_refusal)
+
+    def _check_for_a_refusal(self, html: str) -> None:
+        """If Google has gone back to refusing us, take the other route.
+
+        Checked rather than assumed in either direction: the refusal came and
+        went once already, and an app that gives up on the front door because
+        it was locked last year is as wrong as one that never notices it is
+        locked now.
+        """
+        low = html.lower()
+        if not any(phrase in low for phrase in REFUSALS):
+            return
+
+        self.status.emit(
+            "Google will not accept a login typed in here — bringing your "
+            "sign-in over from your browser instead", "warning")
+        self.sign_in_by_borrowing()
 
     # ── Fullscreen ────────────────────────────────────────────────
 

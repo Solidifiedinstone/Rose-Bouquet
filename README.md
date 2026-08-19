@@ -49,7 +49,8 @@ which is usually more use than the terminal.
 through. Not a reimplementation and not a scraper: it is YouTube's own site in
 a web view, with ads and trackers removed before the page renders, and Home,
 Shorts and Subscriptions along the bottom the way the phone app has them. Sign
-in and you get *your* recommendations, your subscriptions and your history —
+in — the Sign in button opens Google's own login page — and you get *your*
+recommendations, your subscriptions and your history —
 the real algorithm, without the client that reports on you. Ads and telemetry
 are blocked at the network layer, so nothing is requested and nothing is
 measured; the app adds no analytics of its own and sends nothing anywhere but

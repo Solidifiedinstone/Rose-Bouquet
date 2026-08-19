@@ -194,3 +194,41 @@ def test_a_profile_folder_that_cannot_be_written_is_not_fatal(tmp_path):
         assert ProfileLock(folder).claim()      # the profile is still ours to use
     finally:
         folder.chmod(0o700)
+
+
+# ── Signing in through the front door ─────────────────────────────
+
+def test_the_sign_in_button_goes_to_googles_own_login():
+    """No device code, no cookie copying — Google's login page, in the tab.
+
+    Both workarounds this app has carried existed for one reason: Google used
+    to refuse to authenticate an embedded browser. It does not any more, and
+    a workaround for a wall that is no longer there is just a worse way in.
+    """
+    from rose_bouquet.ui import youtube_tab
+
+    assert youtube_tab.SIGN_IN_URL.startswith("https://accounts.google.com/")
+    # Told to come back to YouTube, so signing in leaves you where you started.
+    assert "continue=https%3A%2F%2Fwww.youtube.com%2F" in youtube_tab.SIGN_IN_URL
+    assert "service=youtube" in youtube_tab.SIGN_IN_URL
+
+
+def test_a_refusal_is_recognised_however_google_spells_it():
+    """The fallback has to fire on the page Google actually serves."""
+    from rose_bouquet.ui.youtube_tab import REFUSALS
+
+    pages = [
+        "<h1>Couldn&#39;t sign you in</h1><p>This browser or app may not be secure.</p>",
+        "<div>Couldn't sign you in</div>",
+        "<span>this browser or app may not be secure</span>",
+    ]
+    for page in pages:
+        assert any(phrase in page.lower() for phrase in REFUSALS), page
+
+    ordinary = [
+        "<title>YouTube</title><input name=\"identifier\">",
+        "<h1>Sign in</h1><p>Use your Google Account</p>",
+        "",
+    ]
+    for page in ordinary:
+        assert not any(phrase in page.lower() for phrase in REFUSALS), page
