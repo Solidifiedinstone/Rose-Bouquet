@@ -527,6 +527,10 @@ class MainWindow(QMainWindow):
         watch = YouTubeTab(self.appearance)
         watch.status.connect(self.notify)
         watch.download_requested.connect(self.download_watching)
+        # Said now rather than from the constructor: a signal emitted before
+        # anybody has connected to it is emitted to nobody.
+        if watch.shared_session:
+            self.notify(watch.shared_session, "warning")
         return watch
 
     def _build_video(self) -> QWidget:
@@ -2094,6 +2098,9 @@ class MainWindow(QMainWindow):
             self.import_job.save()
         self.playback.stop()
         self._stop_video()
+        watch = self.views.built("watch")
+        if watch is not None:
+            watch.release_profile()
         self.streams.close()
         self.cd.stop()
         self.visualizer.stop()

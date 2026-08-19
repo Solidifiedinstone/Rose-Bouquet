@@ -140,3 +140,57 @@ def test_the_values_a_cookie_carries_survive_the_conversion():
     assert converted.domain() == ".youtube.com"
     assert converted.isSecure() and converted.isHttpOnly()
     assert converted.expirationDate().toSecsSinceEpoch() == 2000000000
+
+
+# ── One copy of the app owns the browser profile ──────────────────
+
+def test_a_second_copy_of_the_app_does_not_take_the_web_profile(tmp_path):
+    """The reason a sign-in kept vanishing for no visible reason.
+
+    Two browser engines do not share a profile directory, they take turns
+    overwriting it, and the file that loses is the cookie store. A second
+    window — or a test harness pointed at the real data folder — silently
+    undid whatever sign-in the first one had.
+    """
+    import os
+
+    from rose_bouquet.ui.youtube_tab import ProfileLock
+
+    folder = tmp_path / "youtube"
+    folder.mkdir()
+
+    first = ProfileLock(folder)
+    assert first.claim()
+    assert first.owner() == os.getpid()
+
+    # Somebody else, still running. init is pid 1 and is always alive.
+    (folder / "owner.pid").write_text("1")
+    assert not ProfileLock(folder).claim()
+
+    # A copy that crashed leaves a pid behind; that must not lock anyone out
+    # of their own profile forever.
+    (folder / "owner.pid").write_text("999999")
+    assert ProfileLock(folder).claim()
+
+    # Nor should a file that got scribbled on.
+    (folder / "owner.pid").write_text("this is not a pid")
+    assert ProfileLock(folder).claim()
+
+    # And handing it back leaves nothing behind.
+    third = ProfileLock(folder)
+    third.claim()
+    third.release()
+    assert not (folder / "owner.pid").exists()
+
+
+def test_a_profile_folder_that_cannot_be_written_is_not_fatal(tmp_path):
+    """An unwritable data folder is a problem, but not this one."""
+    from rose_bouquet.ui.youtube_tab import ProfileLock
+
+    folder = tmp_path / "readonly"
+    folder.mkdir()
+    folder.chmod(0o500)
+    try:
+        assert ProfileLock(folder).claim()      # the profile is still ours to use
+    finally:
+        folder.chmod(0o700)

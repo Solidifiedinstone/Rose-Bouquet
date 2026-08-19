@@ -35,6 +35,8 @@ anywhere but YouTube, and every beacon YouTube tries to send is dropped here.
 from __future__ import annotations
 
 import logging
+import os
+from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer, QUrl, QUrlQuery, Signal
@@ -315,6 +317,62 @@ GUIDE_JS = """
 """
 
 
+class ProfileLock:
+    """Which running copy of the app owns the persistent web profile.
+
+    A browser engine does not share a profile directory; a second one opening
+    it takes turns overwriting it, and the file that loses is the cookie
+    store. That is a sign-in disappearing for reasons nothing on screen
+    explains, which is exactly how it kept happening.
+
+    A pid in a file is enough to tell the two cases apart. A stale one — from
+    a copy that crashed, or was killed — is not an owner, so a lock is never
+    something you have to clear by hand.
+    """
+
+    def __init__(self, folder: Path) -> None:
+        self.path = folder / "owner.pid"
+        self.held = False
+
+    def claim(self) -> bool:
+        """Take the profile if nothing living has it. Says whether we got it."""
+        owner = self.owner()
+        if owner is not None and owner != os.getpid():
+            return False
+        try:
+            self.path.write_text(str(os.getpid()))
+        except OSError:
+            # An unwritable data folder is a problem, but not this one: the
+            # profile is still ours to use.
+            return True
+        self.held = True
+        return True
+
+    def owner(self) -> Optional[int]:
+        """The pid holding this profile, if one is still running."""
+        try:
+            pid = int(self.path.read_text().strip())
+        except (OSError, ValueError):
+            return None
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return None                 # it is gone; the lock is stale
+        except PermissionError:
+            return pid                  # alive, just not ours to signal
+        return pid
+
+    def release(self) -> None:
+        if not self.held:
+            return
+        try:
+            if self.owner() == os.getpid():
+                self.path.unlink()
+        except OSError:
+            pass
+        self.held = False
+
+
 class AdBlocker(QWebEngineUrlRequestInterceptor):
     """Drops requests for advertising and telemetry before they are made."""
 
@@ -413,6 +471,10 @@ class YouTubeTab(QWidget):
         #: Where the picture goes while fullscreen, and None the rest of the
         #: time. Kept so leaving fullscreen can put the view back.
         self._fullscreen_window: Optional[QWidget] = None
+        #: Set when this window had to fall back to a session-only profile,
+        #: for whoever built the tab to pass on once they are connected.
+        self.shared_session = ""
+        self._lock: Optional[ProfileLock] = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -429,6 +491,17 @@ class YouTubeTab(QWidget):
         self.view.loadFinished.connect(self._on_load_finished)
         self.go_home()
 
+    def release_profile(self) -> None:
+        """Hand the persistent profile back, so the next copy can have it.
+
+        Not required for correctness — a lock held by a dead process is
+        ignored anyway — but it means opening the app again straight after
+        closing it gets the real profile rather than a session-only one on a
+        race with its own predecessor.
+        """
+        if self._lock is not None:
+            self._lock.release()
+
     # ── Setting up the browser ────────────────────────────────────
 
     def _build_profile(self) -> QWebEngineProfile:
@@ -437,9 +510,31 @@ class YouTubeTab(QWidget):
         Named rather than off-the-record, so signing in survives a restart —
         the whole point of allowing a sign-in is that the recommendations are
         yours. Nothing is shared with a system browser in either direction.
+
+        Unless another copy of Rose Bouquet already has it open. Two browser
+        engines on one profile do not share it, they take turns overwriting
+        it, and what gets overwritten is the cookie store — which is to say
+        the sign-in, silently, every time a second window existed. A second
+        copy gets a profile that remembers nothing instead, and says so,
+        because losing this window's session on close is a great deal better
+        than losing the one the first window is still using.
         """
         folder = data_dir() / "youtube"
         folder.mkdir(parents=True, exist_ok=True)
+
+        self._lock = ProfileLock(folder)
+        if not self._lock.claim():
+            #: Said once the caller has connected to `status`, since a signal
+            #: emitted from a constructor is emitted to nobody.
+            self.shared_session = (
+                "Another copy of Rose Bouquet has the YouTube session open — "
+                "this window will not stay signed in. Close the other one and "
+                "reopen this tab."
+            )
+            profile = QWebEngineProfile(self)          # off the record
+            profile.setHttpUserAgent(USER_AGENT)
+            self._decorate(profile)
+            return profile
 
         profile = QWebEngineProfile("rose-bouquet", self)
         profile.setPersistentStoragePath(str(folder))
@@ -447,7 +542,16 @@ class YouTubeTab(QWidget):
         profile.setPersistentCookiesPolicy(
             QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies)
         profile.setHttpUserAgent(USER_AGENT)
+        self._decorate(profile)
+        return profile
 
+    def _decorate(self, profile: QWebEngineProfile) -> None:
+        """The ad blocker and the injected scripts, which every profile wants.
+
+        Shared because a window that fell back to a session-only profile is
+        still a window onto YouTube: it should be as free of ads and as
+        familiar as the one that got the real profile.
+        """
         self.blocker = AdBlocker()
         profile.setUrlRequestInterceptor(self.blocker)
 
@@ -479,7 +583,6 @@ class YouTubeTab(QWidget):
             script.setRunsOnSubFrames(True)
             profile.scripts().insert(script)
 
-        return profile
 
     def _build_page(self):
         page = _Page(self.profile, self)
