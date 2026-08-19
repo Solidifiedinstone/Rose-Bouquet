@@ -634,29 +634,25 @@ class YouTubeTab(QWidget):
     # ── Signing in ────────────────────────────────────────────────
 
     def sign_in(self) -> None:
-        """Sign in in a real browser, not in here.
+        """Go to Google's login, here, and sign in the way you sign in anywhere.
 
-        Pressing Sign in opens your own browser at Google's login. You sign
-        in there, come back, and the tab picks the session up on its next
-        load.
+        This app spent a long time working around a wall that is not there
+        for a person at a keyboard. Google does answer *some* sign-ins with
+        "this browser or app may not be secure", and every test that drove
+        the login form from JavaScript got exactly that — which is what a bot
+        gets, because setting an input's value from script and clicking Next
+        is what a bot does. Driven with real mouse and keyboard events,
+        Google takes the address and answers "couldn't find this account":
+        the ordinary reply to an address that does not exist.
 
-        Not in this window on purpose: an embedded browser is the one place
-        Google is liable to refuse, and walking someone into "this browser or
-        app may not be secure" after they have typed their email is worse
-        than sending them somewhere that always works.
+        So there is nothing to work around, and nothing else to build. No
+        device code — an OAuth token authenticates API calls and cannot make
+        a web session, which is why the version that had one drew this tab as
+        widgets instead of the site. No reading anybody's cookie jar either.
+        YouTube's own Sign in button already goes here; this one is the same
+        journey from the toolbar.
         """
-        import webbrowser
-
-        try:
-            webbrowser.open(SIGN_IN_URL)
-        except Exception as exc:                  # noqa: BLE001
-            logger.warning("could not open a browser: %s", exc)
-            self.status.emit(f"Open {SIGN_IN_URL} to sign in", "warning")
-            return
-
-        self.status.emit(
-            "Signing in — finish in the browser that just opened, then come "
-            "back here", "info")
+        self.view.setUrl(QUrl(SIGN_IN_URL))
 
     # ── Going places ──────────────────────────────────────────────
 

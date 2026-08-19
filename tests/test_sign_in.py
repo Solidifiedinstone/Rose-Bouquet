@@ -52,27 +52,35 @@ def test_a_second_copy_of_the_app_does_not_take_the_web_profile(tmp_path):
     third.claim()
     third.release()
     assert not (folder / "owner.pid").exists()
-def test_sign_in_opens_a_real_browser_rather_than_this_one():
-    """An embedded browser is the one place Google is liable to refuse."""
+def test_sign_in_goes_to_googles_login_in_the_tab():
+    """Measured with real input, not with a script.
+
+    Google answers a made-up address with "couldn't find this account" when
+    the form is driven by real mouse and keyboard events, and with
+    `/v3/signin/rejected`, "this browser or app may not be secure", when it is
+    driven from JavaScript. The refusal is aimed at automation, not at the
+    engine — so a scripted test is not evidence that a person cannot sign in
+    here, and this used to be talked out of working on exactly that evidence.
+    """
+    from PySide6.QtCore import QUrl
+
     from rose_bouquet.ui import youtube_tab
 
     assert youtube_tab.SIGN_IN_URL.startswith("https://accounts.google.com/")
     assert "service=youtube" in youtube_tab.SIGN_IN_URL
+    # No `continue`: with one Google bounces back to YouTube without ever
+    # showing the form. `service=youtube` lands you back there anyway.
+    assert "continue=" not in youtube_tab.SIGN_IN_URL
 
-    opened, said = [], []
+    # It navigates this view. Nothing is opened elsewhere and nothing is read.
+    went: list = []
     tab = youtube_tab.YouTubeTab.__new__(youtube_tab.YouTubeTab)
-    tab.status = type("S", (), {"emit": staticmethod(lambda t, k: said.append(k))})()
+    tab.view = type("V", (), {"setUrl": staticmethod(went.append)})()
 
-    import webbrowser
-    real = webbrowser.open
-    webbrowser.open = lambda url: opened.append(url)
-    try:
-        youtube_tab.YouTubeTab.sign_in(tab)
-    finally:
-        webbrowser.open = real
+    youtube_tab.YouTubeTab.sign_in(tab)
 
-    assert opened == [youtube_tab.SIGN_IN_URL]
-    assert said == ["info"]
+    assert [u.toString() for u in went] == [youtube_tab.SIGN_IN_URL]
+    assert QUrl(youtube_tab.SIGN_IN_URL).host() == "accounts.google.com"
 
 
 def test_nothing_reads_a_browser_cookie_jar_to_sign_in():
