@@ -1666,3 +1666,52 @@ def test_a_search_that_never_works_says_so_rather_than_finding_nothing(monkeypat
     # The search box still gets an empty list, because there is nothing useful
     # to show someone typing either way.
     assert music.search("A song") == []
+
+
+def test_a_download_whose_file_is_gone_is_forgotten_too(tmp_path):
+    """Dead rows were what made the library feel unreliable.
+
+    A downloaded track was never pruned, on the reasoning that it can live
+    outside every scanned folder so the walk proves nothing about it. True of
+    the walk, and irrelevant to its own file: 39 tracks stayed in the library
+    pointing at nothing, and clicking one did nothing at all.
+    """
+    from rose_bouquet.core import imports  # noqa: F401 — keeps import order stable
+
+    music = tmp_path / "Music"
+    music.mkdir()
+    (music / "kept.mp3").write_bytes(b"x")
+
+    library = Library(folders=[str(music)])
+    library.add(Track(path=str(music / "kept.mp3"), title="Kept", source="youtube",
+                      source_id="a"))
+    library.add(Track(path=str(music / "gone.mp3"), title="Gone", source="youtube",
+                      source_id="b"))
+    # A download that lives somewhere nobody scans, and is still there.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "kept.mp3").write_bytes(b"x")
+    library.add(Track(path=str(elsewhere / "kept.mp3"), title="Outside",
+                      source="youtube", source_id="c"))
+
+    _added, removed = library.rescan()
+
+    # Compared by path: a rescan re-reads tags for a track it has no duration
+    # for, so the titles come back off the files rather than as they went in.
+    assert removed == 1
+    assert sorted(t.path for t in library.all()) == sorted([
+        str(music / "kept.mp3"), str(elsewhere / "kept.mp3"),
+    ])
+
+
+def test_a_download_on_a_drive_that_is_not_mounted_is_still_kept(tmp_path):
+    """The guard that matters more, and the one that must not regress."""
+    library = Library(folders=[str(tmp_path / "music")])
+    (tmp_path / "music").mkdir()
+    library.add(Track(path="/mnt/nothing-here/Music/song.mp3", title="Waiting",
+                      source="youtube", source_id="d"))
+
+    _added, removed = library.rescan()
+
+    assert removed == 0
+    assert [t.title for t in library.all()] == ["Waiting"]

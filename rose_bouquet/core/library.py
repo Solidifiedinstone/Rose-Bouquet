@@ -226,6 +226,16 @@ def scan(folders: Iterable[Path]) -> Iterator[Path]:
                     yield Path(root) / name
 
 
+def _folder_is_readable(path: str) -> bool:
+    """Whether the folder that should hold this file is there to be looked in.
+
+    The difference between "your file was deleted" and "your drive is not
+    mounted". Only the first is grounds for forgetting a track.
+    """
+    parent = Path(path).parent
+    return parent.is_dir()
+
+
 def _inside(folder: Path, path: str) -> bool:
     """Whether `path` names a file under `folder`.
 
@@ -297,11 +307,20 @@ class Library:
         # count on them the first time a disk came up late or a name moved
         # from one disk to another. A folder we cannot read is unknown, not
         # empty, and its tracks are left where they are until it comes back.
+        # A downloaded track can live outside every scanned folder, so the
+        # walk above proves nothing about it — but its own file being gone,
+        # from a folder we can read, proves plenty. That is the test, for
+        # everything: not where the track came from, but whether the folder
+        # that should hold it is readable and does not.
         removed = 0
         for key in list(self.tracks):
-            if key in seen or self.tracks[key].source != "local":
+            if key in seen:
                 continue
             if any(_inside(root, key) for root in absent):
+                continue
+            if not _folder_is_readable(key):
+                continue
+            if Path(key).exists():
                 continue
             del self.tracks[key]
             removed += 1
