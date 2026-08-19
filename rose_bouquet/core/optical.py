@@ -826,33 +826,6 @@ DISC_DATA = "data"
 DISC_NONE = "none"
 
 
-def disc_kind(device: Optional[Path] = None) -> str:
-    """What sort of disc is in the drive.
-
-    Audio is detected by asking cdparanoia for a TOC, which is the only thing
-    that reliably distinguishes an audio CD from a data one — a data disc has
-    no audio tracks to report and says so.
-    """
-    try:
-        if read_toc(device).tracks:
-            return DISC_AUDIO
-    except MissingToolError:
-        raise
-    except DiscError:
-        pass
-
-    target = Path(device) if device else None
-    if target is not None and target.exists():
-        try:
-            # A data disc answers a read at sector zero; an empty tray does not.
-            with open(target, "rb") as handle:
-                handle.read(2048)
-            return DISC_DATA
-        except OSError:
-            return DISC_NONE
-    return DISC_NONE
-
-
 @dataclass
 class ImageResult:
     path: Optional[Path] = None

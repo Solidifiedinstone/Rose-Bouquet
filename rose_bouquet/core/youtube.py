@@ -2,13 +2,13 @@
 
 This used to be half a YouTube client: channels, uploads, searches, a
 subscription box and a `discover` that pooled searches into a feed. All of it
-is gone. Browsing is `core/innertube.py` now — YouTube's own API, drawn as
-widgets by `ui/youtube_native.py` — so nothing here reimplements a page or
-guesses at an algorithm.
+is gone, and so are the two modules that replaced it in turn — browsing is
+YouTube's own site in `ui/youtube_tab.py`, which reimplements nothing and
+guesses at no algorithm.
 
-What is left is the one job neither of those does: resolve a video id to a
-direct media URL, so something found while browsing can be played by the app's
-own player. That is also what makes the tab ad-free, since an ad break is
+What is left is the one job that does not do: resolve a video id to a direct
+media URL, so something found while browsing can be played by the app's own
+player. That is also what makes the tab ad-free, since an ad break is
 something a player is told to insert and this player is ours.
 
 Audio-only is the default, because this is a music app: a five minute song

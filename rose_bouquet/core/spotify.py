@@ -576,33 +576,6 @@ def read_all(
         offset = page.next_offset
 
 
-def fetch_playlist(
-    link: str,
-    client_id: str = "",
-    client_secret: str = "",
-) -> tuple[str, list[SpotifyTrack]]:
-    """Read a playlist by whatever route works, most complete first.
-
-    Order matters. The embed endpoint is the most reliable but caps at 100
-    tracks, so it is the *fallback*, not the first choice — and if it is all we
-    have, and it returned exactly its limit, the caller is told the count may be
-    short rather than left to assume the playlist was small.
-    """
-    if not playlist_id(link):
-        return "", []
-
-    title, tracks = from_public_api(link)
-    if tracks:
-        return title, tracks
-
-    if client_id and client_secret:
-        title, tracks = from_api(link, client_id, client_secret)
-        if tracks:
-            return title, tracks
-
-    return from_embed(link)
-
-
 EMBED_LIMIT = 100
 
 
