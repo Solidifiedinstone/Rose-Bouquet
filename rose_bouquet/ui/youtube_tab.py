@@ -454,20 +454,50 @@ def _as_qt_cookie(cookie):
 
 
 class _Page(QWebEnginePage):
-    """A page that does not silently drop the windows the site asks for.
+    """The page, and the one navigation it refuses to make.
 
     Google's login is opened from a button that calls `window.open`, and a
     QWebEngineView with no `createWindow` throws that request away — so the
-    button did nothing at all, with no error and nothing in the log.
+    button did nothing at all, with no error and nothing in the log. Returning
+    this same page loads it in place.
 
-    Returning this same page loads the popup in place, which is right for a
-    sign-in flow: it is meant to come back to YouTube when it finishes, and a
-    second window with no address bar would be a worse place to type a
-    password into.
+    And then refuses to go. Google will not authenticate an embedded browser:
+    it takes the email address and answers `/v3/signin/rejected`, "this
+    browser or app may not be secure". So YouTube's own Sign in button led
+    somewhere that could only ever fail, and the way to make that button work
+    is not to follow it — it is to do the sign-in the moment it is pressed.
+    The navigation is turned down and `sign_in_wanted` asks for the real
+    thing, which is why pressing Sign in on the page signs you in.
     """
+
+    #: Somebody asked to sign in — from YouTube's own button, or any other
+    #: link into Google's accounts pages.
+    sign_in_wanted = Signal()
 
     def createWindow(self, _kind):               # noqa: N802 (Qt's name)
         return self
+
+    def acceptNavigationRequest(self, url, _kind, is_main_frame):  # noqa: N802
+        if is_main_frame and _is_a_login(url):
+            self.sign_in_wanted.emit()
+            return False
+        return True
+
+
+def _is_a_login(url) -> bool:
+    """Whether this is Google asking for a password.
+
+    Narrow on purpose. `accounts.google.com` also serves avatars and account
+    switching that a signed-in page loads by itself, and turning those down
+    would break the page rather than the wall.
+    """
+    if url.host() not in ("accounts.google.com", "accounts.youtube.com"):
+        return False
+    path = url.path()
+    return any(path.startswith(start) for start in (
+        "/ServiceLogin", "/signin", "/v3/signin", "/AccountChooser",
+        "/AddSession", "/o/oauth2",
+    ))
 
 
 class YouTubeTab(QWidget):
@@ -486,6 +516,9 @@ class YouTubeTab(QWidget):
         #: for whoever built the tab to pass on once they are connected.
         self.shared_session = ""
         self._lock: Optional[ProfileLock] = None
+        #: Set when we turned a navigation down on purpose, so the load
+        #: "failure" that follows is not reported as one.
+        self._refused_a_login = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -597,6 +630,9 @@ class YouTubeTab(QWidget):
 
     def _build_page(self):
         page = _Page(self.profile, self)
+        # YouTube's own Sign in button is the one most people will press, so
+        # it is wired to the sign-in that works rather than to Google's wall.
+        page.sign_in_wanted.connect(self._login_was_asked_for)
         settings = page.settings()
         for attribute, value in (
             (QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False),
@@ -673,6 +709,11 @@ class YouTubeTab(QWidget):
         return bar
 
     # ── Signing in ────────────────────────────────────────────────
+
+    def _login_was_asked_for(self) -> None:
+        """Somebody pressed a sign-in link. Refusing it is not a failed load."""
+        self._refused_a_login = True
+        self.sign_in()
 
     def sign_in(self) -> None:
         """Sign in, by the only route Google actually allows.
@@ -798,7 +839,11 @@ class YouTubeTab(QWidget):
         self.address.setText(url.toString())
 
     def _on_load_finished(self, ok: bool) -> None:
-        if not ok:
+        if not ok and self._refused_a_login:
+            # We turned that navigation down ourselves, and are signing in
+            # instead. Nothing failed.
+            self._refused_a_login = False
+        elif not ok:
             self.status.emit("That page would not load", "warning")
         if self.blocker.blocked:
             self.blocked_label.setText(f"{self.blocker.blocked} blocked")

@@ -251,3 +251,39 @@ def test_a_jar_that_is_signed_in_is_copied_and_one_that_is_not_sends_you_to_the_
     youtube_tab.YouTubeTab.sign_in(tab)
     assert opened
     assert "warning" in said
+
+
+def test_youtubes_own_sign_in_button_is_what_gets_intercepted():
+    """The button on the page, not just the one on our toolbar.
+
+    YouTube's Sign in leads to Google's login, which cannot work in an
+    embedded browser — it takes the email and answers `/v3/signin/rejected`,
+    "this browser or app may not be secure". So the navigation is turned down
+    and the sign-in that does work runs instead, which is what makes pressing
+    Sign in on the page sign you in.
+    """
+    from PySide6.QtCore import QUrl
+
+    from rose_bouquet.ui.youtube_tab import _is_a_login
+
+    # Every shape YouTube's own button and Google's flow actually use.
+    for link in [
+        "https://accounts.google.com/ServiceLogin?service=youtube&continue=https://www.youtube.com/",
+        "https://accounts.google.com/signin/v2/identifier?service=youtube",
+        "https://accounts.google.com/v3/signin/identifier?continue=https://www.youtube.com/",
+        "https://accounts.google.com/AccountChooser?service=youtube",
+        "https://accounts.google.com/AddSession?continue=https://www.youtube.com/",
+        "https://accounts.google.com/o/oauth2/auth?client_id=x",
+    ]:
+        assert _is_a_login(QUrl(link)), link
+
+    # And nothing else, because a signed-in page fetches from these hosts by
+    # itself — turning those down would break the page rather than the wall.
+    for ordinary in [
+        "https://www.youtube.com/",
+        "https://accounts.google.com/CheckCookie",
+        "https://lh3.googleusercontent.com/avatar.jpg",
+        "https://www.google.com/search?q=x",
+        "https://music.youtube.com/",
+    ]:
+        assert not _is_a_login(QUrl(ordinary)), ordinary
