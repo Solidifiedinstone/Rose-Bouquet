@@ -341,3 +341,46 @@ def test_the_playlists_tab_can_be_switched_off_without_losing_playlists(app):
     prefs.show_playlists = False
     assert prefs.to_dict()["show_playlists"] is False
     assert Preferences.from_dict(prefs.to_dict()).show_playlists is False
+
+
+# ── Choosing an order, and keeping it ─────────────────────────────
+
+def test_the_order_picker_offers_every_order_and_reorders_the_list(built, app, appearance):
+    from rose_bouquet.core.library import ORDERS
+
+    library = Library()
+    library.add(Track(path="/m/1.mp3", title="Long one", artist="B", duration=300))
+    library.add(Track(path="/m/2.mp3", title="Short one", artist="A", duration=30))
+
+    view = built(LibraryView(library, appearance))
+    view.refresh("")
+
+    offered = [view.order_picker.itemData(i) for i in range(view.order_picker.count())]
+    assert offered == list(ORDERS)
+    assert [t.title for t in view._tracks] == ["Short one", "Long one"]   # artist A–Z
+
+    remembered: list = []
+    view.order_changed.connect(remembered.append)
+
+    view.order_picker.setCurrentIndex(view.order_picker.findData("longest"))
+    assert [t.title for t in view._tracks] == ["Long one", "Short one"]
+    assert remembered == ["longest"]
+
+    # Picking the one already chosen is not a change worth saving or redrawing.
+    view.order_picker.setCurrentIndex(view.order_picker.findData("longest"))
+    assert remembered == ["longest"]
+
+
+def test_the_saved_order_is_the_one_the_library_opens_with(built, app, appearance):
+    library = Library()
+    library.add(Track(path="/m/1.mp3", title="Long one", artist="B", duration=300))
+    library.add(Track(path="/m/2.mp3", title="Short one", artist="A", duration=30))
+
+    view = built(LibraryView(library, appearance, "longest"))
+    view.refresh("")
+    assert [t.title for t in view._tracks] == ["Long one", "Short one"]
+
+    # And an order this version has never heard of opens on the default.
+    view = built(LibraryView(library, appearance, "by-vibes"))
+    view.refresh("")
+    assert [t.title for t in view._tracks] == ["Short one", "Long one"]

@@ -8,6 +8,7 @@ from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
+    QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -22,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from rose_bouquet.core import spotify
-from rose_bouquet.core.library import Library
+from rose_bouquet.core.library import DEFAULT_ORDER, ORDERS, Library
 from rose_bouquet.core.playlists import Playlist, PlaylistStore
 from rose_bouquet.core.server import MusicServer
 from rose_bouquet.ui.theme import Appearance
@@ -170,11 +171,15 @@ class LibraryView(ScrollingView):
     #: list rather than the library, so a search narrows what Play acts on —
     #: which is what someone who has just typed "shoegaze" means by it.
     play_all_requested = Signal(object, bool)   # list[Track], shuffle?
+    #: The order was changed, and is worth remembering across restarts.
+    order_changed = Signal(str)
 
     def __init__(self, library: Library, appearance: Appearance,
+                 order: str = DEFAULT_ORDER,
                  parent: Optional[QWidget] = None) -> None:
         super().__init__(appearance, parent)
         self.library = library
+        self.order = order if order in ORDERS else DEFAULT_ORDER
 
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search your library…")
@@ -191,6 +196,14 @@ class LibraryView(ScrollingView):
         self.count = QLabel()
         self.count.setObjectName("Subtle")
         self.header_layout.addWidget(self.count)
+
+        self.order_picker = QComboBox()
+        self.order_picker.setToolTip("How to order the list")
+        for key, label in ORDERS.items():
+            self.order_picker.addItem(label, key)
+        self.order_picker.setCurrentIndex(self.order_picker.findData(self.order))
+        self.order_picker.currentIndexChanged.connect(self._order_picked)
+        self.header_layout.addWidget(self.order_picker)
 
         self.play_all = QPushButton("▶  Play all")
         self.play_all.setObjectName("Primary")
@@ -222,7 +235,7 @@ class LibraryView(ScrollingView):
         self.playing_path = playing_path or self.playing_path
         self.clear(self.body_layout)
 
-        tracks = self.library.search(self.search.text())
+        tracks = self.library.search(self.search.text(), self.order)
         self.count.setText(f"{len(tracks)} track{'' if len(tracks) == 1 else 's'}")
 
         # A library full of tracks whose files are not reachable looks exactly
@@ -251,6 +264,22 @@ class LibraryView(ScrollingView):
 
         self.body_layout.addStretch(1)
         self._extend()
+
+    def _order_picked(self) -> None:
+        """Reorder the list, keeping the search and the scroll sensible.
+
+        A reorder rebuilds from the top rather than trying to hold your place:
+        the row you were looking at is somewhere else now by definition, and
+        pretending otherwise would leave you halfway down a list you did not
+        ask to be halfway down.
+        """
+        chosen = self.order_picker.currentData()
+        if not chosen or chosen == self.order:
+            return
+        self.order = chosen
+        self.scroll.verticalScrollBar().setValue(0)
+        self.refresh(self.playing_path)
+        self.order_changed.emit(chosen)
 
     def _missing_folder_notice(self, root) -> QLabel:
         notice = QLabel(

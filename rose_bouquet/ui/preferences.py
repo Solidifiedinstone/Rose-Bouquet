@@ -135,6 +135,10 @@ class Preferences:
     download_format: str = "mp3"
     #: Rescan on startup. Off for anyone with a very large library on a spinner.
     scan_on_start: bool = True
+    #: How the library list is ordered. One of `library.ORDERS`; an unknown
+    #: value falls back to the default rather than failing, so a preference
+    #: written by a newer version cannot stop an older one opening.
+    library_order: str = "artist"
     #: Whether Playlists gets a place in the sidebar. On for most people; off
     #: for anyone who keeps one library and never makes a playlist, and would
     #: rather not walk past the tab every day.
@@ -346,6 +350,7 @@ class Preferences:
             "download_format": self.download_format,
             "scan_on_start": self.scan_on_start,
             "show_playlists": self.show_playlists,
+            "library_order": self.library_order,
             "use_browser_cookies": self.use_browser_cookies,
             "add_downloads_to_library": self.add_downloads_to_library,
             "check_updates_on_start": self.check_updates_on_start,
@@ -382,7 +387,8 @@ class Preferences:
             style=style if style in STYLES else DEFAULT_STYLE,
         )
 
-        for name in ("section", "download_dir", "download_format", "visualizer_shape"):
+        for name in ("section", "download_dir", "download_format", "visualizer_shape",
+                     "library_order"):
             value = data.get(name)
             if isinstance(value, str) and value:
                 setattr(prefs, name, value)

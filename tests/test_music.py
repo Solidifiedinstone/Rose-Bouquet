@@ -1715,3 +1715,71 @@ def test_a_download_on_a_drive_that_is_not_mounted_is_still_kept(tmp_path):
 
     assert removed == 0
     assert [t.title for t in library.all()] == ["Waiting"]
+
+
+# ── Ordering the library ──────────────────────────────────────────
+
+def _ordering_library():
+    library = Library()
+    library.add(Track(path="/m/1.mp3", title="Bravo", artist="Zeta", album="Later",
+                      duration=200, track_number=2, added="2026-01-02", play_count=1))
+    library.add(Track(path="/m/2.mp3", title="Alpha", artist="Alpha", album="Early",
+                      duration=90, track_number=1, added="2026-03-04", play_count=9))
+    library.add(Track(path="/m/3.mp3", title="Charlie", artist="Mid", album="Middle",
+                      duration=400, track_number=1, added="2026-02-03", play_count=5))
+    return library
+
+
+def test_every_order_the_library_offers_does_what_it_says():
+    from rose_bouquet.core.library import ORDERS, in_order
+
+    tracks = list(_ordering_library().tracks.values())
+
+    def titles(order):
+        return [t.title for t in in_order(tracks, order)]
+
+    assert titles("artist") == ["Alpha", "Charlie", "Bravo"]        # by artist
+    assert titles("artist_desc") == ["Bravo", "Charlie", "Alpha"]
+    assert titles("title") == ["Alpha", "Bravo", "Charlie"]
+    assert titles("title_desc") == ["Charlie", "Bravo", "Alpha"]
+    assert titles("album") == ["Alpha", "Bravo", "Charlie"]         # Early, Later, Middle
+    assert titles("longest") == ["Charlie", "Bravo", "Alpha"]
+    assert titles("shortest") == ["Alpha", "Bravo", "Charlie"]
+    assert titles("added") == ["Alpha", "Charlie", "Bravo"]         # newest first
+    assert titles("played") == ["Alpha", "Charlie", "Bravo"]        # most first
+
+    # Every order in the menu is one this function actually implements, and
+    # none of them lose or invent a track.
+    for order in ORDERS:
+        assert sorted(t.title for t in in_order(tracks, order)) == ["Alpha", "Bravo", "Charlie"]
+
+
+def test_a_track_with_no_duration_is_unknown_rather_than_nothing():
+    """Shortest-first must not be a list of everything unread, then the music."""
+    from rose_bouquet.core.library import in_order
+
+    tracks = [
+        Track(path="/m/known.mp3", title="Known", artist="A", duration=120),
+        Track(path="/m/unread.mp3", title="Unread", artist="A", duration=0),
+    ]
+    assert [t.title for t in in_order(tracks, "shortest")] == ["Known", "Unread"]
+
+
+def test_an_order_nobody_recognises_is_the_default_not_a_crash():
+    """The order is a saved preference, and a newer version may write a newer one."""
+    from rose_bouquet.core.library import in_order
+
+    tracks = list(_ordering_library().tracks.values())
+    assert in_order(tracks, "by-vibes") == in_order(tracks, "artist")
+    assert in_order(tracks, "") == in_order(tracks, "artist")
+
+
+def test_searching_keeps_the_order_you_asked_for():
+    library = _ordering_library()
+    library.add(Track(path="/m/4.mp3", title="Alpha two", artist="Beta",
+                      album="Other", duration=300))
+
+    found = library.search("alpha", "longest")
+    assert [t.title for t in found] == ["Alpha two", "Alpha"]
+    found = library.search("alpha", "shortest")
+    assert [t.title for t in found] == ["Alpha", "Alpha two"]

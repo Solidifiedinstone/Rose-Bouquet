@@ -85,7 +85,9 @@ shows the *whole* record — the tracklist comes from MusicBrainz, your files ar
 laid into it, and the ones you are missing are listed greyed out with a button
 to go and get them. So you can tell an EP from half a record at a glance. Shuffle is a
 shuffled *order* rather than a random pick, so nothing repeats before the album
-is through and "previous" means something.
+is through and "previous" means something. The library can be ordered by artist,
+title, album, length, when it was added or how often it has been played, in
+either direction, and the choice is remembered.
 
 **Playlists** — extended M3U files in a folder, readable by every other player
 ever written. The tab can be switched off in Settings → Library if you keep one

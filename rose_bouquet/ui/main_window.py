@@ -468,11 +468,13 @@ class MainWindow(QMainWindow):
         self._register("disc", disc)
 
 
-        library_view = LibraryView(self.library, self.appearance)
+        library_view = LibraryView(self.library, self.appearance,
+                                   self.preferences.library_order)
         library_view.play_requested.connect(self.play_track)
         library_view.menu_requested.connect(self.open_track_menu)
         library_view.scan_requested.connect(self.rescan)
         library_view.play_all_requested.connect(self.play_all)
+        library_view.order_changed.connect(self._library_order_changed)
         self._register("library", library_view)
 
         albums = AlbumsView(self.library, self.appearance)
@@ -506,6 +508,11 @@ class MainWindow(QMainWindow):
         self._register("server", server_view)
 
         return self.stack
+
+    def _library_order_changed(self, order: str) -> None:
+        """Remember how you like the library ordered."""
+        self.preferences.library_order = order
+        self.preferences.save()
 
     def _register(self, key: str, view: QWidget) -> None:
         self.views.add(key, view)

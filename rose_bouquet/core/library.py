@@ -260,6 +260,68 @@ def _inside(folder: Path, path: str) -> bool:
     return path.startswith(prefix)
 
 
+#: How the library can be ordered, and what to call each one. Keyed by the
+#: string that gets saved, so a preference written today still means the same
+#: thing after the labels are reworded.
+ORDERS: dict[str, str] = {
+    "artist": "Artist A–Z",
+    "artist_desc": "Artist Z–A",
+    "title": "Title A–Z",
+    "title_desc": "Title Z–A",
+    "album": "Album",
+    "longest": "Longest first",
+    "shortest": "Shortest first",
+    "added": "Recently added",
+    "played": "Most played",
+}
+
+DEFAULT_ORDER = "artist"
+
+
+def _artist_key(track: "Track") -> tuple:
+    return (track.display_artist.lower(), track.display_album.lower(),
+            track.disc_number, track.track_number, track.display_title.lower())
+
+
+def _title_key(track: "Track") -> tuple:
+    return (track.display_title.lower(), track.display_artist.lower())
+
+
+def in_order(tracks: Iterable["Track"], order: str = DEFAULT_ORDER) -> list["Track"]:
+    """A list of tracks in the order asked for.
+
+    Every order falls back to the artist ordering for its ties, so two songs
+    of the same length or the same play count still come out grouped by the
+    artist and album they belong to rather than in whatever order the
+    filesystem happened to hand them over.
+
+    An unknown name is the default rather than an error: the order is a saved
+    preference, and a preference written by a newer version should not stop
+    an older one from showing you your music.
+    """
+    tracks = list(tracks)
+    if order == "artist_desc":
+        return sorted(tracks, key=_artist_key, reverse=True)
+    if order == "title":
+        return sorted(tracks, key=_title_key)
+    if order == "title_desc":
+        return sorted(tracks, key=_title_key, reverse=True)
+    if order == "album":
+        return sorted(tracks, key=lambda t: (t.display_album.lower(), t.disc_number,
+                                             t.track_number, t.display_title.lower()))
+    if order == "longest":
+        return sorted(tracks, key=lambda t: (-t.duration, _artist_key(t)))
+    if order == "shortest":
+        # Tracks with no duration read yet sort as unknown rather than as
+        # zero-second songs at the top of the list.
+        return sorted(tracks, key=lambda t: (t.duration or 10 ** 9, _artist_key(t)))
+    if order == "added":
+        return sorted(tracks, key=lambda t: (t.added, _artist_key(t)), reverse=True)
+    if order == "played":
+        return sorted(tracks, key=lambda t: (-t.play_count, _artist_key(t)))
+    return sorted(tracks, key=_artist_key)
+
+
 # ── The library ───────────────────────────────────────────────────
 
 @dataclass
@@ -349,18 +411,14 @@ class Library:
 
     # ── Queries ───────────────────────────────────────────────────
 
-    def all(self) -> list[Track]:
-        return sorted(
-            self.tracks.values(),
-            key=lambda t: (t.display_artist.lower(), t.display_album.lower(),
-                           t.disc_number, t.track_number, t.display_title.lower()),
-        )
+    def all(self, order: str = DEFAULT_ORDER) -> list[Track]:
+        return in_order(self.tracks.values(), order)
 
-    def search(self, query: str) -> list[Track]:
+    def search(self, query: str, order: str = DEFAULT_ORDER) -> list[Track]:
         query = query.strip().lower()
         if not query:
-            return self.all()
-        return [t for t in self.all() if query in t.search_text]
+            return self.all(order)
+        return in_order((t for t in self.tracks.values() if query in t.search_text), order)
 
     def albums(self) -> dict[tuple[str, str], list[Track]]:
         """(album artist, album) → its tracks, in track order.
