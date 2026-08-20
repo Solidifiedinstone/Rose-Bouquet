@@ -532,3 +532,82 @@ def test_art_already_decoded_is_set_outright(built, app, appearance, tmp_path):
     finally:
         widgets.tasks.run = monkey
         widgets._COVER_CACHE.pop((widgets._art_key(track), 38), None)
+
+
+# ── Every screen, opened, on every run ────────────────────────────
+
+def test_every_section_and_every_settings_tab_opens(app, tmp_path):
+    """A screen nobody opened in a test is a screen nobody tested.
+
+    Sections are built lazily and settings tabs are built on demand, so a
+    method that was renamed or a signal that was deleted goes unnoticed until
+    somebody clicks the thing — which is exactly how Settings became
+    unopenable and stayed that way for five commits.
+
+    Preferences are written first because without them the app treats this as a
+    first run and opens a modal folder picker 150ms in, which nothing here
+    would dismiss.
+    """
+    import json
+    import os
+
+    from PySide6.QtCore import QEvent
+    from PySide6.QtWidgets import QApplication, QTabWidget
+
+    config = tmp_path / "config" / "rose-bouquet"
+    config.mkdir(parents=True)
+    (config / "preferences.json").write_text(json.dumps({
+        "folders": [str(tmp_path / "music")],
+        "scan_on_start": False, "visualizer": False, "first_run": False,
+    }))
+    (tmp_path / "music").mkdir()
+
+    previous = {name: os.environ.get(name)
+                for name in ("XDG_DATA_HOME", "XDG_CONFIG_HOME")}
+    os.environ["XDG_DATA_HOME"] = str(tmp_path / "data")
+    os.environ["XDG_CONFIG_HOME"] = str(tmp_path / "config")
+
+    try:
+        from rose_bouquet.ui.main_window import MainWindow
+        from rose_bouquet.ui.settings import SettingsDialog
+
+        window = MainWindow()
+        try:
+            window.playback.set_volume(0.0)     # a test makes no sound
+            for section in ("library", "albums", "playlists", "import",
+                            "downloads", "server", "disc"):
+                window.show_section(section)
+                app.processEvents()
+                assert window.preferences.section == section
+
+            dialog = SettingsDialog(window.preferences, window)
+            try:
+                tabs = dialog.findChild(QTabWidget)
+                assert tabs is not None and tabs.count() >= 5
+                for index in range(tabs.count()):
+                    tabs.setCurrentIndex(index)
+                    app.processEvents()
+            finally:
+                dialog.deleteLater()
+
+            # The library's own controls, which are the ones that move.
+            window.show_section("library")
+            view = window.views["library"]
+            view.refresh("")
+            for index in range(view.order_picker.count()):
+                view.order_picker.setCurrentIndex(index)
+                app.processEvents()
+            view.search.setText("something that matches nothing at all")
+            view.refresh("")
+            assert view._tracks == []
+        finally:
+            window.close()
+            window.deleteLater()
+            app.processEvents()
+            QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
