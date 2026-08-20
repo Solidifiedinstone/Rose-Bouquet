@@ -39,7 +39,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QUrl, QUrlQuery, Signal
+from PySide6.QtCore import Qt, QTimer, QUrl, QUrlQuery, Signal
 from PySide6.QtWebEngineCore import (
     QWebEnginePage,
     QWebEngineProfile,
@@ -445,20 +445,39 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
 #: reached, because what Google objects to is the tab, not the address.
 
 
-class _LoginWindow(QWebEngineView):
-    """The plain window a sign-in happens in.
+#: How long the cookie store has to go quiet before the page is reloaded, and
+#: the longest we wait for that quiet in the first place.
+COOKIE_SETTLE_MS = 400
+COOKIE_CEILING_MS = 5000
 
-    A class of its own for one reason: it has to say when it is *closing*,
-    while it and its page are still alive. Wiring the tidy-up to `destroyed`
-    instead means touching the profile from inside C++ destruction, with the
-    page already half gone — which is a crash, and was.
+
+def _as_qt_cookie(cookie):
+    """One borrowed cookie as the QNetworkCookie the web view's store wants.
+
+    Chromium refuses SameSite=None on a cookie that is not also Secure, and
+    refuses it silently. SID, HSID and APISID are exactly that shape — not
+    Secure, and exactly the three cookies that constitute a Google session — so
+    asking for None on everything threw the sign-in away and left five of the
+    eight auth cookies looking like a working copy. They get Lax, which is
+    Chromium's own default and all a top-level navigation needs.
     """
+    from PySide6.QtCore import QByteArray, QDateTime
+    from PySide6.QtNetwork import QNetworkCookie
 
-    closed = Signal()
-
-    def closeEvent(self, event) -> None:       # noqa: N802 (Qt's name)
-        self.closed.emit()
-        super().closeEvent(event)
+    qt_cookie = QNetworkCookie(QByteArray(cookie.name.encode()),
+                               QByteArray(cookie.value.encode()))
+    qt_cookie.setDomain(cookie.domain)
+    qt_cookie.setPath(cookie.path)
+    qt_cookie.setSecure(cookie.secure)
+    qt_cookie.setHttpOnly(cookie.http_only)
+    if cookie.expires:
+        qt_cookie.setExpirationDate(
+            QDateTime.fromSecsSinceEpoch(int(cookie.expires)))
+    qt_cookie.setSameSitePolicy(
+        QNetworkCookie.SameSite.None_ if cookie.secure
+        else QNetworkCookie.SameSite.Lax
+    )
+    return qt_cookie
 
 
 class _Page(QWebEnginePage):
@@ -509,11 +528,6 @@ class YouTubeTab(QWidget):
         #: for whoever built the tab to pass on once they are connected.
         self.shared_session = ""
         self._lock: Optional[ProfileLock] = None
-        #: The plain window a sign-in happens in, while one is open.
-        self._login_window: Optional[QWebEngineView] = None
-        #: What the engine calls itself before we override it. Signing in
-        #: needs it back.
-        self._plain_user_agent = ""
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -571,13 +585,11 @@ class YouTubeTab(QWidget):
                 "reopen this tab."
             )
             profile = QWebEngineProfile(self)          # off the record
-            self._plain_user_agent = profile.httpUserAgent()
             profile.setHttpUserAgent(USER_AGENT)
             self._decorate(profile)
             return profile
 
         profile = QWebEngineProfile("rose-bouquet", self)
-        self._plain_user_agent = profile.httpUserAgent()
         profile.setPersistentStoragePath(str(folder))
         profile.setCachePath(str(folder / "cache"))
         profile.setPersistentCookiesPolicy(
@@ -705,90 +717,55 @@ class YouTubeTab(QWidget):
     # ── Signing in ────────────────────────────────────────────────
 
     def sign_in(self) -> None:
-        """Sign in in a plain window on the same profile.
+        """Point at where signing in actually happens.
 
-        Google refuses to authenticate anything it can tell is an embedded
-        app — "this browser or app may not be secure" — and what gives this
-        tab away is everything it does to the page: a user agent of its own,
-        three injected scripts, and a request interceptor dropping requests.
-        No address and no user agent talks it out of that.
+        Not here, and not in a window of ours either. Google will not
+        authenticate an embedded browser — it recognises the app rather than
+        the address, and answers "this browser or app may not be secure" at the
+        password step however the login is reached. A second plain window on
+        the same profile was the next thing tried and it took the app down with
+        it.
 
-        NouTube, which is shipped and can be signed into, answers this by
-        opening a second window: an ordinary browser window, no scripts and no
-        interception, on the *same* session store — `partition:
-        "persist:webview"`, with `toggleInterception(false)` on the way in. It
-        loads youtube.com and you sign in there. Because the store is shared,
-        the session it gets is the session the app has.
-
-        This is that. The decorations come off the profile while the window is
-        open and go back on when it closes, and the tab reloads into the
-        account you just signed in to.
+        So the sign-in is a session brought over from a browser you pick, in
+        Settings, deliberately. This button says where.
         """
-        if self._login_window is not None:
-            self._login_window.raise_()
-            self._login_window.activateWindow()
-            return
-
-        self._undecorate()
-
-        # Parented to the tab, with a window flag: the profile is parented to
-        # the tab too, and a profile must outlive every page using it. An
-        # unparented window is destroyed on its own schedule, which is how you
-        # get "Release of profile requested but WebEnginePage still not
-        # deleted" and then a crash.
-        window = _LoginWindow(self)
-        window.setWindowFlag(Qt.WindowType.Window, True)
-        window.setPage(QWebEnginePage(self.profile, window))
-        window.setWindowTitle(
-            "Sign in to YouTube — close this window when you are done")
-        window.resize(1000, 800)
-        window.closed.connect(self._login_window_closed)
-        window.setUrl(QUrl(WATCH_URL))
-        window.show()
-
-        self._login_window = window
-        logger.info("sign-in: opened a plain window on the shared profile")
         self.status.emit(
-            "Sign in in the window that just opened, then close it", "info")
+            "Sign in to YouTube in your own browser, then bring the session "
+            "across in Settings \u2192 Account", "info")
 
-    def _login_window_closed(self) -> None:
-        """Put the profile back as it was, and pick up whatever session it got.
+    def adopt_session(self, cookies) -> None:
+        """Take a session read out of a browser, and reload into it.
 
-        Runs while the window is still alive — it is closing, not destroyed —
-        so the page it owns is still a valid page and the profile is still
-        safe to touch. The window itself is let go afterwards, on the event
-        loop rather than from inside its own close.
+        `setCookie` is a request, not a write: the store applies each one on
+        another thread and reports back through `cookieAdded`. Reloading on the
+        line after the loop reloaded a page that was still signed out, so the
+        reload waits for the arrivals to stop — with a ceiling, because a
+        cookie the store quietly refuses never arrives at all.
         """
-        window, self._login_window = self._login_window, None
-        if window is None:
-            return
+        store = self.profile.cookieStore()
+        for cookie in cookies:
+            store.setCookie(_as_qt_cookie(cookie), QUrl(cookie.url))
+        logger.info("sign-in: offered %d cookies to the store", len(cookies))
 
-        self._decorate(self.profile)
-        self.profile.setHttpUserAgent(USER_AGENT)
-        logger.info("sign-in: window closed, reloading the tab")
-        window.deleteLater()
-        self.view.reload()
+        settled = QTimer(self)
+        settled.setSingleShot(True)
+        settled.setInterval(COOKIE_SETTLE_MS)
 
-    def _undecorate(self) -> None:
-        """Make the profile look like a plain browser, for as long as it takes.
+        def finish() -> None:
+            try:
+                store.cookieAdded.disconnect(settled.start)
+            except (RuntimeError, TypeError):
+                pass
+            logger.info("sign-in: cookies settled, reloading")
+            self.view.reload()
 
-        All three of these are what Google recognises: a user agent that is not
-        the engine's own, scripts injected into every page, and a request
-        interceptor. NouTube turns its interception off for exactly this and
-        puts it back afterwards.
-        """
-        self.profile.setUrlRequestInterceptor(None)
-        self.profile.scripts().clear()
-        if self._plain_user_agent:
-            self.profile.setHttpUserAgent(self._plain_user_agent)
+        settled.timeout.connect(finish)
+        store.cookieAdded.connect(settled.start)
+        settled.start()
+        QTimer.singleShot(COOKIE_CEILING_MS, lambda: settled.isActive() and finish())
 
     def _login_starting(self, _url: QUrl) -> None:
-        """YouTube's own Sign in button. The same plain window as ours.
-
-        Held back rather than followed: following it walks into the wall this
-        tab cannot get past, and the button on the page is the one people
-        press.
-        """
+        """YouTube's own Sign in button. Same answer as ours."""
         self.view.page().clearing_first = True   # nothing consumed it
         self.sign_in()
 

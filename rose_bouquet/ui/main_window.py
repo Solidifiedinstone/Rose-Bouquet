@@ -1936,7 +1936,38 @@ class MainWindow(QMainWindow):
         dialog.visualizer_changed.connect(self._visualizer_changed)
         dialog.server_changed.connect(self._server_settings_changed)
         dialog.sections_changed.connect(self._apply_section_visibility)
+        dialog.sign_in_with.connect(
+            lambda browser: self._sign_in_with(dialog, browser))
         dialog.exec()
+
+    def _sign_in_with(self, dialog, browser) -> None:
+        """Bring a sign-in over from the browser chosen in Settings.
+
+        The only route Google leaves open. It will not authenticate an
+        embedded browser however the login is reached — the page loads and
+        then says "this browser or app may not be secure" at the password
+        step — so the session is copied rather than typed.
+        """
+        from rose_bouquet.core import browsers
+
+        found = browsers.read(browser)
+        if not found:
+            dialog.report_sign_in(
+                f"Nothing could be read from {browser.name}. If it is open, "
+                "that is fine — but check you are signed in to YouTube there.")
+            return
+
+        if not browsers.signed_in(found):
+            dialog.report_sign_in(
+                f"{browser.name} has been to YouTube but is not signed in. "
+                "Sign in there first, then press this again.")
+            return
+
+        watch = self.views["watch"]
+        watch.adopt_session(found)
+        dialog.report_sign_in(
+            f"Signed in — {len(found)} cookies brought over from "
+            f"{browser.name}. The YouTube tab has reloaded.")
 
     def _library_folders_changed(self) -> None:
         self.library.folders = list(self.preferences.folders)

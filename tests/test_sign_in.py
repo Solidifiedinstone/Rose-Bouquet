@@ -1,17 +1,223 @@
-"""Signing in, and who owns the browser profile.
+"""Signing in: finding browsers, and borrowing a session from one.
 
-Reading a browser's cookie jar was how this app used to sign in, on the belief
-that Google would not authenticate an embedded browser. It will: driven with
-real mouse and keyboard input it answers a made-up address with "couldn't find
-this account", not "this browser or app may not be secure". The refusal only
-ever appeared when the login form was driven from JavaScript, which is what a
-bot looks like. So there is no jar to read any more — the Sign in button goes
-to Google's login and you sign in there.
+Google will not authenticate an embedded browser. Not with a different user
+agent, not from a different address, not in a second plain window on the same
+profile — the login page loads and then answers "this browser or app may not
+be secure" at the password step. Every route into that wall has been tried in
+this file's history; none of them work.
+
+What does work is what the browser you already use has: the cookies. So the
+app lists the browsers on this machine, and reads one of them when you pick it
+and ask. Never on its own, and never any domain but YouTube's and Google's.
 """
 
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
+
+from rose_bouquet.core import browsers
+
+
+def _firefox_profile(tmp_path, cookies, name="Waterfox"):
+    """A Firefox-family profile on disk, with a profiles.ini and a jar."""
+    root = tmp_path / name
+    profile = root / "abc.default-release"
+    profile.mkdir(parents=True)
+    (root / "profiles.ini").write_text(
+        "[Profile0]\nName=default\nIsRelative=1\nPath=abc.default-release\n")
+
+    db = sqlite3.connect(profile / "cookies.sqlite")
+    db.execute("CREATE TABLE moz_cookies (name TEXT, value TEXT, host TEXT, "
+               "path TEXT, expiry INTEGER, isSecure INTEGER, isHttpOnly INTEGER)")
+    for cookie_name, value, host in cookies:
+        db.execute("INSERT INTO moz_cookies VALUES (?,?,?,?,?,?,?)",
+                   (cookie_name, value, host, "/", 2000000000, 1, 0))
+    db.commit()
+    db.close()
+    return root, profile
+
+
+# ── Finding the browsers ──────────────────────────────────────────
+
+def test_a_firefox_profile_is_found_and_read(tmp_path):
+    _root, profile = _firefox_profile(tmp_path, [
+        ("SID", "sid", ".google.com"),
+        ("LOGIN_INFO", "li", ".youtube.com"),
+        ("other", "x", ".example.com"),
+    ])
+    found = browsers.Browser("Waterfox", "firefox", profile)
+
+    cookies = browsers.read(found)
+    assert {c.name for c in cookies} == {"SID", "LOGIN_INFO"}   # nothing else
+    assert browsers.signed_in(cookies)
+
+
+def test_a_browser_that_visited_youtube_but_is_not_signed_in(tmp_path):
+    _root, profile = _firefox_profile(tmp_path, [("PREF", "x", ".youtube.com")])
+    cookies = browsers.read(browsers.Browser("Waterfox", "firefox", profile))
+
+    assert cookies and not browsers.signed_in(cookies)
+
+
+def test_the_browser_being_open_does_not_stop_it(tmp_path):
+    """Firefox holds a write lock on the live file; we read a copy.
+
+    Reading in place is how this fails on exactly the machine that matters —
+    the one with the browser open that you just signed in with.
+    """
+    _root, profile = _firefox_profile(tmp_path, [("SID", "sid", ".youtube.com")])
+
+    holding = sqlite3.connect(profile / "cookies.sqlite")
+    holding.execute("BEGIN EXCLUSIVE")
+    try:
+        cookies = browsers.read(browsers.Browser("W", "firefox", profile))
+        assert browsers.signed_in(cookies)
+    finally:
+        holding.rollback()
+        holding.close()
+
+
+def test_an_unreadable_or_missing_jar_is_survivable(tmp_path):
+    """"No sign-in here" is an answer; an exception is not."""
+    assert browsers.read(browsers.Browser("Gone", "firefox", tmp_path / "nope")) == []
+
+    profile = tmp_path / "broken"
+    profile.mkdir()
+    (profile / "cookies.sqlite").write_text("this is not a database")
+    assert browsers.read(browsers.Browser("Broken", "firefox", profile)) == []
+
+
+def test_discover_finds_nothing_it_cannot_read(monkeypatch, tmp_path):
+    """A profile listed in the ini with no jar in it is not a browser."""
+    root = tmp_path / ".waterfox"
+    (root / "empty").mkdir(parents=True)
+    (root / "profiles.ini").write_text(
+        "[Profile0]\nName=default\nIsRelative=1\nPath=empty\n")
+
+    monkeypatch.setattr(browsers.Path, "home", staticmethod(lambda: tmp_path))
+    assert browsers.discover() == []
+
+
+# ── Chromium, whose values are encrypted ──────────────────────────
+
+def _chromium_profile(tmp_path, password, values):
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    from cryptography.hazmat.primitives.hashes import SHA1
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+    profile = tmp_path / "chromium" / "Default"
+    profile.mkdir(parents=True)
+    key = PBKDF2HMAC(algorithm=SHA1(), length=16, salt=b"saltysalt",
+                     iterations=1).derive(password)
+
+    def encrypt(text):
+        data = text.encode()
+        pad = 16 - len(data) % 16
+        data += bytes([pad]) * pad
+        cipher = Cipher(algorithms.AES(key), modes.CBC(b" " * 16)).encryptor()
+        return b"v10" + cipher.update(data) + cipher.finalize()
+
+    db = sqlite3.connect(profile / "Cookies")
+    db.execute("CREATE TABLE cookies (name TEXT, value TEXT, encrypted_value BLOB,"
+               " host_key TEXT, path TEXT, expires_utc INTEGER, is_secure INTEGER,"
+               " is_httponly INTEGER)")
+    for name, value, host in values:
+        db.execute("INSERT INTO cookies VALUES (?,?,?,?,?,?,?,?)",
+                   (name, "", encrypt(value), host, "/", 13400000000000000, 1, 1))
+    db.commit()
+    db.close()
+    return profile
+
+
+def test_chromium_cookies_are_decrypted_with_whichever_key_works(tmp_path, monkeypatch):
+    """The keyring password, or `peanuts` when there is no keyring.
+
+    Both are tried, because a wrong key does not fail — AES-CBC will happily
+    produce noise — so a stale or borrowed keyring entry would hand back a jar
+    of mojibake that looks like a successful read.
+    """
+    values = [("SID", "sid-value", ".youtube.com"),
+              ("__Secure-1PSID", "psid-value", ".google.com"),
+              ("elsewhere", "no", ".example.com")]
+
+    # No keyring at all: Chromium's own fallback.
+    monkeypatch.setattr(browsers, "_keyring_password", lambda _e: "")
+    profile = _chromium_profile(tmp_path / "a", b"peanuts", values)
+    cookies = browsers.read(browsers.Browser("Chromium", "chromium", profile, "Chromium"))
+    assert {c.name: c.value for c in cookies} == {
+        "SID": "sid-value", "__Secure-1PSID": "psid-value"}
+
+    # A keyring, and a jar encrypted with what is in it.
+    monkeypatch.setattr(browsers, "_keyring_password", lambda _e: "from-the-keyring")
+    profile = _chromium_profile(tmp_path / "b", b"from-the-keyring", values)
+    cookies = browsers.read(browsers.Browser("Chromium", "chromium", profile, "Chromium"))
+    assert {c.name: c.value for c in cookies} == {
+        "SID": "sid-value", "__Secure-1PSID": "psid-value"}
+
+    # A keyring entry that is stale: the fallback still gets there.
+    monkeypatch.setattr(browsers, "_keyring_password", lambda _e: "wrong-password")
+    profile = _chromium_profile(tmp_path / "c", b"peanuts", values)
+    cookies = browsers.read(browsers.Browser("Chromium", "chromium", profile, "Chromium"))
+    assert {c.name: c.value for c in cookies} == {
+        "SID": "sid-value", "__Secure-1PSID": "psid-value"}
+
+
+def test_a_chromium_timestamp_becomes_a_unix_one(tmp_path, monkeypatch):
+    monkeypatch.setattr(browsers, "_keyring_password", lambda _e: "")
+    profile = _chromium_profile(tmp_path, b"peanuts", [("SID", "v", ".youtube.com")])
+    cookie = browsers.read(browsers.Browser("C", "chromium", profile, "Chromium"))[0]
+
+    # 13400000000000000 microseconds from 1601 is 2025-07-14-ish, not 1601.
+    assert 1_700_000_000 < cookie.expires < 1_900_000_000
+
+
+# ── What the borrowed cookies turn into ───────────────────────────
+
+def test_a_session_cookie_that_is_not_secure_is_not_asked_to_be_samesite_none():
+    """The reason a copied sign-in once showed YouTube as signed out.
+
+    Chromium refuses SameSite=None on a cookie that is not also Secure, and
+    refuses it silently. SID, HSID and APISID are exactly that — not Secure,
+    and exactly the three cookies that make up a Google session.
+    """
+    from PySide6.QtNetwork import QNetworkCookie
+
+    from rose_bouquet.ui.youtube_tab import _as_qt_cookie
+
+    insecure = browsers.Cookie(name="SID", value="x", domain=".google.com",
+                               secure=False)
+    secure = browsers.Cookie(name="__Secure-1PSID", value="x",
+                             domain=".google.com", secure=True)
+
+    assert _as_qt_cookie(insecure).sameSitePolicy() is QNetworkCookie.SameSite.Lax
+    assert _as_qt_cookie(secure).sameSitePolicy() is QNetworkCookie.SameSite.None_
+
+
+def test_the_values_a_cookie_carries_survive_the_conversion():
+    from rose_bouquet.ui.youtube_tab import _as_qt_cookie
+
+    cookie = browsers.Cookie(name="LOGIN_INFO", value="abc123",
+                             domain=".youtube.com", path="/", secure=True,
+                             http_only=True, expires=2000000000)
+    converted = _as_qt_cookie(cookie)
+
+    assert bytes(converted.name()).decode() == "LOGIN_INFO"
+    assert bytes(converted.value()).decode() == "abc123"
+    assert converted.domain() == ".youtube.com"
+    assert converted.isSecure() and converted.isHttpOnly()
+    assert converted.expirationDate().toSecsSinceEpoch() == 2000000000
+
+
+def test_nothing_is_read_until_a_browser_is_chosen():
+    """Discovery lists browsers. It does not open a single cookie jar."""
+    import inspect
+
+    source = inspect.getsource(browsers.discover)
+    assert "read(" not in source
+    assert "sqlite3" not in source
+
 
 # ── One copy of the app owns the browser profile ──────────────────
 
@@ -52,100 +258,3 @@ def test_a_second_copy_of_the_app_does_not_take_the_web_profile(tmp_path):
     third.claim()
     third.release()
     assert not (folder / "owner.pid").exists()
-def test_signing_in_happens_in_a_plain_window_on_the_shared_profile():
-    """How NouTube does it, because this tab cannot do it itself.
-
-    Google refuses to authenticate anything it can tell is an embedded app,
-    and what gives this tab away is everything it does to the page: its own
-    user agent, three injected scripts, and a request interceptor. No address
-    talks it out of that — the login page loads and then answers "this browser
-    or app may not be secure" at the password step.
-
-    NouTube opens a second, ordinary window on the same session store, with
-    interception turned off, and lets you sign in there. Shared store, so the
-    session it gets is the session the app has.
-    """
-    from rose_bouquet.ui import youtube_tab
-
-    # No login URL anywhere: the address was never the problem.
-    assert not hasattr(youtube_tab, "SIGN_IN_URL")
-
-    stripped: dict = {}
-
-    class Scripts:
-        cleared = False
-        def clear(self):
-            Scripts.cleared = True
-
-    class Profile:
-        @staticmethod
-        def setUrlRequestInterceptor(value):
-            stripped["interceptor"] = value
-        @staticmethod
-        def scripts():
-            return Scripts()
-        @staticmethod
-        def setHttpUserAgent(value):
-            stripped["ua"] = value
-
-    tab = youtube_tab.YouTubeTab.__new__(youtube_tab.YouTubeTab)
-    tab.profile = Profile()
-    tab._plain_user_agent = "the engine's own"
-
-    youtube_tab.YouTubeTab._undecorate(tab)
-
-    # All three tells are removed for the duration.
-    assert stripped["interceptor"] is None
-    assert Scripts.cleared
-    assert stripped["ua"] == "the engine's own"
-
-
-def test_the_profile_is_put_back_when_the_login_window_closes():
-    """Otherwise the tab keeps browsing with no ad blocking and no scripts."""
-    from rose_bouquet.ui import youtube_tab
-
-    restored: dict = {}
-
-    class P:
-        @staticmethod
-        def setHttpUserAgent(value):
-            restored["ua"] = value
-
-    class W:
-        @staticmethod
-        def deleteLater():
-            restored["let go"] = True
-
-    tab = youtube_tab.YouTubeTab.__new__(youtube_tab.YouTubeTab)
-    tab.profile = P()
-    tab._login_window = W()
-    tab._decorate = lambda profile: restored.__setitem__("decorated", profile)
-    tab.view = type("V", (), {"reload": staticmethod(
-        lambda: restored.__setitem__("reloaded", True))})()
-
-    youtube_tab.YouTubeTab._login_window_closed(tab)
-
-    assert tab._login_window is None
-    assert restored["decorated"] is tab.profile      # blocker and scripts back
-    assert restored["ua"] == youtube_tab.USER_AGENT  # and our user agent
-    assert restored["reloaded"]                      # picks up the session
-    # Let go on the event loop, not from inside its own close.
-    assert restored["let go"]
-
-    # Closing twice must not run any of that a second time.
-    restored.clear()
-    youtube_tab.YouTubeTab._login_window_closed(tab)
-    assert restored == {}
-
-
-def test_nothing_reads_a_browser_cookie_jar_to_sign_in():
-    """The jar reader is gone, not merely unused."""
-    import importlib
-
-    with pytest.raises(ModuleNotFoundError):
-        importlib.import_module("rose_bouquet.core.cookies")
-
-    from rose_bouquet.ui import youtube_tab
-
-    assert not hasattr(youtube_tab, "_as_qt_cookie")
-    assert not hasattr(youtube_tab, "REFUSALS")

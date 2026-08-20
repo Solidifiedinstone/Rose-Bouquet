@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMenu,
     QPushButton,
     QScrollArea,
@@ -81,6 +82,8 @@ class SettingsDialog(QDialog):
     library_changed = Signal()
     visualizer_changed = Signal()
     server_changed = Signal()
+    #: Sign in with the cookies read out of this browser.
+    sign_in_with = Signal(object)      # browsers.Browser
     #: A section was shown or hidden, so the sidebar no longer matches.
     sections_changed = Signal()
 
@@ -107,6 +110,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._visualizer_tab(), "Visualiser")
         tabs.addTab(self._library_tab(), "Library")
         tabs.addTab(self._downloads_tab(), "Downloads")
+        tabs.addTab(self._account_tab(), "Account")
         tabs.addTab(self._server_tab(), "Serving")
         tabs.addTab(self._about_tab(), "About")
         layout.addWidget(tabs)
@@ -667,6 +671,100 @@ class SettingsDialog(QDialog):
         self.preferences.scan_on_start = self.scan_on_start.isChecked()
         self.preferences.save()
         self.library_changed.emit()
+
+    # ── Account ───────────────────────────────────────────────────
+
+    def _account_tab(self) -> QWidget:
+        """Signing in, by borrowing the session from a browser you choose.
+
+        Google will not authenticate an embedded browser — it recognises what
+        an app does to a page, and answers "this browser or app may not be
+        secure" at the password step however the login is reached. A sign-in
+        is a handful of cookies, though, and the browser you already use has
+        them.
+
+        Nothing here happens on its own. The list is what was found; the
+        cookies are read when you pick one and press the button, and not
+        before. A cookie jar is the most sensitive file in a home directory
+        and an app should not open one uninvited.
+        """
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(10)
+
+        layout.addWidget(QLabel("Sign in to YouTube"))
+
+        blurb = QLabel(
+            "Google refuses to accept a password typed into an app, so there "
+            "is no login form here. Sign in to YouTube in your own browser, "
+            "then bring that session across:")
+        blurb.setObjectName("Subtle")
+        blurb.setWordWrap(True)
+        layout.addWidget(blurb)
+
+        self.browsers = QListWidget()
+        self.browsers.setToolTip("Browsers found on this machine")
+        layout.addWidget(self.browsers, 1)
+
+        row = QHBoxLayout()
+        self.rescan_browsers = QPushButton("Look again")
+        self.rescan_browsers.clicked.connect(self._find_browsers)
+        row.addWidget(self.rescan_browsers)
+        row.addStretch(1)
+
+        self.take_sign_in = QPushButton("Sign in with this browser")
+        self.take_sign_in.setObjectName("Primary")
+        self.take_sign_in.setEnabled(False)
+        self.take_sign_in.clicked.connect(self._take_sign_in)
+        row.addWidget(self.take_sign_in)
+        layout.addLayout(row)
+
+        self.browsers.currentItemChanged.connect(self._browser_picked)
+
+        self.account_note = QLabel("")
+        self.account_note.setObjectName("Subtle")
+        self.account_note.setWordWrap(True)
+        layout.addWidget(self.account_note)
+
+        self._find_browsers()
+        return page
+
+    def _find_browsers(self) -> None:
+        """List the browsers on this machine. Reads no cookies."""
+        from rose_bouquet.core import browsers as scan
+
+        self.browsers.clear()
+        self._found = scan.discover()
+
+        if not self._found:
+            self.account_note.setText(
+                "No browsers found. Firefox, Waterfox, LibreWolf, Zen, Chrome, "
+                "Chromium, Brave, Edge, Vivaldi and Opera are all understood, "
+                "installed normally or as Flatpaks.")
+            return
+
+        for found in self._found:
+            item = QListWidgetItem(f"{found.name}  —  {found.profile.name}")
+            item.setData(Qt.ItemDataRole.UserRole, found)
+            self.browsers.addItem(item)
+        self.account_note.setText(
+            f"{len(self._found)} found. Nothing is read until you press the "
+            "button.")
+
+    def _browser_picked(self, current, _previous) -> None:
+        self.take_sign_in.setEnabled(current is not None)
+
+    def _take_sign_in(self) -> None:
+        """Read the chosen browser's YouTube cookies, and hand them over."""
+        item = self.browsers.currentItem()
+        if item is None:
+            return
+        self.sign_in_with.emit(item.data(Qt.ItemDataRole.UserRole))
+
+    def report_sign_in(self, message: str) -> None:
+        """Say how it went, on the page the button is on."""
+        if hasattr(self, "account_note") and self.account_note is not None:
+            self.account_note.setText(message)
 
     # ── Downloads ─────────────────────────────────────────────────
 
