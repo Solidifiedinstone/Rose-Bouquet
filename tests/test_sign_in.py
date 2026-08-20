@@ -72,22 +72,49 @@ def test_sign_in_goes_to_googles_login_in_the_tab():
     # showing the form. `service=youtube` lands you back there anyway.
     assert "continue=" not in youtube_tab.SIGN_IN_URL
 
-    # It navigates this view, and clears the jar on the way. Half a session
-    # left from an abandoned sign-in sends ServiceLogin round BootstrapSession
-    # until Chromium gives up with ERR_TOO_MANY_REDIRECTS, which looks like a
-    # login page that will not load.
+    # It empties the jar and *then* navigates. Half a session left from an
+    # abandoned sign-in sends ServiceLogin round BootstrapSession until
+    # Chromium gives up with ERR_TOO_MANY_REDIRECTS, which looks like a login
+    # page that will not load — and `deleteAllCookies` is a request, not a
+    # write, so navigating on the next line loaded the page with the old
+    # cookies still there and looped exactly as before.
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+
     went: list = []
     cleared: list = []
+
+    class Store:
+        class _Signal:
+            @staticmethod
+            def connect(_slot): pass
+            @staticmethod
+            def disconnect(_slot): pass
+        cookieRemoved = _Signal()
+
+        @staticmethod
+        def deleteAllCookies():
+            cleared.append(True)
+
+    from PySide6.QtWidgets import QWidget
+
     tab = youtube_tab.YouTubeTab.__new__(youtube_tab.YouTubeTab)
+    QWidget.__init__(tab)          # so it can own a QTimer
     tab.view = type("V", (), {"setUrl": staticmethod(went.append)})()
-    tab.profile = type("P", (), {"cookieStore": staticmethod(
-        lambda: type("S", (), {"deleteAllCookies": staticmethod(
-            lambda: cleared.append(True))})())})()
+    tab.profile = type("P", (), {"cookieStore": staticmethod(lambda: Store())})()
 
     youtube_tab.YouTubeTab.sign_in(tab)
 
+    # Emptied straight away; the navigation waits for the store to go quiet.
     assert cleared == [True]
+    assert went == []
+
+    from PySide6.QtTest import QTest
+
+    QTest.qWait(youtube_tab.JAR_SETTLE_MS + 250)
     assert [u.toString() for u in went] == [youtube_tab.SIGN_IN_URL]
+
     assert QUrl(youtube_tab.SIGN_IN_URL).host() == "accounts.google.com"
 
 

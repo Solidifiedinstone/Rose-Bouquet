@@ -39,7 +39,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QUrl, QUrlQuery, Signal
+from PySide6.QtCore import Qt, QTimer, QUrl, QUrlQuery, Signal
 from PySide6.QtWebEngineCore import (
     QWebEnginePage,
     QWebEngineProfile,
@@ -428,6 +428,12 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
 #: there once you are in.
 SIGN_IN_URL = "https://accounts.google.com/ServiceLogin?service=youtube"
 
+#: How long the cookie store has to go quiet after being emptied before the
+#: login page is loaded, and the longest to wait for that quiet — there may
+#: have been nothing in the jar, in which case nothing is ever reported.
+JAR_SETTLE_MS = 250
+JAR_CEILING_MS = 3000
+
 
 class _Page(QWebEnginePage):
     """A page that does not silently drop the windows the site asks for.
@@ -663,12 +669,39 @@ class YouTubeTab(QWidget):
         that blames the browser. So the slate is wiped first: signing in is
         exactly when nobody wants the old session kept.
         """
-        self._forget_the_old_session()
-        self.view.setUrl(QUrl(SIGN_IN_URL))
+        self._forget_the_old_session(then=lambda: self.view.setUrl(QUrl(SIGN_IN_URL)))
 
-    def _forget_the_old_session(self) -> None:
-        """Drop what is in the jar, so a stale half-session cannot loop."""
-        self.profile.cookieStore().deleteAllCookies()
+    def _forget_the_old_session(self, then) -> None:
+        """Empty the jar, and only then go to the login page.
+
+        `deleteAllCookies` is a request, not a write — the store does it on
+        another thread and reports each removal through `cookieRemoved`.
+        Navigating on the next line therefore loaded the login page with the
+        old cookies still in place, which is the whole thing we were trying
+        to avoid, and the redirect loop carried on exactly as before. The
+        same trap `setCookie` set earlier, sprung the other way round.
+
+        So the navigation waits for the removals to stop arriving, with a
+        ceiling in case there were none to remove and nothing ever arrives.
+        """
+        store = self.profile.cookieStore()
+
+        settled = QTimer(self)
+        settled.setSingleShot(True)
+        settled.setInterval(JAR_SETTLE_MS)
+
+        def go() -> None:
+            try:
+                store.cookieRemoved.disconnect(settled.start)
+            except (RuntimeError, TypeError):
+                pass
+            then()
+
+        settled.timeout.connect(go)
+        store.cookieRemoved.connect(settled.start)
+        store.deleteAllCookies()
+        settled.start()
+        QTimer.singleShot(JAR_CEILING_MS, lambda: settled.isActive() and go())
 
     # ── Going places ──────────────────────────────────────────────
 
