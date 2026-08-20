@@ -31,7 +31,15 @@ fi
 echo "   python=$python"
 
 "$python" -m pytest -q
-"$python" -m build --outdir "$out"
+
+# `build` makes an isolated environment and fetches the build backend from
+# PyPI, which fails on a machine that is offline or behind a proxy. The
+# backend is already installed here, so falling back to using it directly
+# turns "no network" from a failed release into a slightly less hermetic one.
+if ! "$python" -m build --outdir "$out" 2>/dev/null; then
+    echo "   isolated build failed (no network?) — building without isolation"
+    "$python" -m build --no-isolation --outdir "$out"
+fi
 echo "   wheel and sdist in $out"
 
 echo
