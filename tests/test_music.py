@@ -1883,3 +1883,22 @@ def test_the_packaging_declares_what_the_code_imports():
         declared = name.replace("_", "-")
         assert declared in packaging or name in packaging, \
             f"{name} is imported but not declared in pyproject.toml"
+
+
+def test_both_halves_update_from_the_same_releases():
+    """One repository, one release, one version number.
+
+    The phone client lives in `android/` here and goes out in the same release
+    as the desktop. An updater still pointed at a repository that has stopped
+    releasing reports "this is the newest version" for ever, which is the
+    quietest way one can be broken.
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    desktop = (root / "rose_bouquet/core/updates.py").read_text()
+    phone = (root / "android/app/src/main/java/dev/rose/bouquet/data/Updates.kt").read_text()
+
+    for source, name in ((desktop, "desktop"), (phone, "android")):
+        assert "repos/Solidifiedinstone/Rose-Bouquet/releases" in source, name
+        assert "Rose-Bouquet-Android" not in source, f"{name} still reads the old repository"

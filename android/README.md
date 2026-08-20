@@ -41,7 +41,7 @@ Subsonic protocol, but Android is a thousand different devices and yours is
 probably not the one it was written on.
 
 **Please post anything that goes wrong in the
-[Issues tab](https://github.com/Solidifiedinstone/Rose-Bouquet-Android/issues)**,
+[Issues tab](https://github.com/Solidifiedinstone/Rose-Bouquet/issues)**,
 with your Android version and which server you are connecting to.
 
 ## What it does
@@ -107,7 +107,7 @@ There is no Play Store listing and no F-Droid entry yet, so this installs as an
 APK.
 
 1. Download `bouquet.apk` from the
-   [latest release](https://github.com/Solidifiedinstone/Rose-Bouquet-Android/releases/latest).
+   [latest release](https://github.com/Solidifiedinstone/Rose-Bouquet/releases/latest).
 2. Open it. Android will ask whether to allow installing apps from this source —
    that prompt is normal for anything not from the Play Store, and it is asking
    about your browser or file manager, not about this app.
@@ -127,8 +127,8 @@ next section is how.
 ### Building it yourself
 
 ```sh
-git clone https://github.com/Solidifiedinstone/Rose-Bouquet-Android
-cd Rose-Bouquet-Android
+git clone https://github.com/Solidifiedinstone/Rose-Bouquet
+cd Rose-Bouquet/android
 ./gradlew assembleDebug
 ```
 

@@ -29,8 +29,17 @@ object Updates {
 
     data class Release(val version: String, val notes: String, val apkUrl: String?)
 
+    /**
+     * Where releases come from.
+     *
+     * The one repository, since the phone client moved into `android/` there
+     * and the two halves go out in the same release. Pointing at the old
+     * Android-only repository would keep looking at a stream that has stopped
+     * — which shows up as "this is the newest version" for ever, the quietest
+     * possible way for an updater to be broken.
+     */
     private const val LATEST =
-        "https://api.github.com/repos/Solidifiedinstone/Rose-Bouquet-Android/releases/latest"
+        "https://api.github.com/repos/Solidifiedinstone/Rose-Bouquet/releases/latest"
 
     /**
      * What the newest release is, or null if that cannot be established.
