@@ -278,6 +278,101 @@ BAR_JS = """
 
 #: Opens the left rail, and keeps ads and nags from getting in the way.
 #: Only ever presses buttons the page itself provides.
+#: Taking the ad breaks out of the player's own answer.
+#:
+#: The other layers cannot touch a video ad. It is served from
+#: `googlevideo.com`, which has to stay open because it also serves the video,
+#: and it *is* the video element — there is no separate thing to hide or block.
+#:
+#: What there is, is the JSON the player asks for before it plays anything:
+#: `/youtubei/v1/player` comes back with `adPlacements`, `playerAds` and
+#: `adSlots`, and the player inserts breaks because it was told to. Removing
+#: those keys before the player reads them means there is no break to skip —
+#: which is a different thing from blocking an ad, and a good deal more
+#: reliable than racing a skip button.
+#:
+#: Deliberately narrow: only those keys, only on the player and watch-next
+#: endpoints, and the response is passed through untouched if anything about
+#: it is unexpected. A wrong guess here does not show an ad, it breaks
+#: playback, so the failure has to fall the safe way.
+ADS_JS = """
+(function () {
+  const AD_KEYS = ['adPlacements', 'playerAds', 'adSlots', 'adBreakHeartbeatParams'];
+  const TOUCHED = ['/youtubei/v1/player', '/youtubei/v1/next', '/youtubei/v1/reel'];
+
+  const strip = (text) => {
+    try {
+      const data = JSON.parse(text);
+      if (!data || typeof data !== 'object') { return text; }
+      let changed = false;
+      for (const key of AD_KEYS) {
+        if (key in data) { delete data[key]; changed = true; }
+      }
+      return changed ? JSON.stringify(data) : text;
+    } catch (e) {
+      // Not JSON, or not the shape we expected. Hand it back untouched: an ad
+      // that slips through is a nuisance, and a mangled player response is a
+      // video that will not play.
+      return text;
+    }
+  };
+
+  const wanted = (url) => {
+    const text = typeof url === 'string' ? url : (url && url.url) || '';
+    return TOUCHED.some((path) => text.includes(path));
+  };
+
+  // What the page fetches once it is running.
+  const realFetch = window.fetch;
+  window.fetch = function (input, init) {
+    return realFetch.apply(this, arguments).then((response) => {
+      if (!wanted(input) && !wanted(response && response.url)) { return response; }
+      return response.clone().text().then((body) => new Response(strip(body), {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      })).catch(() => response);
+    });
+  };
+
+  // And the older path, which the player still uses.
+  const open = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function (method, url) {
+    this._rbWanted = wanted(url);
+    return open.apply(this, arguments);
+  };
+  const send = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.send = function () {
+    if (this._rbWanted) {
+      this.addEventListener('readystatechange', function () {
+        if (this.readyState !== 4 || this._rbDone) { return; }
+        try {
+          const cleaned = strip(this.responseText);
+          if (cleaned !== this.responseText) {
+            this._rbDone = true;
+            Object.defineProperty(this, 'responseText', {value: cleaned});
+            Object.defineProperty(this, 'response', {value: cleaned});
+          }
+        } catch (e) { /* leave it alone */ }
+      });
+    }
+    return send.apply(this, arguments);
+  };
+
+  // The first video on a cold page load comes from a global, not a request.
+  const clean_initial = () => {
+    const initial = window.ytInitialPlayerResponse;
+    if (!initial || typeof initial !== 'object') { return; }
+    for (const key of AD_KEYS) {
+      if (key in initial) { delete initial[key]; }
+    }
+  };
+  clean_initial();
+  document.addEventListener('DOMContentLoaded', clean_initial);
+  document.addEventListener('yt-navigate-finish', clean_initial);
+})();
+"""
+
 GUIDE_JS = """
 (function () {
   // Whether the rail has been opened on your behalf yet, and whether you have
@@ -658,6 +753,9 @@ class YouTubeTab(QWidget):
 
         for source, point in (
             (style_js, QWebEngineScript.InjectionPoint.DocumentCreation),
+            # Before anything the page runs, so the first request it makes is
+            # already going through the patched fetch.
+            (ADS_JS, QWebEngineScript.InjectionPoint.DocumentCreation),
             (GUIDE_JS, QWebEngineScript.InjectionPoint.DocumentReady),
             (BAR_JS, QWebEngineScript.InjectionPoint.DocumentReady),
         ):

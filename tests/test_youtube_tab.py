@@ -169,3 +169,49 @@ def test_youtubes_menus_are_put_above_our_bottom_bar():
     # Above the bar, whatever the bar is set to.
     bar_z = 2147483000
     assert f"z-index: {bar_z + 2}" in css or "2147483002" in css
+
+
+# ── Video ads, which no other layer can touch ─────────────────────
+
+def test_ad_breaks_are_taken_out_of_the_players_own_answer():
+    """A video ad cannot be blocked or hidden, only un-asked-for.
+
+    It is served from googlevideo.com, which has to stay open because it also
+    serves the video, and it *is* the video element — there is nothing
+    separate to hide. What there is, is the JSON the player fetches before it
+    plays: it comes back with `adPlacements` and the player inserts breaks
+    because it was told to.
+    """
+    from rose_bouquet.ui import youtube_tab
+
+    script = youtube_tab.ADS_JS
+
+    # Only the ad keys, so a video still has everything it needs to play.
+    for key in ("adPlacements", "playerAds", "adSlots"):
+        assert key in script
+    for keep in ("streamingData", "videoDetails", "captions"):
+        assert keep not in script, f"{keep} must not be touched"
+
+    # Only the endpoints that carry them.
+    assert "/youtubei/v1/player" in script
+    assert "/youtubei/v1/next" in script
+
+    # And anything unexpected is passed through rather than mangled: a wrong
+    # guess here does not show an ad, it breaks playback.
+    assert "return text;" in script
+    assert "catch" in script
+
+
+def test_the_ad_script_runs_before_the_page_does():
+    """Patching fetch after the first request has gone is patching nothing."""
+    import inspect
+
+    from rose_bouquet.ui.youtube_tab import YouTubeTab
+
+    source = inspect.getsource(YouTubeTab._decorate)
+    creation = source.index("DocumentCreation")
+    assert "ADS_JS" in source
+    # Injected at document creation, alongside the stylesheet, not at ready.
+    ads_at = source.index("ADS_JS")
+    assert abs(source.index("DocumentCreation", ads_at) - ads_at) < 200
+    assert creation > 0
