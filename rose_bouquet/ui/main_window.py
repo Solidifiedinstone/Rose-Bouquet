@@ -1997,15 +1997,26 @@ class MainWindow(QMainWindow):
     def _youtube_session(self) -> str:
         """The YouTube session, for a device that has authenticated and asked.
 
-        Only when it has been turned on in Settings, and only if the tab has
-        been built — there is no session in a browser nobody opened, and
-        starting a whole browser engine to answer a request from the network
-        is not something a request from the network gets to do.
+        Only when it has been turned on in Settings — that guard is the point.
+        The other one was a bug: it also required the YouTube tab to have been
+        built, on the reasoning that there is no session in a browser nobody
+        opened. There is. The session lives in the profile on disk and outlives
+        every launch, so a phone that asked before the tab had been opened got
+        an empty answer and reported that the desktop was not sharing.
+
+        The live tab is preferred when there is one, because it has anything
+        Google has rotated since; otherwise the profile is read where it sits.
         """
         if not self.preferences.share_youtube_session:
             return ""
+
         watch = self.views.built("watch")
-        return watch.session_header() if watch is not None else ""
+        if watch is not None:
+            live = watch.session_header()
+            if live:
+                return live
+
+        return _session_on_disk()
 
     def _sign_in_with(self, dialog, browser) -> None:
         """Bring a sign-in over from the browser chosen in Settings.
@@ -2248,6 +2259,25 @@ class MainWindow(QMainWindow):
 
         self.library.save()
         super().closeEvent(event)
+
+
+def _session_on_disk() -> str:
+    """The YouTube session as stored in our own web profile.
+
+    Read from the profile directory rather than from a running browser, so a
+    phone can be signed in without the YouTube tab ever having been opened on
+    the desktop. The store is Chromium's, which is the format
+    `core.browsers` already knows how to read; ours keeps its values in plain
+    text, so nothing has to be decrypted.
+    """
+    from rose_bouquet.core import browsers
+
+    profile = data_dir() / "youtube"
+    if not (profile / "Cookies").exists():
+        return ""
+
+    found = browsers.read(browsers.Browser("Rose Bouquet", "chromium", profile))
+    return "; ".join(f"{c.name}={c.value}" for c in found)
 
 
 def _entry_key(track) -> str:

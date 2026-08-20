@@ -2028,3 +2028,41 @@ def test_the_server_says_when_a_device_first_connects():
     connections = [line for line in said if "a device connected" in line]
     assert len(connections) == 1, said        # once, not once per request
     assert "127.0.0.1" in connections[0]
+
+
+def test_the_session_is_shared_without_the_youtube_tab_being_open(tmp_path, monkeypatch):
+    """The bug: sharing on, phone connected, and an empty answer anyway.
+
+    The session was only handed over if the YouTube tab had been built, on the
+    reasoning that there is no session in a browser nobody opened. There is —
+    it lives in the profile on disk and outlives every launch. So a phone that
+    asked before the tab happened to be opened was told the desktop was not
+    sharing, which is a different and wrong thing.
+    """
+    import sqlite3
+
+    from rose_bouquet.ui import main_window
+
+    profile = tmp_path / "youtube"
+    profile.mkdir()
+    db = sqlite3.connect(profile / "Cookies")
+    db.execute("CREATE TABLE cookies (name TEXT, value TEXT, encrypted_value BLOB,"
+               " host_key TEXT, path TEXT, expires_utc INTEGER, is_secure INTEGER,"
+               " is_httponly INTEGER)")
+    for name, value in (("SID", "sid"), ("HSID", "hsid"), ("LOGIN_INFO", "li")):
+        db.execute("INSERT INTO cookies VALUES (?,?,?,?,?,?,?,?)",
+                   (name, value, b"", ".youtube.com", "/", 0, 1, 1))
+    db.execute("INSERT INTO cookies VALUES (?,?,?,?,?,?,?,?)",
+               ("elsewhere", "no", b"", ".example.com", "/", 0, 1, 0))
+    db.commit()
+    db.close()
+
+    monkeypatch.setattr(main_window, "data_dir", lambda: tmp_path)
+    header = main_window._session_on_disk()
+
+    assert "SID=sid" in header and "LOGIN_INFO=li" in header
+    assert "elsewhere" not in header          # only YouTube's and Google's
+
+    # And nothing there at all is an empty answer, not a crash.
+    monkeypatch.setattr(main_window, "data_dir", lambda: tmp_path / "nothing")
+    assert main_window._session_on_disk() == ""
