@@ -29,6 +29,18 @@ A music player/importer, a YouTube client, and a media server for your own netwo
 > active development. Expect things to be broken or missing, and please
 > report anything that goes wrong.
 
+## The phone client
+
+Rose Bouquet has an Android client, and it lives in `android/` in this
+repository rather than in one of its own. The two go out in the same release,
+so a version number means the same thing on both — and a fix that belongs to
+both halves lands in one commit instead of drifting apart across two.
+
+It talks to the desktop's server over Subsonic, plays YouTube through
+NewPipeExtractor, and shares the desktop's ordering, its library screen and
+its theme system. `tools/release.sh <version>` builds both and tells you what
+to hand to `gh release create`.
+
 ## Expect bugs
 
 This is early software and it will break on things I have not seen. It is

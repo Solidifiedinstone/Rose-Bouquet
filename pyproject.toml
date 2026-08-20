@@ -61,3 +61,9 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["F401", "F811", "B011"]
+
+[tool.pytest.ini_options]
+# The Android client lives in `android/` in this repository and is built with
+# Gradle, not pytest. Named explicitly so a test run cannot wander into it, or
+# into a Gradle build directory full of generated Java.
+testpaths = ["tests"]
