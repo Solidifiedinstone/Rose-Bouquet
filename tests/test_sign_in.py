@@ -105,18 +105,23 @@ def test_the_profile_is_put_back_when_the_login_window_closes():
     from rose_bouquet.ui import youtube_tab
 
     restored: dict = {}
-    tab = youtube_tab.YouTubeTab.__new__(youtube_tab.YouTubeTab)
-    tab.profile = object()
-    tab._login_window = object()
-    tab._decorate = lambda profile: restored.__setitem__("decorated", profile)
-    tab.view = type("V", (), {"reload": staticmethod(
-        lambda: restored.__setitem__("reloaded", True))})()
 
     class P:
         @staticmethod
         def setHttpUserAgent(value):
             restored["ua"] = value
+
+    class W:
+        @staticmethod
+        def deleteLater():
+            restored["let go"] = True
+
+    tab = youtube_tab.YouTubeTab.__new__(youtube_tab.YouTubeTab)
     tab.profile = P()
+    tab._login_window = W()
+    tab._decorate = lambda profile: restored.__setitem__("decorated", profile)
+    tab.view = type("V", (), {"reload": staticmethod(
+        lambda: restored.__setitem__("reloaded", True))})()
 
     youtube_tab.YouTubeTab._login_window_closed(tab)
 
@@ -124,6 +129,13 @@ def test_the_profile_is_put_back_when_the_login_window_closes():
     assert restored["decorated"] is tab.profile      # blocker and scripts back
     assert restored["ua"] == youtube_tab.USER_AGENT  # and our user agent
     assert restored["reloaded"]                      # picks up the session
+    # Let go on the event loop, not from inside its own close.
+    assert restored["let go"]
+
+    # Closing twice must not run any of that a second time.
+    restored.clear()
+    youtube_tab.YouTubeTab._login_window_closed(tab)
+    assert restored == {}
 
 
 def test_nothing_reads_a_browser_cookie_jar_to_sign_in():

@@ -445,6 +445,22 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
 #: reached, because what Google objects to is the tab, not the address.
 
 
+class _LoginWindow(QWebEngineView):
+    """The plain window a sign-in happens in.
+
+    A class of its own for one reason: it has to say when it is *closing*,
+    while it and its page are still alive. Wiring the tidy-up to `destroyed`
+    instead means touching the profile from inside C++ destruction, with the
+    page already half gone — which is a crash, and was.
+    """
+
+    closed = Signal()
+
+    def closeEvent(self, event) -> None:       # noqa: N802 (Qt's name)
+        self.closed.emit()
+        super().closeEvent(event)
+
+
 class _Page(QWebEnginePage):
     """A page that does not silently drop the windows the site asks for.
 
@@ -715,13 +731,18 @@ class YouTubeTab(QWidget):
 
         self._undecorate()
 
-        window = QWebEngineView()
+        # Parented to the tab, with a window flag: the profile is parented to
+        # the tab too, and a profile must outlive every page using it. An
+        # unparented window is destroyed on its own schedule, which is how you
+        # get "Release of profile requested but WebEnginePage still not
+        # deleted" and then a crash.
+        window = _LoginWindow(self)
+        window.setWindowFlag(Qt.WindowType.Window, True)
         window.setPage(QWebEnginePage(self.profile, window))
         window.setWindowTitle(
             "Sign in to YouTube — close this window when you are done")
         window.resize(1000, 800)
-        window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        window.destroyed.connect(self._login_window_closed)
+        window.closed.connect(self._login_window_closed)
         window.setUrl(QUrl(WATCH_URL))
         window.show()
 
@@ -731,11 +752,21 @@ class YouTubeTab(QWidget):
             "Sign in in the window that just opened, then close it", "info")
 
     def _login_window_closed(self) -> None:
-        """Put the profile back as it was, and pick up whatever session it got."""
-        self._login_window = None
+        """Put the profile back as it was, and pick up whatever session it got.
+
+        Runs while the window is still alive — it is closing, not destroyed —
+        so the page it owns is still a valid page and the profile is still
+        safe to touch. The window itself is let go afterwards, on the event
+        loop rather than from inside its own close.
+        """
+        window, self._login_window = self._login_window, None
+        if window is None:
+            return
+
         self._decorate(self.profile)
         self.profile.setHttpUserAgent(USER_AGENT)
         logger.info("sign-in: window closed, reloading the tab")
+        window.deleteLater()
         self.view.reload()
 
     def _undecorate(self) -> None:
