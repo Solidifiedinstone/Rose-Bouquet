@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 
 from rose_bouquet.core import artwork
 from rose_bouquet.core.library import Track
+from rose_bouquet.ui import tasks
 from rose_bouquet.ui.theme import Appearance
 
 #: Cover art is decoded once per path and per size, because a library view
@@ -52,6 +53,11 @@ def _decoded(path: str, size: int) -> QPixmap:
 
     image = reader.read()
     return QPixmap.fromImage(image) if not image.isNull() else QPixmap()
+
+
+def _art_key(track) -> str:
+    """A cache key for a track's art before its location is known."""
+    return "track:" + getattr(track, "path", "")
 
 
 def cover_pixmap(path: str, size: int, appearance: Appearance) -> QPixmap:
@@ -101,7 +107,22 @@ def cover_pixmap(path: str, size: int, appearance: Appearance) -> QPixmap:
 
 
 class CoverArt(QLabel):
-    """A square of cover art."""
+    """A square of cover art, which arrives when it arrives.
+
+    Finding the art means reading tags out of an audio file, and turning it
+    into a pixmap means decoding a JPEG. Doing both while building a row cost
+    about a millisecond and a half per track — which is invisible for one row
+    and fourteen seconds for a library of nine hundred, all of it on the thread
+    that is supposed to be drawing.
+
+    So a row gets its placeholder immediately and its cover when the work is
+    done. Anything already decoded is still set outright, because the cache
+    makes that free and a scroll back up should not flicker.
+    """
+
+    #: Covers being decoded right now, so a fast scroll does not ask for the
+    #: same one ten times. Keyed the same as the pixmap cache.
+    _in_flight: set = set()
 
     def __init__(self, size: int, appearance: Appearance, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -109,13 +130,53 @@ class CoverArt(QLabel):
         self.appearance = appearance
         self.setFixedSize(QSize(size, size))
         self.setStyleSheet("background: transparent;")
+        self._wanted = ""
 
     def set_track(self, track: Optional[Track]) -> None:
         # Not `track.cover`: that is only art sitting *beside* the file, and
         # most music keeps its cover inside the tags instead — a library with
         # no `cover.jpg` anywhere would show placeholders from end to end.
-        path = artwork.local_art(track) if track else ""
-        self.setPixmap(cover_pixmap(path, self.size_px, self.appearance))
+        source = getattr(track, "path", "") if track else ""
+        self._wanted = source
+
+        ready = _COVER_CACHE.get((_art_key(track), self.size_px)) if track else None
+        if ready is not None:
+            self.setPixmap(ready)
+            return
+
+        # Something to look at now; the real thing follows.
+        self.setPixmap(cover_pixmap("", self.size_px, self.appearance))
+        if track is not None:
+            self._fetch(track)
+
+    def _fetch(self, track: Track) -> None:
+        """Find and decode this track's art away from the drawing thread."""
+        key = (track.path, self.size_px)
+        if key in CoverArt._in_flight:
+            return
+        CoverArt._in_flight.add(key)
+
+        size, appearance = self.size_px, self.appearance
+
+        def find() -> str:
+            return artwork.local_art(track)
+
+        def arrived(path: str) -> None:
+            CoverArt._in_flight.discard(key)
+            # Decoded here, on the UI thread, because a QPixmap cannot be made
+            # off it. The expensive half — finding the art, which means reading
+            # tags — has already happened.
+            pixmap = cover_pixmap(path, size, appearance)
+            _COVER_CACHE[(path or "", size)] = pixmap
+            _COVER_CACHE[(_art_key(track), size)] = pixmap
+            # The row may have been recycled onto another track by now.
+            if self._wanted == track.path:
+                self.setPixmap(pixmap)
+
+        def failed(_message: str) -> None:
+            CoverArt._in_flight.discard(key)
+
+        tasks.run(find, on_done=arrived, on_error=failed)
 
     def apply_appearance(self, appearance: Appearance) -> None:
         self.appearance = appearance

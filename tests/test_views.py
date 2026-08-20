@@ -476,3 +476,59 @@ def test_the_window_steps_aside_for_a_video_and_comes_back(app):
     MainWindow._youtube_fullscreen(window, False)
     assert rail == [False, True] and bar == [False, True]
     assert settled == [True, True]      # both ways, not just on the way in
+
+
+# ── Cover art does not block the thread that draws ────────────────
+
+def test_a_row_gets_a_placeholder_now_and_its_cover_later(built, app, appearance, tmp_path):
+    """Finding and decoding art cost 14 seconds across a library of 900.
+
+    Finding it means reading tags out of an audio file and decoding it means a
+    JPEG — about a millisecond and a half per track, all of it on the thread
+    that is supposed to be drawing. Invisible for one row; the whole library
+    was another matter.
+    """
+    from rose_bouquet.ui import widgets
+
+    asked: list = []
+    monkey = widgets.tasks.run
+
+    def fake_run(work, on_done=None, on_error=None, **kw):
+        asked.append(work)                      # queued, not run inline
+
+    widgets.tasks.run = fake_run
+    try:
+        art = widgets.CoverArt(38, appearance)
+        track = Track(path=str(tmp_path / "song.mp3"), title="A song", artist="A")
+        art.set_track(track)
+
+        # Something to look at immediately, and the real work handed off.
+        assert art.pixmap() is not None and not art.pixmap().isNull()
+        assert len(asked) == 1
+
+        # Asked for twice while the first is still going: still one lookup.
+        widgets.CoverArt(38, appearance).set_track(track)
+        assert len(asked) == 1
+    finally:
+        widgets.tasks.run = monkey
+        widgets.CoverArt._in_flight.clear()
+
+
+def test_art_already_decoded_is_set_outright(built, app, appearance, tmp_path):
+    """Scrolling back up must not flicker through placeholders."""
+    from rose_bouquet.ui import widgets
+
+    track = Track(path=str(tmp_path / "song.mp3"), title="A song", artist="A")
+    ready = widgets.cover_pixmap("", 38, appearance)
+    widgets._COVER_CACHE[(widgets._art_key(track), 38)] = ready
+
+    asked: list = []
+    monkey = widgets.tasks.run
+    widgets.tasks.run = lambda work, **kw: asked.append(work)
+    try:
+        art = widgets.CoverArt(38, appearance)
+        art.set_track(track)
+        assert asked == []                      # nothing to look up
+    finally:
+        widgets.tasks.run = monkey
+        widgets._COVER_CACHE.pop((widgets._art_key(track), 38), None)
