@@ -450,6 +450,11 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
 COOKIE_SETTLE_MS = 400
 COOKIE_CEILING_MS = 5000
 
+#: How long to let the store replay the jar when reading the session out
+#: for another device. Replayed asynchronously, so there is nothing to
+#: wait on but time.
+SESSION_READ_MS = 700
+
 
 def _as_qt_cookie(cookie):
     """One borrowed cookie as the QNetworkCookie the web view's store wants.
@@ -732,6 +737,39 @@ class YouTubeTab(QWidget):
         self.status.emit(
             "Sign in to YouTube in your own browser, then bring the session "
             "across in Settings \u2192 Account", "info")
+
+    def session_header(self) -> str:
+        """The signed-in session as a `Cookie:` header, or an empty string.
+
+        What a phone needs to be signed in as you: the same jar, in the form
+        an HTTP request carries it. Read out of the profile rather than kept
+        alongside it, so it is whatever the tab is actually using — including
+        anything Google has rotated since it was imported.
+        """
+        from PySide6.QtCore import QEventLoop, QTimer
+
+        collected: dict[str, str] = {}
+        store = self.profile.cookieStore()
+
+        def note(cookie) -> None:
+            host = cookie.domain().lstrip(".")
+            if host.endswith(("youtube.com", "google.com")):
+                collected[bytes(cookie.name()).decode()] = bytes(cookie.value()).decode()
+
+        store.cookieAdded.connect(note)
+        store.loadAllCookies()
+
+        # loadAllCookies replays the jar through cookieAdded, asynchronously.
+        loop = QEventLoop()
+        QTimer.singleShot(SESSION_READ_MS, loop.quit)
+        loop.exec()
+
+        try:
+            store.cookieAdded.disconnect(note)
+        except (RuntimeError, TypeError):
+            pass
+
+        return "; ".join(f"{name}={value}" for name, value in collected.items())
 
     def adopt_session(self, cookies) -> None:
         """Take a session read out of a browser, and reload into it.

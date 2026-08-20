@@ -1783,3 +1783,32 @@ def test_searching_keeps_the_order_you_asked_for():
     assert [t.title for t in found] == ["Alpha two", "Alpha"]
     found = library.search("alpha", "shortest")
     assert [t.title for t in found] == ["Alpha", "Alpha two"]
+
+
+# ── Handing the sign-in to your own devices ───────────────────────
+
+def test_the_session_is_not_shared_unless_you_switch_it_on():
+    """A music server giving away a Google session unasked is not a default."""
+    from rose_bouquet.core.server import MusicServer, ServerConfig
+
+    served = MusicServer(library=Library(), config=ServerConfig())
+    assert served.youtube_session is None       # nothing to hand out
+
+    served = MusicServer(library=Library(), config=ServerConfig(),
+                         youtube_session=lambda: "SID=x")
+    assert served.youtube_session() == "SID=x"
+
+
+def test_the_window_only_shares_when_told_to_and_when_there_is_a_tab():
+    """Two guards, and the second one matters as much as the first.
+
+    Starting a whole browser engine to answer a request from the network is
+    not something a request from the network gets to do.
+    """
+    import inspect
+
+    from rose_bouquet.ui.main_window import MainWindow
+
+    source = inspect.getsource(MainWindow._youtube_session)
+    assert "share_youtube_session" in source
+    assert 'self.views.built("watch")' in source     # never builds one

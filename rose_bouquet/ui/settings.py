@@ -1017,6 +1017,15 @@ class SettingsDialog(QDialog):
         layout.addWidget(generate)
         form.addRow("Password", password_row)
 
+        self.share_session = QCheckBox("Share my YouTube sign-in with my devices")
+        self.share_session.setChecked(self.preferences.share_youtube_session)
+        self.share_session.setToolTip(
+            "Lets Rose Bouquet on your phone sign in to YouTube as you, over "
+            "your own network, using the password above. Off unless you turn "
+            "it on.")
+        self.share_session.toggled.connect(self._on_server_changed)
+        layout.addWidget(self.share_session)
+
         self.lan_only = QCheckBox("Only serve this machine (127.0.0.1)")
         self.lan_only.setChecked(config.host == "127.0.0.1")
         self.lan_only.toggled.connect(self._on_server_changed)
@@ -1055,6 +1064,7 @@ class SettingsDialog(QDialog):
 
         self.preferences.set_server_config(config)
         self.preferences.remote_control = self.remote_control.isChecked()
+        self.preferences.share_youtube_session = self.share_session.isChecked()
         self.preferences.save()
         self.server_changed.emit()
 

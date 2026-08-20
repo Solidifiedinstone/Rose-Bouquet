@@ -139,6 +139,10 @@ class Preferences:
     #: value falls back to the default rather than failing, so a preference
     #: written by a newer version cannot stop an older one opening.
     library_order: str = "artist"
+    #: Hand the YouTube sign-in to devices that authenticate to the server.
+    #: Off by default: a music server giving away a Google session unasked is
+    #: not a default anybody chose.
+    share_youtube_session: bool = False
     #: Whether Playlists gets a place in the sidebar. On for most people; off
     #: for anyone who keeps one library and never makes a playlist, and would
     #: rather not walk past the tab every day.
@@ -350,6 +354,7 @@ class Preferences:
             "download_format": self.download_format,
             "scan_on_start": self.scan_on_start,
             "show_playlists": self.show_playlists,
+            "share_youtube_session": self.share_youtube_session,
             "library_order": self.library_order,
             "use_browser_cookies": self.use_browser_cookies,
             "add_downloads_to_library": self.add_downloads_to_library,
@@ -395,7 +400,8 @@ class Preferences:
 
         for name in ("scan_on_start", "add_downloads_to_library", "visualizer",
                      "visualizer_blur", "remote_control", "use_browser_cookies",
-                     "check_updates_on_start", "show_playlists"):
+                     "check_updates_on_start", "show_playlists",
+                     "share_youtube_session"):
             if name in data:
                 setattr(prefs, name, bool(data[name]))
 

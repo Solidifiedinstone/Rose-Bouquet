@@ -129,6 +129,9 @@ class MusicServer:
     control: Optional[Callable[[str, str], Any]] = None
     #: Returns what is playing now, as a dict.
     now_playing: Optional[Callable[[], dict]] = None
+    #: Called for the YouTube session, when a paired device asks for it.
+    #: None — the default — means the session is never handed out.
+    youtube_session: Optional[Callable[[], str]] = None
 
     _server: Optional[ThreadingHTTPServer] = None
     _thread: Optional[threading.Thread] = None
@@ -390,6 +393,24 @@ def _make_handler(server: MusicServer):
             if action == "now-playing":
                 payload = server.now_playing() if server.now_playing else {}
                 return self._send_json(payload or {})
+
+            if action == "youtube-session":
+                # Your Google session, handed to your own phone on your own
+                # network, over a password you set. Off unless you turn it on:
+                # a music server has no business giving away a sign-in by
+                # default, and an empty answer is the right one when it is off
+                # rather than an error that invites guessing.
+                if server.youtube_session is None:
+                    return self._send_json(
+                        {"cookie": "", "shared": False,
+                         "reason": "sharing the YouTube sign-in is switched off"},
+                        status=403)
+                cookie = server.youtube_session() or ""
+                return self._send_json({
+                    "cookie": cookie,
+                    "shared": True,
+                    "signed_in": bool(cookie),
+                })
 
             if action == "library":
                 return self._send_json({"tracks": [

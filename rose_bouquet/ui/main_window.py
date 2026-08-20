@@ -190,6 +190,7 @@ class MainWindow(QMainWindow):
             config=self.preferences.server_config(),
             control=self._remote_control,
             now_playing=self._now_playing,
+            youtube_session=self._youtube_session,
         )
 
         #: The import being worked through, if any.
@@ -1939,6 +1940,19 @@ class MainWindow(QMainWindow):
         dialog.sign_in_with.connect(
             lambda browser: self._sign_in_with(dialog, browser))
         dialog.exec()
+
+    def _youtube_session(self) -> str:
+        """The YouTube session, for a device that has authenticated and asked.
+
+        Only when it has been turned on in Settings, and only if the tab has
+        been built — there is no session in a browser nobody opened, and
+        starting a whole browser engine to answer a request from the network
+        is not something a request from the network gets to do.
+        """
+        if not self.preferences.share_youtube_session:
+            return ""
+        watch = self.views.built("watch")
+        return watch.session_header() if watch is not None else ""
 
     def _sign_in_with(self, dialog, browser) -> None:
         """Bring a sign-in over from the browser chosen in Settings.
