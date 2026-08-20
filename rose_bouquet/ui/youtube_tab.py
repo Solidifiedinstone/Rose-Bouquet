@@ -649,23 +649,26 @@ class YouTubeTab(QWidget):
     def sign_in(self) -> None:
         """Go to Google's login, here, and sign in the way you sign in anywhere.
 
-        This app spent a long time working around a wall that is not there
-        for a person at a keyboard. Google does answer *some* sign-ins with
-        "this browser or app may not be secure", and every test that drove
-        the login form from JavaScript got exactly that — which is what a bot
-        gets, because setting an input's value from script and clicking Next
-        is what a bot does. Driven with real mouse and keyboard events,
-        Google takes the address and answers "couldn't find this account":
-        the ordinary reply to an address that does not exist.
+        Google does answer *some* sign-ins with "this browser or app may not
+        be secure", and every test that drove the login form from JavaScript
+        got exactly that — which is what a bot gets. Driven with real mouse
+        and keyboard events, Google takes the address and answers "couldn't
+        find this account": the ordinary reply to one that does not exist.
+        So there is no wall for a person at a keyboard.
 
-        So there is nothing to work around, and nothing else to build. No
-        device code — an OAuth token authenticates API calls and cannot make
-        a web session, which is why the version that had one drew this tab as
-        widgets instead of the site. No reading anybody's cookie jar either.
-        YouTube's own Sign in button already goes here; this one is the same
-        journey from the toolbar.
+        Half a session is worse than none, though. Cookies left over from an
+        abandoned or partial sign-in send `ServiceLogin` around
+        `BootstrapSession` until Chromium gives up with
+        ERR_TOO_MANY_REDIRECTS — a login page that never appears and an error
+        that blames the browser. So the slate is wiped first: signing in is
+        exactly when nobody wants the old session kept.
         """
+        self._forget_the_old_session()
         self.view.setUrl(QUrl(SIGN_IN_URL))
+
+    def _forget_the_old_session(self) -> None:
+        """Drop what is in the jar, so a stale half-session cannot loop."""
+        self.profile.cookieStore().deleteAllCookies()
 
     # ── Going places ──────────────────────────────────────────────
 

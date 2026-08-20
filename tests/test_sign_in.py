@@ -72,13 +72,21 @@ def test_sign_in_goes_to_googles_login_in_the_tab():
     # showing the form. `service=youtube` lands you back there anyway.
     assert "continue=" not in youtube_tab.SIGN_IN_URL
 
-    # It navigates this view. Nothing is opened elsewhere and nothing is read.
+    # It navigates this view, and clears the jar on the way. Half a session
+    # left from an abandoned sign-in sends ServiceLogin round BootstrapSession
+    # until Chromium gives up with ERR_TOO_MANY_REDIRECTS, which looks like a
+    # login page that will not load.
     went: list = []
+    cleared: list = []
     tab = youtube_tab.YouTubeTab.__new__(youtube_tab.YouTubeTab)
     tab.view = type("V", (), {"setUrl": staticmethod(went.append)})()
+    tab.profile = type("P", (), {"cookieStore": staticmethod(
+        lambda: type("S", (), {"deleteAllCookies": staticmethod(
+            lambda: cleared.append(True))})())})()
 
     youtube_tab.YouTubeTab.sign_in(tab)
 
+    assert cleared == [True]
     assert [u.toString() for u in went] == [youtube_tab.SIGN_IN_URL]
     assert QUrl(youtube_tab.SIGN_IN_URL).host() == "accounts.google.com"
 
