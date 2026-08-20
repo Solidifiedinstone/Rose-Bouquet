@@ -732,12 +732,14 @@ class YouTubeTab(QWidget):
         so both buttons go through it.
         """
         page = self.view.page()
+        logger.info("sign-in: caught %s, emptying the jar", _url.toString()[:120])
 
         def go() -> None:
             # Left disarmed: re-arming here would catch this very navigation
             # and hold it back again, for ever. `_on_load_finished` puts it
             # back once you are off the login flow.
             page.clearing_first = False
+            logger.info("sign-in: jar empty, loading %s", SIGN_IN_URL)
             self.view.setUrl(QUrl(SIGN_IN_URL))
 
         self._forget_the_old_session(then=go)
@@ -768,11 +770,19 @@ class YouTubeTab(QWidget):
                 pass
             then()
 
-        settled.timeout.connect(go)
+        removed = [0]
+        store.cookieRemoved.connect(lambda _c: removed.__setitem__(0, removed[0] + 1))
+
+        def report_and_go() -> None:
+            logger.info("sign-in: %d cookies removed", removed[0])
+            go()
+
+        settled.timeout.connect(report_and_go)
         store.cookieRemoved.connect(settled.start)
         store.deleteAllCookies()
         settled.start()
-        QTimer.singleShot(JAR_CEILING_MS, lambda: settled.isActive() and go())
+        QTimer.singleShot(JAR_CEILING_MS,
+                          lambda: settled.isActive() and report_and_go())
 
     # ── Going places ──────────────────────────────────────────────
 
@@ -817,6 +827,11 @@ class YouTubeTab(QWidget):
         page = self.view.page()
         if not _is_a_login(self.view.url()) and self.view.url().host() != "accounts.google.com":
             page.clearing_first = True
+
+        here = self.view.url()
+        if _is_a_login(here) or here.host() in ("accounts.google.com", "accounts.youtube.com"):
+            logger.info("sign-in: %s -> %s", "loaded" if ok else "FAILED",
+                        here.toString()[:140])
 
         if not ok:
             self.status.emit("That page would not load", "warning")
