@@ -1,0 +1,9 @@
+<resources>
+    <!-- The real palette is applied in Compose; this only has to keep the
+         window from flashing white before the first frame is drawn. -->
+    <style name="Theme.RoseBouquet" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#000000</item>
+        <item name="android:statusBarColor">#00000000</item>
+        <item name="android:navigationBarColor">#00000000</item>
+    </style>
+</resources>

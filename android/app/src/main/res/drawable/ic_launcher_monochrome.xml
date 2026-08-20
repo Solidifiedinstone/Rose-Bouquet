@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The themed-icon layer, used by Android 13+ when the user turns on themed
+    icons. It is drawn as a single flat colour chosen by the system, so the
+    gradients and the green stem would all collapse into one shade and the
+    bloom would lose its layers. This is the silhouette instead: the outline of
+    the bloom and the stem, which still reads as the Rose mark at 48dp.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="256" android:viewportHeight="256"
+    android:tint="#FFFFFFFF">
+
+    <group android:pivotX="128" android:pivotY="128"
+        android:scaleX="0.82" android:scaleY="0.82" android:translateY="3">
+
+        <path android:pathData="M128,140 C132,164 144,182 158,198 C164,205 167,212 167,219"
+            android:strokeColor="#FFFFFF" android:strokeWidth="9" android:strokeLineCap="round" />
+        <path android:pathData="M139,176 C117,180 99,173 90,156 C113,148 132,156 139,176 Z"
+            android:fillColor="#FFFFFF" />
+        <path android:pathData="M152,196 C173,198 190,189 197,172 C175,166 157,177 152,196 Z"
+            android:fillColor="#FFFFFF" />
+        <path android:pathData="M128,38 C148,30 172,42 180,60 C198,68 196,94 186,108 C190,128 170,146 150,144 C138,156 114,154 104,141 C84,140 70,120 74,102 C62,86 72,62 90,54 C98,38 116,32 128,38 Z"
+            android:fillColor="#FFFFFF" />
+    </group>
+</vector>

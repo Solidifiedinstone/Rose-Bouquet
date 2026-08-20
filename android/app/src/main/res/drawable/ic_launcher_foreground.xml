@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The Rose Bouquet rose, from the desktop app's packaging/rose-bouquet.svg.
+
+    The same paths, in the same 256-unit space, so the phone and the desktop
+    show the same rose rather than two drawings of one. Only two things differ,
+    both forced by the adaptive-icon format:
+
+    - The tile is gone; it is the background layer now.
+    - Everything is scaled to 0.82 about the centre, because a launcher may
+      crop up to a fifth off each edge and the stem reaching to y=219 would
+      otherwise be cut. What is left sits inside the 66dp safe zone.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="256"
+    android:viewportHeight="256">
+
+    <group
+        android:pivotX="128" android:pivotY="128"
+        android:scaleX="0.82" android:scaleY="0.82"
+        android:translateY="3">
+
+        <!-- Stem, bending right as in the ASCII art -->
+        <path
+            android:pathData="M128,140 C132,164 144,182 158,198 C164,205 167,212 167,219"
+            android:strokeColor="#3FA860"
+            android:strokeWidth="9"
+            android:strokeLineCap="round" />
+
+        <!-- Leaf, left of the stem -->
+        <path
+            android:pathData="M139,176 C117,180 99,173 90,156 C113,148 132,156 139,176 Z"
+            android:fillColor="#3FA860" />
+        <path
+            android:pathData="M137,174 C124,169 110,163 97,157"
+            android:strokeColor="#2B7A44"
+            android:strokeWidth="3"
+            android:strokeLineCap="round" />
+
+        <!-- Leaf, right of the stem -->
+        <path
+            android:pathData="M152,196 C173,198 190,189 197,172 C175,166 157,177 152,196 Z"
+            android:fillColor="#349050" />
+        <path
+            android:pathData="M154,194 C167,189 181,182 192,174"
+            android:strokeColor="#256439"
+            android:strokeWidth="3"
+            android:strokeLineCap="round" />
+
+        <!-- Sepals under the bloom -->
+        <path
+            android:pathData="M112,130 C118,146 130,152 144,148 C140,134 126,126 112,130 Z"
+            android:fillColor="#3FA860" />
+
+        <!-- Outermost petal cup -->
+        <path
+            android:pathData="M128,38 C148,30 172,42 180,60 C198,68 196,94 186,108 C190,128 170,146 150,144 C138,156 114,154 104,141 C84,140 70,120 74,102 C62,86 72,62 90,54 C98,38 116,32 128,38 Z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:type="linear"
+                    android:startX="25" android:startY="0"
+                    android:endX="230" android:endY="256">
+                    <item android:offset="0" android:color="#FFFFFFFF" />
+                    <item android:offset="1" android:color="#FFCFC9DA" />
+                </gradient>
+            </aapt:attr>
+        </path>
+
+        <!-- Left outer petal, folding across the front -->
+        <path
+            android:pathData="M68,96 C68,122 88,142 116,146 C104,130 98,112 100,94 C102,74 116,60 134,58 C98,54 68,70 68,96 Z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:type="linear"
+                    android:startX="0" android:startY="0"
+                    android:endX="256" android:endY="256">
+                    <item android:offset="0" android:color="#FFFBF9FC" />
+                    <item android:offset="1" android:color="#FFBCB5CB" />
+                </gradient>
+            </aapt:attr>
+        </path>
+
+        <!-- Right outer petal, wrapping the other way -->
+        <path
+            android:pathData="M188,96 C188,70 166,50 138,50 C154,62 162,78 160,96 C158,116 146,130 128,134 C164,140 188,122 188,96 Z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:type="linear"
+                    android:startX="0" android:startY="0"
+                    android:endX="256" android:endY="256">
+                    <item android:offset="0" android:color="#FFFBF9FC" />
+                    <item android:offset="1" android:color="#FFBCB5CB" />
+                </gradient>
+            </aapt:attr>
+        </path>
+
+        <!-- Inner cone the petals wrap around -->
+        <path
+            android:pathData="M128,66 C146,66 158,80 158,98 C158,118 144,132 126,132 C110,132 98,118 98,100 C98,80 110,66 128,66 Z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:type="linear"
+                    android:startX="0" android:startY="0"
+                    android:endX="256" android:endY="256">
+                    <item android:offset="0" android:color="#FFF4F1F7" />
+                    <item android:offset="1" android:color="#FFA79FBA" />
+                </gradient>
+            </aapt:attr>
+        </path>
+
+        <!-- The tight centre: two short wraps, not a full spiral -->
+        <path
+            android:pathData="M112,104 C112,88 126,78 140,84"
+            android:strokeColor="#7D7392"
+            android:strokeWidth="5"
+            android:strokeLineCap="round" />
+        <path
+            android:pathData="M144,100 C144,114 130,122 118,116"
+            android:strokeColor="#7D7392"
+            android:strokeWidth="5"
+            android:strokeLineCap="round" />
+
+        <!-- Petal separations, keeping the layers readable -->
+        <path
+            android:pathData="M100,94 C102,74 116,60 134,58"
+            android:strokeColor="#9D95B0"
+            android:strokeWidth="3.5"
+            android:strokeLineCap="round" />
+        <path
+            android:pathData="M160,96 C158,116 146,130 128,134"
+            android:strokeColor="#9D95B0"
+            android:strokeWidth="3.5"
+            android:strokeLineCap="round" />
+    </group>
+</vector>
