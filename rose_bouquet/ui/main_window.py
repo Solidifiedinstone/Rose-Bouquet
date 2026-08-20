@@ -839,14 +839,27 @@ class MainWindow(QMainWindow):
         self._update_mode_buttons()
 
     def _update_mode_buttons(self) -> None:
-        theme = self.appearance.theme
-        on = f"color: {theme.accent}; background: transparent; border: none;"
-        off = f"color: {theme.text_dim}; background: transparent; border: none;"
+        """Light the transport buttons that are on, without a repaint of the bar.
 
-        self.shuffle_button.setStyleSheet(on if self.playback.queue.shuffle else off)
+        Set as a property the window stylesheet already selects on, rather
+        than as a stylesheet of each button's own. Giving a widget its own
+        stylesheet makes Qt re-parse the whole sheet and re-polish the
+        subtree, and this runs on every press of shuffle, repeat, play, next
+        and previous — which is what made the player bar blink out and back
+        every time a transport button was touched.
+        """
         repeat = self.playback.queue.repeat
-        self.repeat_button.setStyleSheet(off if repeat is Repeat.OFF else on)
         self.repeat_button.setText("↻¹" if repeat is Repeat.ONE else "↻")
+
+        for button, lit in ((self.shuffle_button, self.playback.queue.shuffle),
+                            (self.repeat_button, repeat is not Repeat.OFF)):
+            want = "true" if lit else "false"
+            if button.property("active") == want:
+                continue
+            button.setProperty("active", want)
+            # Qt only re-evaluates property selectors when told to.
+            button.style().unpolish(button)
+            button.style().polish(button)
 
     def _feed_artwork(self, track) -> None:
         """Hand the sleeve to the visualiser, for the shapes that draw it."""

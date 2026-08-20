@@ -720,6 +720,19 @@ def stylesheet(theme: Theme, style: Optional[Style] = None) -> str:
         background: transparent;
     }}
 
+    /* Shuffle and repeat, lit or not. A property rather than a stylesheet of
+       their own: setting a stylesheet on a widget makes Qt re-parse this whole
+       sheet and re-polish the subtree, and doing that on every press of a
+       transport button made the whole player bar blink. Track rows learned
+       the same lesson — see #TrackRow[playing]. */
+    QPushButton#Quiet[active="true"] {{
+        color: {theme.accent};
+    }}
+
+    QPushButton#Quiet[active="false"] {{
+        color: {dim};
+    }}
+
     QPushButton#Quiet[liked="true"] {{
         color: {theme.accent};
     }}
