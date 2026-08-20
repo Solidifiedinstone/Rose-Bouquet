@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.util.UnstableApi
 import android.net.Uri
+import dev.rose.bouquet.data.LibraryOrder
 import dev.rose.bouquet.data.Imports
 import dev.rose.bouquet.data.MusicRepository
 import dev.rose.bouquet.data.Network
@@ -212,6 +213,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }.orEmpty()
 
     // ── Playing ───────────────────────────────────────────────────
+
+    /**
+     * Play a whole list, from the top or shuffled.
+     *
+     * The list is whatever is on screen, so a search narrows what this acts on
+     * — having typed a genre and then pressed Play, being given the entire
+     * library instead would be the wrong answer to the same button.
+     */
+    fun playAll(songs: List<SongEntity>, shuffle: Boolean = false) {
+        if (songs.isEmpty()) {
+            _status.value = "Nothing here that can be played"
+            return
+        }
+        play(if (shuffle) songs.shuffled() else songs, 0)
+    }
+
+    fun setLibraryOrder(order: LibraryOrder) =
+        viewModelScope.launch { settingsStore.setLibraryOrder(order) }
+
+    fun setShowPlaylists(on: Boolean) =
+        viewModelScope.launch { settingsStore.setShowPlaylists(on) }
 
     fun play(songs: List<SongEntity>, startAt: Int = 0) {
         val server = activeServer.value ?: return

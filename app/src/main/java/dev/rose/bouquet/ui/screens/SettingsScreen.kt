@@ -197,6 +197,13 @@ fun SettingsScreen(model: AppViewModel) {
                 settings.musicOnly, model::setMusicOnly,
             )
         }
+        item {
+            Toggle(
+                "Show Playlists",
+                "Your playlists are kept either way — this only hides the tab.",
+                settings.showPlaylists, model::setShowPlaylists,
+            )
+        }
 
         item {
             UpdateRow()

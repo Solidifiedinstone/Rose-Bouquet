@@ -138,8 +138,16 @@ fun Shell(model: AppViewModel) {
 
     // With the video half switched off, the tabs that lead there should not be
     // sitting in the bar greyed out — they should not be there at all.
-    val bar = Section.entries.filter { it.primary && (!settings.musicOnly || !it.video) }
-    val drawerSections = Section.entries.filter { !it.primary && (!settings.musicOnly || !it.video) }
+    //
+    // Playlists can be switched off the same way, for anyone who keeps one
+    // library and never makes one. The playlists themselves are untouched —
+    // this only decides whether the drawer walks you past them every day.
+    fun wanted(section: Section) =
+        (!settings.musicOnly || !section.video) &&
+            (settings.showPlaylists || section != Section.Playlists)
+
+    val bar = Section.entries.filter { it.primary && wanted(it) }
+    val drawerSections = Section.entries.filter { !it.primary && wanted(it) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
 

@@ -21,9 +21,14 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DownloadDone
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -40,7 +45,9 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.util.UnstableApi
 import androidx.navigation.NavController
+import dev.rose.bouquet.data.LibraryOrder
 import dev.rose.bouquet.data.SubsonicClient
+import dev.rose.bouquet.data.inOrder
 import dev.rose.bouquet.data.db.SongEntity
 import dev.rose.bouquet.ui.AppViewModel
 import dev.rose.bouquet.ui.Cover
@@ -54,12 +61,20 @@ import dev.rose.bouquet.ui.theme.LocalRoseTheme
 @UnstableApi
 @Composable
 fun LibraryScreen(model: AppViewModel, navController: NavController) {
-    val songs by model.songs.collectAsStateWithLifecycle()
+    val all by model.songs.collectAsStateWithLifecycle()
     val playback by model.playback.collectAsStateWithLifecycle()
     val refreshing by model.refreshing.collectAsStateWithLifecycle()
     val server by model.activeServer.collectAsStateWithLifecycle()
+    val settings by model.settings.collectAsStateWithLifecycle()
     val theme = LocalRoseTheme.current
     var confirmDownloadAll by remember { mutableStateOf(false) }
+    var pickingOrder by remember { mutableStateOf(false) }
+
+    // Sorted here rather than in the query: the order is a preference that
+    // changes far more often than the library does, and re-reading a thousand
+    // rows from the database to move them around is work nobody asked for.
+    val order = LibraryOrder.of(settings.libraryOrder)
+    val songs = remember(all, order) { all.inOrder(order) }
 
     if (confirmDownloadAll) {
         val pending = remember(songs) { songs.filter { !it.downloaded } }
@@ -111,6 +126,53 @@ fun LibraryScreen(model: AppViewModel, navController: NavController) {
                     modifier = Modifier.size(24.dp)
                         .clickable(enabled = pending > 0) { confirmDownloadAll = true },
                 )
+                Spacer(Modifier.width(18.dp))
+                Icon(
+                    Icons.Default.PlayArrow,
+                    contentDescription = "Play everything listed",
+                    tint = if (songs.isEmpty()) theme.textDim else theme.accent,
+                    modifier = Modifier.size(24.dp)
+                        .clickable(enabled = songs.isNotEmpty()) { model.playAll(songs) },
+                )
+                Spacer(Modifier.width(18.dp))
+                Icon(
+                    Icons.Default.Shuffle,
+                    contentDescription = "Shuffle everything listed",
+                    tint = if (songs.isEmpty()) theme.textDim else theme.accent,
+                    modifier = Modifier.size(24.dp)
+                        .clickable(enabled = songs.isNotEmpty()) {
+                            model.playAll(songs, shuffle = true)
+                        },
+                )
+                Spacer(Modifier.width(18.dp))
+                Box {
+                    Icon(
+                        Icons.Default.Sort,
+                        contentDescription = "Order: ${order.label}",
+                        tint = theme.accent,
+                        modifier = Modifier.size(24.dp).clickable { pickingOrder = true },
+                    )
+                    DropdownMenu(
+                        expanded = pickingOrder,
+                        onDismissRequest = { pickingOrder = false },
+                    ) {
+                        LibraryOrder.entries.forEach { choice ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        choice.label,
+                                        color = if (choice == order) theme.accent
+                                        else theme.text,
+                                    )
+                                },
+                                onClick = {
+                                    model.setLibraryOrder(choice)
+                                    pickingOrder = false
+                                },
+                            )
+                        }
+                    }
+                }
                 Spacer(Modifier.width(18.dp))
                 Icon(
                     Icons.Default.Refresh,

@@ -48,6 +48,10 @@ data class Settings(
     val blockedChannels: Set<String> = emptySet(),
     /** Keep the video half of the app out of the way entirely. */
     val musicOnly: Boolean = false,
+    /** Whether Playlists gets a place in the navigation bar. */
+    val showPlaylists: Boolean = true,
+    /** How the library list is ordered. A `LibraryOrder` name. */
+    val libraryOrder: String = LibraryOrder.Default.name,
     /** Visualiser shapes, drawn back to front. Empty means nothing is drawn. */
     val visualiserLayers: List<Layer> = listOf(Layer(Shape.Bars)),
     /** How hard the visualiser reacts. 1 is unity. */
@@ -77,6 +81,8 @@ class SettingsStore(private val context: Context) {
         val blocked = stringSetPreferencesKey("blocked")
         val blockedChannels = stringSetPreferencesKey("blocked_channels")
         val musicOnly = booleanPreferencesKey("music_only")
+        val showPlaylists = booleanPreferencesKey("show_playlists")
+        val libraryOrder = stringPreferencesKey("library_order")
         val visualiserLayers = stringPreferencesKey("visualiser_layers")
         val visualiserIntensity = androidx.datastore.preferences.core.floatPreferencesKey(
             "visualiser_intensity")
@@ -98,6 +104,8 @@ class SettingsStore(private val context: Context) {
             blocked = p[Keys.blocked] ?: defaults.blocked,
             blockedChannels = p[Keys.blockedChannels] ?: defaults.blockedChannels,
             musicOnly = p[Keys.musicOnly] ?: defaults.musicOnly,
+            showPlaylists = p[Keys.showPlaylists] ?: defaults.showPlaylists,
+            libraryOrder = p[Keys.libraryOrder] ?: defaults.libraryOrder,
             visualiserLayers = p[Keys.visualiserLayers]?.let(::decodeLayers)
                 ?: defaults.visualiserLayers,
             visualiserIntensity = p[Keys.visualiserIntensity] ?: defaults.visualiserIntensity,
@@ -120,6 +128,8 @@ class SettingsStore(private val context: Context) {
     suspend fun setBlocked(values: Set<String>) = put(Keys.blocked, values)
     suspend fun setBlockedChannels(values: Set<String>) = put(Keys.blockedChannels, values)
     suspend fun setMusicOnly(on: Boolean) = put(Keys.musicOnly, on)
+    suspend fun setShowPlaylists(on: Boolean) = put(Keys.showPlaylists, on)
+    suspend fun setLibraryOrder(order: LibraryOrder) = put(Keys.libraryOrder, order.name)
     suspend fun setVisualiserIntensity(value: Float) = put(Keys.visualiserIntensity, value)
     suspend fun setVisualiserLayers(layers: List<Layer>) =
         put(Keys.visualiserLayers, encodeLayers(layers))
