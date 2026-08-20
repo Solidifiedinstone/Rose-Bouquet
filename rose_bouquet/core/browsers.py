@@ -195,6 +195,25 @@ def _chromium_profiles(root: Path) -> list[Path]:
 
 # ── Reading them ──────────────────────────────────────────────────
 
+def readable(browser: Browser) -> str:
+    """Why this browser cannot be read, or an empty string if it can.
+
+    Chromium keeps its cookie values encrypted and `cryptography` is what
+    decrypts them. It is a declared dependency, but a source checkout or a
+    trimmed package can be missing it, and "nothing could be read" is a poor
+    way to say "one package is not installed".
+    """
+    if not browser.cookie_store.exists():
+        return "that profile has no cookie store"
+    if browser.family == "chromium":
+        try:
+            import cryptography  # noqa: F401
+        except ImportError:
+            return ("reading Chrome-family browsers needs the cryptography "
+                    "package")
+    return ""
+
+
 def read(browser: Browser) -> list[Cookie]:
     """The YouTube and Google cookies in this browser, or an empty list.
 
@@ -202,6 +221,11 @@ def read(browser: Browser) -> list[Cookie]:
     missing decryption key — all of them mean "no sign-in here", which the
     caller has to handle anyway.
     """
+    why = readable(browser)
+    if why:
+        logger.warning("cannot read %s: %s", browser.name, why)
+        return []
+
     try:
         if browser.family == "firefox":
             return _read_firefox(browser)

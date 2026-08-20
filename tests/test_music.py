@@ -1812,3 +1812,74 @@ def test_the_window_only_shares_when_told_to_and_when_there_is_a_tab():
     source = inspect.getsource(MainWindow._youtube_session)
     assert "share_youtube_session" in source
     assert 'self.views.built("watch")' in source     # never builds one
+
+
+# ── Shippable on a machine that is not this one ───────────────────
+
+def test_nothing_in_the_source_is_specific_to_one_machine():
+    """A path from the machine it was written on is a bug on every other."""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent / "rose_bouquet"
+    # A home directory or a mount point that only exists on one machine.
+    #
+    # Deliberately not "any private IP": `10.255.255.255` is the standard way
+    # to ask the kernel which address this host would route from, and a
+    # cdparanoia version number reads as one too. Both are fine, and a check
+    # that cries wolf about them gets switched off.
+    fingerprints = re.compile(r"/home/[a-z]|/mnt/[a-z0-9]", re.IGNORECASE)
+    offenders = []
+    for source in root.rglob("*.py"):
+        for number, line in enumerate(source.read_text().splitlines(), 1):
+            if fingerprints.search(line):
+                offenders.append(f"{source.name}:{number}: {line.strip()[:70]}")
+    assert not offenders, "machine-specific paths:\n" + "\n".join(offenders)
+
+
+def test_every_program_the_app_shells_out_to_is_checked_for_first():
+    """A missing tool is a feature that is off, not a traceback."""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent / "rose_bouquet"
+    # Modules that run something external, and the guard each one uses.
+    guarded = {
+        "cava.py": "shutil.which",
+        "optical.py": "shutil.which",
+        "updates.py": "shutil.which",
+        "autostart.py": "shutil.which",
+        "browsers.py": "OSError",        # secret-tool, caught rather than probed
+    }
+    for source in root.rglob("*.py"):
+        text = source.read_text()
+        if not re.search(r"subprocess\.(run|Popen|check_output)", text):
+            continue
+        guard = guarded.get(source.name)
+        assert guard is not None, f"{source.name} runs a program with no known guard"
+        assert guard in text, f"{source.name} runs a program without {guard}"
+
+
+def test_the_packaging_declares_what_the_code_imports():
+    """`cryptography` was imported and undeclared, which only breaks elsewhere.
+
+    It works on the machine that has it for other reasons and fails on a fresh
+    install, which is the worst shape a dependency bug can take.
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    packaging = (root / "pyproject.toml").read_text()
+    imported = set()
+    for source in (root / "rose_bouquet").rglob("*.py"):
+        for match in re.finditer(r"^\s*(?:import|from)\s+([a-zA-Z_][\w]*)", 
+                                 source.read_text(), re.M):
+            imported.add(match.group(1))
+
+    third_party = imported & {"PySide6", "mutagen", "cryptography", "requests",
+                              "yt_dlp", "ytmusicapi"}
+    for name in third_party:
+        declared = name.replace("_", "-")
+        assert declared in packaging or name in packaging, \
+            f"{name} is imported but not declared in pyproject.toml"
