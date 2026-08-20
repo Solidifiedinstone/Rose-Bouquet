@@ -60,7 +60,7 @@ def test_sign_in_goes_to_googles_login_in_the_tab():
     `/v3/signin/rejected`, "this browser or app may not be secure", when it is
     driven from JavaScript. The refusal is aimed at automation, not at the
     engine — so a scripted test is not evidence that a person cannot sign in
-    here, and this used to be talked out of working on exactly that evidence.
+    here, and this was talked out of working on exactly that evidence once.
     """
     from PySide6.QtCore import QUrl
 
@@ -71,14 +71,53 @@ def test_sign_in_goes_to_googles_login_in_the_tab():
     # No `continue`: with one Google bounces back to YouTube without ever
     # showing the form. `service=youtube` lands you back there anyway.
     assert "continue=" not in youtube_tab.SIGN_IN_URL
+    assert QUrl(youtube_tab.SIGN_IN_URL).host() == "accounts.google.com"
 
-    # It empties the jar and *then* navigates. Half a session left from an
-    # abandoned sign-in sends ServiceLogin round BootstrapSession until
-    # Chromium gives up with ERR_TOO_MANY_REDIRECTS, which looks like a login
-    # page that will not load — and `deleteAllCookies` is a request, not a
-    # write, so navigating on the next line loaded the page with the old
-    # cookies still there and looped exactly as before.
-    from PySide6.QtWidgets import QApplication
+
+def test_both_sign_in_buttons_are_recognised_as_a_login():
+    """Ours and YouTube's own, which is the one people actually press.
+
+    Ours goes to accounts.google.com/ServiceLogin. YouTube's goes to
+    youtube.com/signin, which redirects into BootstrapSession — and that is
+    the URL that was looping, because only our own button cleared the jar on
+    the way past.
+    """
+    from PySide6.QtCore import QUrl
+
+    from rose_bouquet.ui.youtube_tab import _is_a_login
+
+    for link in [
+        "https://accounts.google.com/ServiceLogin?service=youtube",
+        "https://www.youtube.com/signin?action_handle_signin=true&app=desktop",
+        "https://accounts.google.com/v3/signin/identifier?service=youtube",
+        "https://accounts.google.com/AddSession?continue=https://www.youtube.com/",
+    ]:
+        assert _is_a_login(QUrl(link)), link
+
+    # Not the redirects inside the flow — interrupting those would break it
+    # halfway — and not what a signed-in page fetches for itself.
+    for ordinary in [
+        "https://accounts.google.com/accounts/BootstrapSession?continue=x",
+        "https://www.youtube.com/",
+        "https://www.youtube.com/feed/subscriptions",
+        "https://lh3.googleusercontent.com/avatar.jpg",
+        "https://accounts.google.com/CheckCookie",
+    ]:
+        assert not _is_a_login(QUrl(ordinary)), ordinary
+
+
+def test_a_login_is_held_back_until_the_jar_is_empty():
+    """`deleteAllCookies` is a request, not a write.
+
+    The store empties the jar on another thread and reports each removal
+    through `cookieRemoved`. Navigating on the next line loaded the login page
+    with every stale cookie still in place, and looped exactly as before.
+    """
+    from PySide6.QtCore import QUrl
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication, QWidget
+
+    from rose_bouquet.ui import youtube_tab
 
     QApplication.instance() or QApplication([])
 
@@ -97,25 +136,31 @@ def test_sign_in_goes_to_googles_login_in_the_tab():
         def deleteAllCookies():
             cleared.append(True)
 
-    from PySide6.QtWidgets import QWidget
+    class Page:
+        clearing_first = False
 
+    page = Page()
     tab = youtube_tab.YouTubeTab.__new__(youtube_tab.YouTubeTab)
     QWidget.__init__(tab)          # so it can own a QTimer
-    tab.view = type("V", (), {"setUrl": staticmethod(went.append)})()
+    tab.view = type("V", (), {"setUrl": staticmethod(went.append),
+                              "page": staticmethod(lambda: page)})()
     tab.profile = type("P", (), {"cookieStore": staticmethod(lambda: Store())})()
 
-    youtube_tab.YouTubeTab.sign_in(tab)
+    # YouTube's own button, which wants session state of its own — wipe the
+    # jar and follow it and you land on YouTube's `oops` page. Replaced with
+    # ServiceLogin, which is the front door and works from cold.
+    youtube_tab.YouTubeTab._login_starting(
+        tab, QUrl("https://www.youtube.com/signin?action_handle_signin=true"))
 
     # Emptied straight away; the navigation waits for the store to go quiet.
     assert cleared == [True]
     assert went == []
 
-    from PySide6.QtTest import QTest
-
     QTest.qWait(youtube_tab.JAR_SETTLE_MS + 250)
     assert [u.toString() for u in went] == [youtube_tab.SIGN_IN_URL]
-
-    assert QUrl(youtube_tab.SIGN_IN_URL).host() == "accounts.google.com"
+    # Left disarmed, or it would catch its own navigation for ever; the load
+    # handler re-arms it once you are off the login flow.
+    assert page.clearing_first is False
 
 
 def test_nothing_reads_a_browser_cookie_jar_to_sign_in():

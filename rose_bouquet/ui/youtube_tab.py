@@ -330,6 +330,30 @@ GUIDE_JS = """
 """
 
 
+def _is_a_login(url) -> bool:
+    """Whether this navigation is the start of signing in.
+
+    Both doors: ours goes to `accounts.google.com/ServiceLogin`, and
+    YouTube's own Sign in button goes to `youtube.com/signin`, which
+    redirects into `accounts.google.com/accounts/BootstrapSession`. Only the
+    first one matters — catching the redirects would mean interrupting the
+    flow halfway through.
+
+    Deliberately narrow otherwise: a signed-in page fetches avatars and
+    account endpoints from these hosts by itself, and holding those back
+    would break the page rather than help it.
+    """
+    host, path = url.host(), url.path()
+    if host in ("www.youtube.com", "youtube.com", "m.youtube.com"):
+        return path == "/signin"
+    if host in ("accounts.google.com", "accounts.youtube.com"):
+        return any(path.startswith(start) for start in (
+            "/ServiceLogin", "/signin", "/v3/signin", "/AccountChooser",
+            "/AddSession",
+        ))
+    return False
+
+
 class ProfileLock:
     """Which running copy of the app owns the persistent web profile.
 
@@ -447,8 +471,24 @@ class _Page(QWebEnginePage):
     with no address bar would be a worse place to type a password into.
     """
 
+    #: A login is being navigated to. Carries the destination, so the tab can
+    #: clear the jar and then go there itself.
+    login_starting = Signal(QUrl)
+
+    #: Whether the next login navigation should be held back for a wipe.
+    #: Cleared while the wipe's own navigation goes through, so it does not
+    #: catch itself and loop for a different reason than before.
+    clearing_first = True
+
     def createWindow(self, _kind):               # noqa: N802 (Qt's name)
         return self
+
+    def acceptNavigationRequest(self, url, _kind, is_main_frame):  # noqa: N802
+        if is_main_frame and self.clearing_first and _is_a_login(url):
+            self.clearing_first = False
+            self.login_starting.emit(QUrl(url))
+            return False
+        return True
 
 
 class YouTubeTab(QWidget):
@@ -578,6 +618,9 @@ class YouTubeTab(QWidget):
 
     def _build_page(self):
         page = _Page(self.profile, self)
+        # Whichever Sign in you press — ours, or YouTube's own on the page —
+        # the jar is emptied before the login loads.
+        page.login_starting.connect(self._login_starting)
         settings = page.settings()
         for attribute, value in (
             (QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False),
@@ -669,7 +712,35 @@ class YouTubeTab(QWidget):
         that blames the browser. So the slate is wiped first: signing in is
         exactly when nobody wants the old session kept.
         """
-        self._forget_the_old_session(then=lambda: self.view.setUrl(QUrl(SIGN_IN_URL)))
+        self.view.setUrl(QUrl(SIGN_IN_URL))
+
+    def _login_starting(self, _url: QUrl) -> None:
+        """A sign-in is beginning. Empty the jar, then start it properly.
+
+        Held back rather than followed, twice over.
+
+        Cookies left from an abandoned or half-finished sign-in send the flow
+        round `BootstrapSession` until Chromium gives up:
+        ERR_TOO_MANY_REDIRECTS, a login page that never appears, and an error
+        blaming the browser. Signing in is exactly the moment nobody wants
+        the old session kept.
+
+        And the destination is replaced, not resumed. YouTube's own Sign in
+        button goes to `youtube.com/signin`, which wants session state of its
+        own — wipe the jar and follow it and you land on YouTube's `oops`
+        page instead. `ServiceLogin` is the front door and works from cold,
+        so both buttons go through it.
+        """
+        page = self.view.page()
+
+        def go() -> None:
+            # Left disarmed: re-arming here would catch this very navigation
+            # and hold it back again, for ever. `_on_load_finished` puts it
+            # back once you are off the login flow.
+            page.clearing_first = False
+            self.view.setUrl(QUrl(SIGN_IN_URL))
+
+        self._forget_the_old_session(then=go)
 
     def _forget_the_old_session(self, then) -> None:
         """Empty the jar, and only then go to the login page.
@@ -739,6 +810,14 @@ class YouTubeTab(QWidget):
         self.address.setText(url.toString())
 
     def _on_load_finished(self, ok: bool) -> None:
+        # Off the login flow again, so the next sign-in gets a clean jar too.
+        # Re-armed here rather than straight after the wipe, because doing it
+        # there would catch the wipe's own navigation and hold it back for
+        # ever — a second loop, wearing the first one's clothes.
+        page = self.view.page()
+        if not _is_a_login(self.view.url()) and self.view.url().host() != "accounts.google.com":
+            page.clearing_first = True
+
         if not ok:
             self.status.emit("That page would not load", "warning")
         if self.blocker.blocked:
