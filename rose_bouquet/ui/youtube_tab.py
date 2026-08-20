@@ -911,7 +911,23 @@ class YouTubeTab(QWidget):
 
         self._fullscreen = wanted
         self.toolbar.setVisible(not wanted)
+        self._settle()
         self.fullscreen_changed.emit(wanted)
+
+    def _settle(self) -> None:
+        """Make the toolbar going or coming back take effect now.
+
+        Hiding a widget marks the layout dirty and Qt settles it when it next
+        gets round to it, which under a Wayland compositor can be whenever
+        something else forces a repaint. Going fullscreen and finding the
+        toolbar still there until you switched workspace is that.
+        """
+        layout = self.layout()
+        if layout is not None:
+            layout.invalidate()
+            layout.activate()
+        self.updateGeometry()
+        self.update()
 
     def leave_fullscreen(self) -> bool:
         """Come out of fullscreen. Says whether there was anything to leave.
@@ -929,6 +945,7 @@ class YouTubeTab(QWidget):
         if self._fullscreen:
             self._fullscreen = False
             self.toolbar.setVisible(True)
+            self._settle()
             self.fullscreen_changed.emit(False)
         return True
 

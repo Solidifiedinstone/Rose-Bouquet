@@ -415,6 +415,7 @@ def test_fullscreen_hides_the_chrome_instead_of_taking_the_screen(app):
     tab._fullscreen = False
     tab.toolbar = type("T", (), {"setVisible": staticmethod(toolbar_shown.append)})()
     tab.fullscreen_changed = type("S", (), {"emit": staticmethod(seen.append)})()
+    tab._settle = lambda: None
 
     asked = Request(True)
     youtube_tab.YouTubeTab._on_fullscreen_requested(tab, asked)
@@ -440,6 +441,7 @@ def test_leaving_fullscreen_tells_the_page_and_reports_whether_it_did_anything(a
     tab._fullscreen = False
     tab.toolbar = type("T", (), {"setVisible": staticmethod(lambda _v: None)})()
     tab.fullscreen_changed = type("S", (), {"emit": staticmethod(seen.append)})()
+    tab._settle = lambda: None
     tab.view = type("V", (), {"page": staticmethod(lambda: type("P", (), {
         "triggerAction": staticmethod(told.append)})())})()
 
@@ -460,12 +462,17 @@ def test_the_window_steps_aside_for_a_video_and_comes_back(app):
 
     rail: list = []
     bar: list = []
+    settled: list = []
     window = MainWindow.__new__(MainWindow)
     window.nav_rail = type("R", (), {"setVisible": staticmethod(rail.append)})()
     window.player_bar = type("B", (), {"setVisible": staticmethod(bar.append)})()
+    # A visibility change that is not settled does not appear until the
+    # compositor next repaints — which is a workspace switch away.
+    window._settle_layout = lambda: settled.append(True)
 
     MainWindow._youtube_fullscreen(window, True)
     assert rail == [False] and bar == [False]
 
     MainWindow._youtube_fullscreen(window, False)
     assert rail == [False, True] and bar == [False, True]
+    assert settled == [True, True]      # both ways, not just on the way in

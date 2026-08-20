@@ -369,6 +369,7 @@ class MainWindow(QMainWindow):
 
         if self.preferences.section in hidden:
             self.show_section("library")
+        self._settle_layout()
 
     # ── Pulling the sidebar in and out ────────────────────────────
 
@@ -408,6 +409,7 @@ class MainWindow(QMainWindow):
         self.nav_rail.setMaximumWidth(260)
 
         self._resize_sidebar(target, animate=animate)
+        self._settle_layout()
 
     def _settle_sidebar(self) -> None:
         """Put the rail's width limits back, once it has finished moving.
@@ -1420,6 +1422,29 @@ class MainWindow(QMainWindow):
         self.nav_rail.setVisible(not on)
         if self.player_bar is not None:
             self.player_bar.setVisible(not on)
+        self._settle_layout()
+
+    def _settle_layout(self) -> None:
+        """Make a visibility change take effect now rather than eventually.
+
+        Hiding or showing a widget marks the layout dirty; Qt settles it when
+        it next gets round to it, and under a Wayland compositor that can be
+        the next time something else forces a repaint. The symptom is a
+        sidebar and a player bar that come back only when you switch
+        workspace and come back — which looks exactly like the app having
+        lost them.
+
+        Asked for explicitly here: settle the geometry, then paint.
+        """
+        central = self.centralWidget()
+        if central is None:
+            return
+        layout = central.layout()
+        if layout is not None:
+            layout.invalidate()
+            layout.activate()
+        central.updateGeometry()
+        central.update()
 
     def leave_youtube_fullscreen(self) -> bool:
         """Escape, when a video has the window. Says whether it did anything."""
@@ -2128,6 +2153,20 @@ class MainWindow(QMainWindow):
         self.refresh()
 
     # ── Session ───────────────────────────────────────────────────
+
+    def showEvent(self, event) -> None:        # noqa: N802 (Qt's name)
+        """Settle the layout the first time the window appears.
+
+        Sections are hidden and the sidebar is collapsed during __init__,
+        before there is a window to paint them into. Under a compositor that
+        does not repaint until something asks, the result was a Settings
+        button and a player bar that only turned up after switching workspace
+        and back.
+        """
+        super().showEvent(event)
+        if not getattr(self, "_settled_once", False):
+            self._settled_once = True
+            self._settle_layout()
 
     def _session_path(self) -> Path:
         return data_dir() / "session.json"
