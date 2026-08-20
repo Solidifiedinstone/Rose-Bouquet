@@ -4,6 +4,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.schabi.newpipe.extractor.Image
 import org.schabi.newpipe.extractor.NewPipe
@@ -140,8 +141,54 @@ object YouTubeSource {
      * 50-second music video is not a short — and the string hack returns
      * whatever happens to be tagged.
      */
+    /**
+     * A search that could not be made. Not the same as one that found nothing.
+     *
+     * Worth its own type because the two were indistinguishable, and the
+     * consequences are opposite: nothing found means write the song down as
+     * missing, whereas nothing asked means ask again later. On the desktop
+     * this exact confusion turned six missing tracks in an import into a
+     * hundred and thirty-two.
+     */
+    class SearchUnavailable(cause: Throwable?) : Exception(cause)
+
+    /** How many goes a search gets, and the delay before the second. */
+    private const val SEARCH_ATTEMPTS = 4
+    private const val SEARCH_BACKOFF_MS = 600L
+
+    /**
+     * Search, retrying a failure, and throwing if it never went through.
+     *
+     * YouTube does not answer a run of searches reliably — connections reset,
+     * bodies come back that are not what was asked for — and none of that
+     * means anything about the song being looked for. Most succeed on the
+     * second or third ask.
+     */
+    @Throws(SearchUnavailable::class)
+    suspend fun demand(query: String, limit: Int = 30): List<Video> {
+        var last: Throwable? = null
+        repeat(SEARCH_ATTEMPTS) { attempt ->
+            try {
+                return searchOnce(query, shorts = false, limit = limit)
+            } catch (e: Exception) {
+                last = e
+                if (attempt + 1 < SEARCH_ATTEMPTS) {
+                    // Backed off and jittered, so several searches refused
+                    // together do not all come back together.
+                    delay(SEARCH_BACKOFF_MS * (1L shl attempt) + (0..400).random())
+                }
+            }
+        }
+        throw SearchUnavailable(last)
+    }
+
     suspend fun search(query: String, shorts: Boolean = false, limit: Int = 30): List<Video> =
-        io(emptyList()) {
+        io(emptyList()) { searchOnce(query, shorts, limit) }
+
+    /** The search itself, which throws rather than swallowing. */
+    private suspend fun searchOnce(query: String, shorts: Boolean, limit: Int): List<Video> =
+        withContext(Dispatchers.IO) {
+            start()
             // `#shorts` in the query is how the desktop app finds shorts, and
             // measurement says it is the only thing that works: YouTube's
             // search results come back with `isShortFormContent` false for

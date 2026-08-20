@@ -597,6 +597,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         var owned = 0
         var fetched = 0
         val missing = mutableListOf<String>()
+        // Looked for, and never answered about. Kept apart from `missing`
+        // because one is a fact and the other is worth another go.
+        val unreachable = mutableListOf<String>()
 
         tracks.forEach { track ->
             _status.value = "Finding ${track.title}…"
@@ -616,7 +619,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 return@forEach
             }
 
-            val match = YouTubeSource.search(query, limit = 1).firstOrNull()
+            // Told apart on purpose: a search that found nothing means the
+            // song is not there, and a search that never went through means
+            // nobody managed to ask. Recording the second as the first is what
+            // turned six missing tracks into a hundred and thirty-two on the
+            // desktop, and it wrote songs that exist into the missing list
+            // where they survived a restart and were never looked for again.
+            val match = try {
+                YouTubeSource.demand(query, limit = 1).firstOrNull()
+            } catch (_: YouTubeSource.SearchUnavailable) {
+                unreachable += query
+                return@forEach
+            }
             if (match == null) {
                 missing += query
                 return@forEach
@@ -638,6 +652,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 append(", ${missing.size} not found:\n")
                 append(missing.take(10).joinToString("\n") { "· $it" })
                 if (missing.size > 10) append("\n…and ${missing.size - 10} more")
+            }
+            if (unreachable.isNotEmpty()) {
+                append(", ${unreachable.size} YouTube would not answer about")
+                append(" — import again to look for those")
             }
             append(".")
         }
