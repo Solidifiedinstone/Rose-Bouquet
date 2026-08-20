@@ -34,6 +34,7 @@ anywhere but YouTube, and every beacon YouTube tries to send is dropped here.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -140,6 +141,24 @@ tp-yt-iron-overlay-backdrop { display: none !important; }
 /* Room for our own bottom bar, so the last row of the page is not under it. */
 html { --rb-bar-height: 48px; }
 ytd-app, #content.ytd-app { padding-bottom: var(--rb-bar-height) !important; }
+
+/* And YouTube's own menus above it.
+
+   The bar sat at the top of the stacking order and YouTube's popup container
+   has no z-index of its own, so every menu opened near the bottom of the page
+   came out with its last item sliced off by a black band — which reads as
+   YouTube drawing a broken menu rather than as us covering it. Raised
+   explicitly rather than by lowering the bar: an automatic z-index stacks by
+   document order, and a fixed bar wins that however modest its number. */
+ytd-popup-container,
+tp-yt-iron-dropdown,
+tp-yt-paper-dialog,
+tp-yt-app-drawer,
+ytd-menu-popup-renderer,
+ytd-multi-page-menu-renderer,
+#dropdown.ytd-searchbox {
+    z-index: 2147483002 !important;
+}
 """
 
 #: The bar across the bottom — the one thing the phone site had that the
@@ -618,13 +637,19 @@ class YouTubeTab(QWidget):
         # At DocumentCreation there is no documentElement yet to hang a style
         # on, so the stylesheet waits for one rather than throwing into the
         # console on every page load.
+        # The CSS is passed as a JSON string literal rather than pasted into a
+        # JavaScript template literal. A backtick or a `${` anywhere in the
+        # stylesheet used to end the literal early, which is a syntax error,
+        # which silently threw away *every* injected rule — no ad hiding, no
+        # room made for the bottom bar, and no clue on screen that a stylesheet
+        # had ever been meant to load. A CSS comment did it once already.
         style_js = (
             "(function(){"
             "const add = () => {"
             " if (!document.documentElement || document.getElementById('rb-hide')) return;"
             " const s = document.createElement('style');"
             " s.id = 'rb-hide';"
-            f" s.textContent = `{HIDE_CSS}`;"
+            f" s.textContent = {json.dumps(HIDE_CSS)};"
             " document.documentElement.appendChild(s); };"
             "add();"
             "document.addEventListener('DOMContentLoaded', add);"

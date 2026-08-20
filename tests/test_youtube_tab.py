@@ -122,3 +122,50 @@ def test_the_tab_asks_for_the_desktop_site():
     assert "Mobile" not in youtube_tab.USER_AGENT
     # Announcing itself as an embedded view is what Google refuses to sign in.
     assert "QtWebEngine" not in youtube_tab.USER_AGENT
+
+
+# ── The injected stylesheet, and what silently kills it ───────────
+
+def test_the_stylesheet_survives_whatever_is_written_in_it():
+    """A backtick in the CSS used to throw away every rule in it.
+
+    The stylesheet is pasted into a JavaScript string to be injected. It used
+    to be a template literal, so a backtick or a `${` anywhere in the CSS —
+    including in a comment, which is how it actually happened — ended the
+    literal early, made the script a syntax error, and dropped the entire
+    stylesheet with nothing on screen to say so: no ad hiding, and no room made
+    for the bottom bar.
+    """
+    import json
+
+    from rose_bouquet.ui import youtube_tab
+
+    # Whatever it contains, it goes in as data rather than as source.
+    hostile = "/* ` ${x} \\ \" ' */ body { color: red; }"
+    encoded = json.dumps(hostile)
+    assert encoded.startswith('"') and encoded.endswith('"')
+    assert "`" not in encoded.strip('"') or "\\" in encoded
+    assert json.loads(encoded) == hostile
+
+    # And the real one round-trips too.
+    assert json.loads(json.dumps(youtube_tab.HIDE_CSS)) == youtube_tab.HIDE_CSS
+
+
+def test_youtubes_menus_are_put_above_our_bottom_bar():
+    """Otherwise a menu near the bottom loses its last item to a black band.
+
+    Our bar is fixed at the top of the stacking order; YouTube's popup
+    container has no z-index of its own, and an automatic one stacks by
+    document order — which a fixed bar wins however modest its number. So the
+    menus are raised explicitly rather than the bar lowered.
+    """
+    from rose_bouquet.ui import youtube_tab
+
+    css = youtube_tab.HIDE_CSS
+    for selector in ("ytd-popup-container", "tp-yt-iron-dropdown",
+                     "tp-yt-paper-dialog", "ytd-menu-popup-renderer"):
+        assert selector in css, selector
+
+    # Above the bar, whatever the bar is set to.
+    bar_z = 2147483000
+    assert f"z-index: {bar_z + 2}" in css or "2147483002" in css
