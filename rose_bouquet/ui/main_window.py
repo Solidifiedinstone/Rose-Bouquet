@@ -302,7 +302,8 @@ class MainWindow(QMainWindow):
         self.splitter = splitter
         layout.addWidget(splitter, 1)
 
-        layout.addWidget(self._player_bar())
+        self.player_bar = self._player_bar()
+        layout.addWidget(self.player_bar)
         self.setCentralWidget(root)
 
     def _nav_rail(self) -> QWidget:
@@ -527,6 +528,7 @@ class MainWindow(QMainWindow):
 
         watch = YouTubeTab(self.appearance)
         watch.status.connect(self.notify)
+        watch.fullscreen_changed.connect(self._youtube_fullscreen)
         watch.download_requested.connect(self.download_watching)
         # Said now rather than from the constructor: a signal emitted before
         # anybody has connected to it is emitted to nobody.
@@ -1403,6 +1405,27 @@ class MainWindow(QMainWindow):
 
     # ── Watching and streaming ────────────────────────────────────
 
+    def _youtube_fullscreen(self, on: bool) -> None:
+        """Give the window over to a video, and take it back afterwards.
+
+        "Fullscreen" here means the app window, not the monitor. The sidebar
+        and the player bar step aside so the page has the whole window to
+        draw in; the window itself stays exactly the size it was, which is
+        what somebody watching in a window asked for.
+
+        The sidebar's own collapsed state is left alone and restored, so
+        coming out of a video does not quietly expand a rail that was pulled
+        in before it.
+        """
+        self.nav_rail.setVisible(not on)
+        if self.player_bar is not None:
+            self.player_bar.setVisible(not on)
+
+    def leave_youtube_fullscreen(self) -> bool:
+        """Escape, when a video has the window. Says whether it did anything."""
+        watch = self.views.built("watch")
+        return bool(watch is not None and watch.leave_fullscreen())
+
     def close_video(self) -> None:
         """Escape closes the video, and does nothing at all otherwise.
 
@@ -1410,6 +1433,11 @@ class MainWindow(QMainWindow):
         shortcut that steals Escape from every dialog would be worse than no
         shortcut.
         """
+        # A video filling the window is the thing most likely to be in the
+        # way, so it gets Escape first.
+        if self.leave_youtube_fullscreen():
+            return
+
         stage = self.views.built("player")
         if stage is not None and stage.isVisible():
             stage.close_player()

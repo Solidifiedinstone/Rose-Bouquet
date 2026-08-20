@@ -39,7 +39,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer, QUrl, QUrlQuery, Signal
+from PySide6.QtCore import QTimer, QUrl, QUrlQuery, Signal
 from PySide6.QtWebEngineCore import (
     QWebEnginePage,
     QWebEngineProfile,
@@ -522,13 +522,14 @@ class YouTubeTab(QWidget):
 
     status = Signal(str, str)
     download_requested = Signal(str, str)     # the url on screen, its title
+    #: The video wants the window to itself, or has given it back.
+    fullscreen_changed = Signal(bool)
 
     def __init__(self, appearance: Appearance, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.appearance = appearance
-        #: Where the picture goes while fullscreen, and None the rest of the
-        #: time. Kept so leaving fullscreen can put the view back.
-        self._fullscreen_window: Optional[QWidget] = None
+        #: Whether the video currently has the window to itself.
+        self._fullscreen = False
         #: Set when this window had to fall back to a session-only profile,
         #: for whoever built the tab to pass on once they are connected.
         self.shared_session = ""
@@ -542,7 +543,8 @@ class YouTubeTab(QWidget):
         self.view = QWebEngineView()
         self.view.setPage(self._build_page())
 
-        layout.addWidget(self._toolbar())
+        self.toolbar = self._toolbar()
+        layout.addWidget(self.toolbar)
         layout.addWidget(self.view, 1)
 
         self.view.urlChanged.connect(self._on_url_changed)
@@ -864,36 +866,46 @@ class YouTubeTab(QWidget):
     # ── Fullscreen ────────────────────────────────────────────────
 
     def _on_fullscreen_requested(self, request) -> None:
-        """Let the player fill the screen, and give the view back afterwards.
+        """Let the video fill the window. Not the screen, and not for ever.
 
-        The whole web view goes fullscreen rather than the video element: the
-        page is already drawing its own player chrome, and lifting the element
-        out of the document is the sort of thing that ends with a black
-        rectangle where the video was.
+        This used to lift the web view out of the tab and into a new top-level
+        window set to `WindowFullScreen`, which fills the *monitor* — so
+        pressing fullscreen on a video took over the whole display, and
+        nothing was bound to bring it back. Escape did nothing, because Escape
+        was wired to the video stage and this is the web view.
+
+        Nothing is reparented now. The toolbar goes, the rest of the window
+        gets out of the way, and the page — which is already drawing its own
+        player chrome — has the whole window to draw the video in. Coming back
+        puts all of it where it was.
         """
         request.accept()
-
-        if request.toggleOn():
-            if self._fullscreen_window is not None:
-                return
-            window = QWidget()
-            window.setWindowTitle("YouTube")
-            frame = QVBoxLayout(window)
-            frame.setContentsMargins(0, 0, 0, 0)
-            frame.addWidget(self.view)
-            window.setWindowState(Qt.WindowState.WindowFullScreen)
-            window.show()
-            self._fullscreen_window = window
+        wanted = request.toggleOn()
+        if wanted == self._fullscreen:
             return
 
-        window = self._fullscreen_window
-        if window is None:
-            return
-        self._fullscreen_window = None
-        self.layout().addWidget(self.view)
-        self.view.show()
-        window.close()
-        window.deleteLater()
+        self._fullscreen = wanted
+        self.toolbar.setVisible(not wanted)
+        self.fullscreen_changed.emit(wanted)
+
+    def leave_fullscreen(self) -> bool:
+        """Come out of fullscreen. Says whether there was anything to leave.
+
+        Told to the page rather than done behind its back: YouTube keeps its
+        own idea of whether the player is expanded, and a fullscreen the app
+        left without saying leaves the page drawing an exit button for a state
+        it is no longer in.
+        """
+        if not self._fullscreen:
+            return False
+        self.view.page().triggerAction(QWebEnginePage.WebAction.ExitFullScreen)
+        # Belt and braces: if the page does not come back to us, leave anyway
+        # rather than stranding somebody in a window with no toolbar.
+        if self._fullscreen:
+            self._fullscreen = False
+            self.toolbar.setVisible(True)
+            self.fullscreen_changed.emit(False)
+        return True
 
     def current_url(self) -> str:
         return self.view.url().toString()

@@ -384,3 +384,88 @@ def test_the_saved_order_is_the_one_the_library_opens_with(built, app, appearanc
     view = built(LibraryView(library, appearance, "by-vibes"))
     view.refresh("")
     assert [t.title for t in view._tracks] == ["Short one", "Long one"]
+
+
+# ── A video fills the window, not the monitor ─────────────────────
+
+def test_fullscreen_hides_the_chrome_instead_of_taking_the_screen(app):
+    """It used to lift the web view into a top-level fullscreen window.
+
+    That fills the *monitor*, which is not what pressing fullscreen on a video
+    in a window means — and nothing was bound to bring it back, because Escape
+    was wired to the video stage and this is the web view.
+    """
+    from rose_bouquet.ui import youtube_tab
+
+    class Request:
+        def __init__(self, on):
+            self.on = on
+            self.accepted = False
+
+        def accept(self):
+            self.accepted = True
+
+        def toggleOn(self):                       # noqa: N802 — Qt's name
+            return self.on
+
+    seen: list = []
+    toolbar_shown: list = []
+
+    tab = youtube_tab.YouTubeTab.__new__(youtube_tab.YouTubeTab)
+    tab._fullscreen = False
+    tab.toolbar = type("T", (), {"setVisible": staticmethod(toolbar_shown.append)})()
+    tab.fullscreen_changed = type("S", (), {"emit": staticmethod(seen.append)})()
+
+    asked = Request(True)
+    youtube_tab.YouTubeTab._on_fullscreen_requested(tab, asked)
+    assert asked.accepted                          # the page is always answered
+    assert tab._fullscreen and seen == [True] and toolbar_shown == [False]
+
+    # Asked again for a state it is already in: nothing happens twice.
+    youtube_tab.YouTubeTab._on_fullscreen_requested(tab, Request(True))
+    assert seen == [True] and toolbar_shown == [False]
+
+    youtube_tab.YouTubeTab._on_fullscreen_requested(tab, Request(False))
+    assert not tab._fullscreen and seen == [True, False]
+    assert toolbar_shown == [False, True]          # the toolbar comes back
+
+
+def test_leaving_fullscreen_tells_the_page_and_reports_whether_it_did_anything(app):
+    """Escape is bound globally, so it must be harmless when there is no video."""
+    from rose_bouquet.ui import youtube_tab
+
+    told: list = []
+    seen: list = []
+    tab = youtube_tab.YouTubeTab.__new__(youtube_tab.YouTubeTab)
+    tab._fullscreen = False
+    tab.toolbar = type("T", (), {"setVisible": staticmethod(lambda _v: None)})()
+    tab.fullscreen_changed = type("S", (), {"emit": staticmethod(seen.append)})()
+    tab.view = type("V", (), {"page": staticmethod(lambda: type("P", (), {
+        "triggerAction": staticmethod(told.append)})())})()
+
+    # Nothing to leave: says so, and does not touch the page.
+    assert youtube_tab.YouTubeTab.leave_fullscreen(tab) is False
+    assert told == []
+
+    tab._fullscreen = True
+    assert youtube_tab.YouTubeTab.leave_fullscreen(tab) is True
+    # The page is told, rather than having the state changed behind its back —
+    # otherwise it goes on drawing an exit button for a state it is not in.
+    assert told and not tab._fullscreen
+    assert seen == [False]
+
+
+def test_the_window_steps_aside_for_a_video_and_comes_back(app):
+    from rose_bouquet.ui.main_window import MainWindow
+
+    rail: list = []
+    bar: list = []
+    window = MainWindow.__new__(MainWindow)
+    window.nav_rail = type("R", (), {"setVisible": staticmethod(rail.append)})()
+    window.player_bar = type("B", (), {"setVisible": staticmethod(bar.append)})()
+
+    MainWindow._youtube_fullscreen(window, True)
+    assert rail == [False] and bar == [False]
+
+    MainWindow._youtube_fullscreen(window, False)
+    assert rail == [False, True] and bar == [False, True]
