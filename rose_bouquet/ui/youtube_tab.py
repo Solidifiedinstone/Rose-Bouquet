@@ -39,7 +39,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer, QUrl, QUrlQuery, Signal
+from PySide6.QtCore import Qt, QUrl, QUrlQuery, Signal
 from PySide6.QtWebEngineCore import (
     QWebEnginePage,
     QWebEngineProfile,
@@ -439,24 +439,10 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
             info.block(True)
 
 
-#: Google's own login, told to come back to YouTube when it is done.
-#:
-#: Measured 2026-08-19 with real mouse and keyboard input on a real display:
-#: Google accepts this browser and answers a made-up address with "couldn't
-#: find this account". Driving the same form from JavaScript instead gets
-#: `/v3/signin/rejected`, "this browser or app may not be secure" — which is
-#: aimed at the automation, not at the engine. Do not conclude from a scripted
-#: test that signing in here is impossible. It is not.
-#: No `continue` parameter: with one, Google bounces straight back to YouTube
-#: without ever showing the form. `service=youtube` is enough to land you back
-#: there once you are in.
-SIGN_IN_URL = "https://accounts.google.com/ServiceLogin?service=youtube"
-
-#: How long the cookie store has to go quiet after being emptied before the
-#: login page is loaded, and the longest to wait for that quiet — there may
-#: have been nothing in the jar, in which case nothing is ever reported.
-JAR_SETTLE_MS = 250
-JAR_CEILING_MS = 3000
+#: Signing in happens in a plain window of its own — see `sign_in`. There
+#: is deliberately no login URL here: loading Google's login inside this
+#: tab ends at "this browser or app may not be secure" however it is
+#: reached, because what Google objects to is the tab, not the address.
 
 
 class _Page(QWebEnginePage):
@@ -507,6 +493,11 @@ class YouTubeTab(QWidget):
         #: for whoever built the tab to pass on once they are connected.
         self.shared_session = ""
         self._lock: Optional[ProfileLock] = None
+        #: The plain window a sign-in happens in, while one is open.
+        self._login_window: Optional[QWebEngineView] = None
+        #: What the engine calls itself before we override it. Signing in
+        #: needs it back.
+        self._plain_user_agent = ""
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -564,11 +555,13 @@ class YouTubeTab(QWidget):
                 "reopen this tab."
             )
             profile = QWebEngineProfile(self)          # off the record
+            self._plain_user_agent = profile.httpUserAgent()
             profile.setHttpUserAgent(USER_AGENT)
             self._decorate(profile)
             return profile
 
         profile = QWebEngineProfile("rose-bouquet", self)
+        self._plain_user_agent = profile.httpUserAgent()
         profile.setPersistentStoragePath(str(folder))
         profile.setCachePath(str(folder / "cache"))
         profile.setPersistentCookiesPolicy(
@@ -696,93 +689,77 @@ class YouTubeTab(QWidget):
     # ── Signing in ────────────────────────────────────────────────
 
     def sign_in(self) -> None:
-        """Go to Google's login, here, and sign in the way you sign in anywhere.
+        """Sign in in a plain window on the same profile.
 
-        Google does answer *some* sign-ins with "this browser or app may not
-        be secure", and every test that drove the login form from JavaScript
-        got exactly that — which is what a bot gets. Driven with real mouse
-        and keyboard events, Google takes the address and answers "couldn't
-        find this account": the ordinary reply to one that does not exist.
-        So there is no wall for a person at a keyboard.
+        Google refuses to authenticate anything it can tell is an embedded
+        app — "this browser or app may not be secure" — and what gives this
+        tab away is everything it does to the page: a user agent of its own,
+        three injected scripts, and a request interceptor dropping requests.
+        No address and no user agent talks it out of that.
 
-        Half a session is worse than none, though. Cookies left over from an
-        abandoned or partial sign-in send `ServiceLogin` around
-        `BootstrapSession` until Chromium gives up with
-        ERR_TOO_MANY_REDIRECTS — a login page that never appears and an error
-        that blames the browser. So the slate is wiped first: signing in is
-        exactly when nobody wants the old session kept.
+        NouTube, which is shipped and can be signed into, answers this by
+        opening a second window: an ordinary browser window, no scripts and no
+        interception, on the *same* session store — `partition:
+        "persist:webview"`, with `toggleInterception(false)` on the way in. It
+        loads youtube.com and you sign in there. Because the store is shared,
+        the session it gets is the session the app has.
+
+        This is that. The decorations come off the profile while the window is
+        open and go back on when it closes, and the tab reloads into the
+        account you just signed in to.
         """
-        self.view.setUrl(QUrl(SIGN_IN_URL))
+        if self._login_window is not None:
+            self._login_window.raise_()
+            self._login_window.activateWindow()
+            return
+
+        self._undecorate()
+
+        window = QWebEngineView()
+        window.setPage(QWebEnginePage(self.profile, window))
+        window.setWindowTitle(
+            "Sign in to YouTube — close this window when you are done")
+        window.resize(1000, 800)
+        window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        window.destroyed.connect(self._login_window_closed)
+        window.setUrl(QUrl(WATCH_URL))
+        window.show()
+
+        self._login_window = window
+        logger.info("sign-in: opened a plain window on the shared profile")
+        self.status.emit(
+            "Sign in in the window that just opened, then close it", "info")
+
+    def _login_window_closed(self) -> None:
+        """Put the profile back as it was, and pick up whatever session it got."""
+        self._login_window = None
+        self._decorate(self.profile)
+        self.profile.setHttpUserAgent(USER_AGENT)
+        logger.info("sign-in: window closed, reloading the tab")
+        self.view.reload()
+
+    def _undecorate(self) -> None:
+        """Make the profile look like a plain browser, for as long as it takes.
+
+        All three of these are what Google recognises: a user agent that is not
+        the engine's own, scripts injected into every page, and a request
+        interceptor. NouTube turns its interception off for exactly this and
+        puts it back afterwards.
+        """
+        self.profile.setUrlRequestInterceptor(None)
+        self.profile.scripts().clear()
+        if self._plain_user_agent:
+            self.profile.setHttpUserAgent(self._plain_user_agent)
 
     def _login_starting(self, _url: QUrl) -> None:
-        """A sign-in is beginning. Empty the jar, then start it properly.
+        """YouTube's own Sign in button. The same plain window as ours.
 
-        Held back rather than followed, twice over.
-
-        Cookies left from an abandoned or half-finished sign-in send the flow
-        round `BootstrapSession` until Chromium gives up:
-        ERR_TOO_MANY_REDIRECTS, a login page that never appears, and an error
-        blaming the browser. Signing in is exactly the moment nobody wants
-        the old session kept.
-
-        And the destination is replaced, not resumed. YouTube's own Sign in
-        button goes to `youtube.com/signin`, which wants session state of its
-        own — wipe the jar and follow it and you land on YouTube's `oops`
-        page instead. `ServiceLogin` is the front door and works from cold,
-        so both buttons go through it.
+        Held back rather than followed: following it walks into the wall this
+        tab cannot get past, and the button on the page is the one people
+        press.
         """
-        page = self.view.page()
-        logger.info("sign-in: caught %s, emptying the jar", _url.toString()[:120])
-
-        def go() -> None:
-            # Left disarmed: re-arming here would catch this very navigation
-            # and hold it back again, for ever. `_on_load_finished` puts it
-            # back once you are off the login flow.
-            page.clearing_first = False
-            logger.info("sign-in: jar empty, loading %s", SIGN_IN_URL)
-            self.view.setUrl(QUrl(SIGN_IN_URL))
-
-        self._forget_the_old_session(then=go)
-
-    def _forget_the_old_session(self, then) -> None:
-        """Empty the jar, and only then go to the login page.
-
-        `deleteAllCookies` is a request, not a write — the store does it on
-        another thread and reports each removal through `cookieRemoved`.
-        Navigating on the next line therefore loaded the login page with the
-        old cookies still in place, which is the whole thing we were trying
-        to avoid, and the redirect loop carried on exactly as before. The
-        same trap `setCookie` set earlier, sprung the other way round.
-
-        So the navigation waits for the removals to stop arriving, with a
-        ceiling in case there were none to remove and nothing ever arrives.
-        """
-        store = self.profile.cookieStore()
-
-        settled = QTimer(self)
-        settled.setSingleShot(True)
-        settled.setInterval(JAR_SETTLE_MS)
-
-        def go() -> None:
-            try:
-                store.cookieRemoved.disconnect(settled.start)
-            except (RuntimeError, TypeError):
-                pass
-            then()
-
-        removed = [0]
-        store.cookieRemoved.connect(lambda _c: removed.__setitem__(0, removed[0] + 1))
-
-        def report_and_go() -> None:
-            logger.info("sign-in: %d cookies removed", removed[0])
-            go()
-
-        settled.timeout.connect(report_and_go)
-        store.cookieRemoved.connect(settled.start)
-        store.deleteAllCookies()
-        settled.start()
-        QTimer.singleShot(JAR_CEILING_MS,
-                          lambda: settled.isActive() and report_and_go())
+        self.view.page().clearing_first = True   # nothing consumed it
+        self.sign_in()
 
     # ── Going places ──────────────────────────────────────────────
 

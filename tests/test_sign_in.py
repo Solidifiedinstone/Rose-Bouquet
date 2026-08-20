@@ -52,115 +52,78 @@ def test_a_second_copy_of_the_app_does_not_take_the_web_profile(tmp_path):
     third.claim()
     third.release()
     assert not (folder / "owner.pid").exists()
-def test_sign_in_goes_to_googles_login_in_the_tab():
-    """Measured with real input, not with a script.
+def test_signing_in_happens_in_a_plain_window_on_the_shared_profile():
+    """How NouTube does it, because this tab cannot do it itself.
 
-    Google answers a made-up address with "couldn't find this account" when
-    the form is driven by real mouse and keyboard events, and with
-    `/v3/signin/rejected`, "this browser or app may not be secure", when it is
-    driven from JavaScript. The refusal is aimed at automation, not at the
-    engine — so a scripted test is not evidence that a person cannot sign in
-    here, and this was talked out of working on exactly that evidence once.
+    Google refuses to authenticate anything it can tell is an embedded app,
+    and what gives this tab away is everything it does to the page: its own
+    user agent, three injected scripts, and a request interceptor. No address
+    talks it out of that — the login page loads and then answers "this browser
+    or app may not be secure" at the password step.
+
+    NouTube opens a second, ordinary window on the same session store, with
+    interception turned off, and lets you sign in there. Shared store, so the
+    session it gets is the session the app has.
     """
-    from PySide6.QtCore import QUrl
-
     from rose_bouquet.ui import youtube_tab
 
-    assert youtube_tab.SIGN_IN_URL.startswith("https://accounts.google.com/")
-    assert "service=youtube" in youtube_tab.SIGN_IN_URL
-    # No `continue`: with one Google bounces back to YouTube without ever
-    # showing the form. `service=youtube` lands you back there anyway.
-    assert "continue=" not in youtube_tab.SIGN_IN_URL
-    assert QUrl(youtube_tab.SIGN_IN_URL).host() == "accounts.google.com"
+    # No login URL anywhere: the address was never the problem.
+    assert not hasattr(youtube_tab, "SIGN_IN_URL")
 
+    stripped: dict = {}
 
-def test_both_sign_in_buttons_are_recognised_as_a_login():
-    """Ours and YouTube's own, which is the one people actually press.
+    class Scripts:
+        cleared = False
+        def clear(self):
+            Scripts.cleared = True
 
-    Ours goes to accounts.google.com/ServiceLogin. YouTube's goes to
-    youtube.com/signin, which redirects into BootstrapSession — and that is
-    the URL that was looping, because only our own button cleared the jar on
-    the way past.
-    """
-    from PySide6.QtCore import QUrl
-
-    from rose_bouquet.ui.youtube_tab import _is_a_login
-
-    for link in [
-        "https://accounts.google.com/ServiceLogin?service=youtube",
-        "https://www.youtube.com/signin?action_handle_signin=true&app=desktop",
-        "https://accounts.google.com/v3/signin/identifier?service=youtube",
-        "https://accounts.google.com/AddSession?continue=https://www.youtube.com/",
-    ]:
-        assert _is_a_login(QUrl(link)), link
-
-    # Not the redirects inside the flow — interrupting those would break it
-    # halfway — and not what a signed-in page fetches for itself.
-    for ordinary in [
-        "https://accounts.google.com/accounts/BootstrapSession?continue=x",
-        "https://www.youtube.com/",
-        "https://www.youtube.com/feed/subscriptions",
-        "https://lh3.googleusercontent.com/avatar.jpg",
-        "https://accounts.google.com/CheckCookie",
-    ]:
-        assert not _is_a_login(QUrl(ordinary)), ordinary
-
-
-def test_a_login_is_held_back_until_the_jar_is_empty():
-    """`deleteAllCookies` is a request, not a write.
-
-    The store empties the jar on another thread and reports each removal
-    through `cookieRemoved`. Navigating on the next line loaded the login page
-    with every stale cookie still in place, and looped exactly as before.
-    """
-    from PySide6.QtCore import QUrl
-    from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QWidget
-
-    from rose_bouquet.ui import youtube_tab
-
-    QApplication.instance() or QApplication([])
-
-    went: list = []
-    cleared: list = []
-
-    class Store:
-        class _Signal:
-            @staticmethod
-            def connect(_slot): pass
-            @staticmethod
-            def disconnect(_slot): pass
-        cookieRemoved = _Signal()
-
+    class Profile:
         @staticmethod
-        def deleteAllCookies():
-            cleared.append(True)
+        def setUrlRequestInterceptor(value):
+            stripped["interceptor"] = value
+        @staticmethod
+        def scripts():
+            return Scripts()
+        @staticmethod
+        def setHttpUserAgent(value):
+            stripped["ua"] = value
 
-    class Page:
-        clearing_first = False
-
-    page = Page()
     tab = youtube_tab.YouTubeTab.__new__(youtube_tab.YouTubeTab)
-    QWidget.__init__(tab)          # so it can own a QTimer
-    tab.view = type("V", (), {"setUrl": staticmethod(went.append),
-                              "page": staticmethod(lambda: page)})()
-    tab.profile = type("P", (), {"cookieStore": staticmethod(lambda: Store())})()
+    tab.profile = Profile()
+    tab._plain_user_agent = "the engine's own"
 
-    # YouTube's own button, which wants session state of its own — wipe the
-    # jar and follow it and you land on YouTube's `oops` page. Replaced with
-    # ServiceLogin, which is the front door and works from cold.
-    youtube_tab.YouTubeTab._login_starting(
-        tab, QUrl("https://www.youtube.com/signin?action_handle_signin=true"))
+    youtube_tab.YouTubeTab._undecorate(tab)
 
-    # Emptied straight away; the navigation waits for the store to go quiet.
-    assert cleared == [True]
-    assert went == []
+    # All three tells are removed for the duration.
+    assert stripped["interceptor"] is None
+    assert Scripts.cleared
+    assert stripped["ua"] == "the engine's own"
 
-    QTest.qWait(youtube_tab.JAR_SETTLE_MS + 250)
-    assert [u.toString() for u in went] == [youtube_tab.SIGN_IN_URL]
-    # Left disarmed, or it would catch its own navigation for ever; the load
-    # handler re-arms it once you are off the login flow.
-    assert page.clearing_first is False
+
+def test_the_profile_is_put_back_when_the_login_window_closes():
+    """Otherwise the tab keeps browsing with no ad blocking and no scripts."""
+    from rose_bouquet.ui import youtube_tab
+
+    restored: dict = {}
+    tab = youtube_tab.YouTubeTab.__new__(youtube_tab.YouTubeTab)
+    tab.profile = object()
+    tab._login_window = object()
+    tab._decorate = lambda profile: restored.__setitem__("decorated", profile)
+    tab.view = type("V", (), {"reload": staticmethod(
+        lambda: restored.__setitem__("reloaded", True))})()
+
+    class P:
+        @staticmethod
+        def setHttpUserAgent(value):
+            restored["ua"] = value
+    tab.profile = P()
+
+    youtube_tab.YouTubeTab._login_window_closed(tab)
+
+    assert tab._login_window is None
+    assert restored["decorated"] is tab.profile      # blocker and scripts back
+    assert restored["ua"] == youtube_tab.USER_AGENT  # and our user agent
+    assert restored["reloaded"]                      # picks up the session
 
 
 def test_nothing_reads_a_browser_cookie_jar_to_sign_in():
