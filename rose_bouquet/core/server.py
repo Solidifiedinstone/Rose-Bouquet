@@ -160,6 +160,9 @@ class MusicServer:
     control: Optional[Callable[[str, str], Any]] = None
     #: Returns what is playing now, as a dict.
     now_playing: Optional[Callable[[], dict]] = None
+    #: Addresses that have asked us for something, so the first request from
+    #: a device can be logged and the rest kept quiet.
+    seen: set = field(default_factory=set)
     #: Called for the YouTube session, when a paired device asks for it.
     #: None — the default — means the session is never handed out.
     youtube_session: Optional[Callable[[], str]] = None
@@ -275,9 +278,17 @@ def _make_handler(server: MusicServer):
         protocol_version = "HTTP/1.1"
 
         # The default logs every request to stderr; a music player streaming a
-        # track would fill a terminal with noise.
+        # track would fill a terminal with noise. So the per-request line stays
+        # at debug — but the *first* time a device is seen is worth saying out
+        # loud, because "my phone cannot connect" is otherwise unanswerable:
+        # nothing anywhere records whether it ever arrived, and the difference
+        # between a network problem and an app problem is exactly that.
         def log_message(self, fmt: str, *args) -> None:
-            logger.debug("%s - %s", self.address_string(), fmt % args)
+            where = self.address_string()
+            if where not in server.seen:
+                server.seen.add(where)
+                logger.info("a device connected from %s", where)
+            logger.debug("%s - %s", where, fmt % args)
 
         # ── Routing ───────────────────────────────────────────────
 

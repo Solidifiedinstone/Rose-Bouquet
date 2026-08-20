@@ -1973,3 +1973,58 @@ def test_a_busy_port_says_what_is_holding_it(tmp_path):
         assert "in use by something else" in message
     finally:
         squatter.close()
+
+
+def test_the_server_says_when_a_device_first_connects():
+    """"My phone cannot connect" has to be answerable.
+
+    Requests were logged at debug and the app logs at info, so nothing
+    anywhere recorded whether a device had ever arrived — which is the
+    difference between a network problem and an app problem, and there was no
+    way to tell them apart.
+
+    The first request from an address is said out loud; the rest stay quiet,
+    because a phone streaming an album would otherwise fill the log.
+    """
+    import logging
+    import socket
+    import urllib.request
+
+    from rose_bouquet.core.server import MusicServer, ServerConfig
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+
+    said: list[str] = []
+
+    class Listener(logging.Handler):
+        def emit(self, record):
+            said.append(record.getMessage())
+
+    logger = logging.getLogger("rose_bouquet.core.server")
+    listener = Listener(level=logging.INFO)
+    logger.addHandler(listener)
+    # The module's logger has no level of its own, so it inherits root's —
+    # which a test run leaves above INFO, and the record never reaches the
+    # handler at all.
+    was = logger.level
+    logger.setLevel(logging.INFO)
+
+    served = MusicServer(library=Library(),
+                         config=ServerConfig(enabled=True, port=port, host="127.0.0.1"))
+    ok, _ = served.start()
+    assert ok
+    try:
+        for _ in range(3):
+            urllib.request.urlopen(          # noqa: S310 — a fixed localhost URL
+                f"http://127.0.0.1:{port}/rest/ping.view?c=t&v=1.16.1&f=json",
+                timeout=5).read()
+    finally:
+        served.stop()
+        logger.removeHandler(listener)
+        logger.setLevel(was)
+
+    connections = [line for line in said if "a device connected" in line]
+    assert len(connections) == 1, said        # once, not once per request
+    assert "127.0.0.1" in connections[0]
