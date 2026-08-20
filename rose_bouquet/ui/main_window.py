@@ -224,6 +224,9 @@ class MainWindow(QMainWindow):
 
         #: Set before the rail is built, because building it consults this.
         self.sidebar_collapsed = False
+        #: The queue panel is out of date because it was closed when the
+        #: queue last changed. Redrawn when it is opened.
+        self._queue_is_stale = False
         #: Pulled in because the window is narrow rather than because the user
         #: asked — remembered so widening it can undo exactly that.
         self._collapsed_for_width = False
@@ -935,14 +938,38 @@ class MainWindow(QMainWindow):
         sizes = self.splitter.sizes()
         showing = sizes[2] > 0
         self.splitter.setSizes([sizes[0], sizes[1], 0 if showing else 300])
+        # Opening it after skipping through half an album must show what is
+        # queued now, not what was queued when it was last on screen.
+        if not showing and getattr(self, "_queue_is_stale", False):
+            self._refresh_queue()
         if not showing:
             self._refresh_queue()
 
     def _refresh_queue(self) -> None:
+        """Redraw the queue panel — when there is a queue panel on screen.
+
+        This runs on every track change, and rebuilt forty widgets each time
+        whether or not the panel was open. Reflowing a hidden panel is work
+        nobody sees, and the reflow is what made the rest of the window need a
+        repaint it was not getting.
+
+        `setParent(None)` before `deleteLater`, because deferred deletion
+        leaves the old rows alive *and in the layout* until the event loop
+        comes round, which is a second reflow for nothing.
+        """
+        # A collapsed splitter pane is still "visible" to Qt — it is zero
+        # pixels wide, not hidden — so its width is the honest question.
+        if self.splitter.sizes()[2] <= 0:
+            self._queue_is_stale = True
+            return
+        self._queue_is_stale = False
+
         while self.queue_body.count():
             item = self.queue_body.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
 
         upcoming = self.playback.queue.upcoming[:40]
         if not upcoming:

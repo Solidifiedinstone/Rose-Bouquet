@@ -407,33 +407,58 @@ class Banner(QLabel):
     def __init__(self, appearance: Appearance, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.appearance = appearance
+        self.setObjectName("Banner")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setVisible(False)
         self.setWordWrap(True)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     def show_message(self, text: str, *, kind: str = "info", seconds: int = 6) -> None:
+        """Say something across the top of the window, briefly.
+
+        The colour is a property the window stylesheet selects on, not a
+        stylesheet written here. This runs on every message — every shuffle,
+        every failed download — and giving a widget its own stylesheet makes Qt
+        re-parse the whole sheet and re-polish the subtree, which is what made
+        the sidebar and the player bar blink out whenever the transport was
+        touched.
+        """
         from PySide6.QtCore import QTimer
 
-        theme = self.appearance.theme
-        colour = {
-            "info": theme.accent, "success": theme.success,
-            "warning": theme.warning, "error": theme.error,
-        }.get(kind, theme.accent)
-
         self.setText(text)
-        self.setStyleSheet(
-            f"background-color: {colour}; color: {theme.background};"
-            f" padding: 9px 14px; font-weight: 600;"
-        )
+        if self.property("kind") != kind:
+            self.setProperty("kind", kind)
+            self.style().unpolish(self)
+            self.style().polish(self)
         self.setVisible(True)
+        self._settle()
 
         def hide() -> None:
             # A newer message must not be cleared by an older one's timer.
             if self.text() == text:
                 self.setVisible(False)
+                self._settle()
 
         QTimer.singleShot(seconds * 1000, hide)
+
+    def _settle(self) -> None:
+        """Appearing and disappearing changes the window's shape; paint it.
+
+        A banner arriving pushes everything below it down and leaving pulls it
+        back up. Qt settles that when it next gets round to it, and under a
+        Wayland compositor that can be whenever something else forces a repaint
+        — which is why the bar at the bottom came back only after switching
+        workspace.
+        """
+        parent = self.parentWidget()
+        if parent is None:
+            return
+        layout = parent.layout()
+        if layout is not None:
+            layout.invalidate()
+            layout.activate()
+        parent.update()
 
     def apply_appearance(self, appearance: Appearance) -> None:
         self.appearance = appearance

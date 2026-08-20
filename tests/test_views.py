@@ -611,3 +611,57 @@ def test_every_section_and_every_settings_tab_opens(app, tmp_path):
                 os.environ.pop(name, None)
             else:
                 os.environ[name] = value
+
+
+# ── Touching the transport must not redraw the window ─────────────
+
+def test_a_notification_does_not_write_its_own_stylesheet(app, appearance):
+    """Every skip and shuffle put up a banner, and the banner restyled itself.
+
+    Setting a stylesheet on a widget makes Qt re-parse the whole sheet and
+    re-polish the subtree. Doing that on every message is what made the
+    sidebar and the player bar blink out whenever the transport was touched —
+    the same mistake the track rows and the mode buttons had already made.
+    """
+    import inspect
+
+    from rose_bouquet.ui.widgets import Banner
+
+    source = inspect.getsource(Banner.show_message)
+    assert "setStyleSheet" not in source
+    assert 'setProperty("kind"' in source
+
+    banner = Banner(appearance)
+    try:
+        banner.show_message("something happened", kind="error")
+        assert banner.property("kind") == "error"
+        assert banner.isVisible() or banner.isHidden() is False
+        banner.show_message("and then this", kind="success")
+        assert banner.property("kind") == "success"
+    finally:
+        banner.deleteLater()
+
+    # The colours it needs are in the window stylesheet, by property.
+    sheet = appearance.stylesheet()
+    for kind in ("success", "warning", "error"):
+        assert f'#Banner[kind="{kind}"]' in sheet
+
+
+def test_the_queue_panel_is_not_rebuilt_while_it_is_closed(app):
+    """Forty widgets a track change, for a panel nobody is looking at.
+
+    The reflow that caused is what left the rest of the window needing a
+    repaint it was not getting.
+    """
+    import inspect
+
+    from rose_bouquet.ui.main_window import MainWindow
+
+    source = inspect.getsource(MainWindow._refresh_queue)
+    # A collapsed splitter pane is still "visible" to Qt — zero pixels wide,
+    # not hidden — so asking isVisible() would rebuild it anyway.
+    assert "self.splitter.sizes()" in source
+    assert "isVisible" not in source
+    # And it must be redrawn when the panel is opened again.
+    assert "_queue_is_stale" in source
+    assert "_queue_is_stale" in inspect.getsource(MainWindow.toggle_queue)

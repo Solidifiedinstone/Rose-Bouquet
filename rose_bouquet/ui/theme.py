@@ -698,6 +698,22 @@ def stylesheet(theme: Theme, style: Optional[Style] = None) -> str:
         font-weight: 600;
     }}
 
+    /* The message banner. Its colour is a property rather than a stylesheet
+       of its own: a banner writes one on every message — every skip, every
+       shuffle — and setting a stylesheet on a widget makes Qt re-parse this
+       whole sheet and re-polish the subtree. That is what made the player bar
+       and the sidebar blink out whenever the transport was touched. */
+    #Banner {{
+        padding: 9px 14px;
+        font-weight: 600;
+        color: {theme.background};
+        background-color: {theme.accent};
+    }}
+
+    #Banner[kind="success"] {{ background-color: {theme.success}; }}
+    #Banner[kind="warning"] {{ background-color: {theme.warning}; }}
+    #Banner[kind="error"] {{ background-color: {theme.error}; }}
+
     /* Cards — an album wall is hundreds of these, and every rule they used to
        write for themselves was a stylesheet parsed hundreds of times over to
        say the same thing. Said once here, they cost nothing to make. */
