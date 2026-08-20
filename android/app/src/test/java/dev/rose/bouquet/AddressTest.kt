@@ -9,7 +9,7 @@ import org.junit.Test
  * What somebody types into the address box.
  *
  * A home server is read off a router page or a terminal and typed in by hand,
- * so the input is "192.168.50.27:4533" far more often than it is a URL.
+ * so the input is "192.168.1.10:4533" far more often than it is a URL.
  * Rejecting that as "not a URL" is technically true and useless.
  */
 class AddressTest {
@@ -23,7 +23,7 @@ class AddressTest {
 
     @Test
     fun `a bare address and port gets http`() {
-        assertTrue(url("192.168.50.27:4533").startsWith("http://192.168.50.27:4533/rest/"))
+        assertTrue(url("192.168.1.10:4533").startsWith("http://192.168.1.10:4533/rest/"))
     }
 
     @Test

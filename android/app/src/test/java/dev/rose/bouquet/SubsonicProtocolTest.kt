@@ -47,7 +47,7 @@ class SubsonicProtocolTest {
     /** A client whose every request fails the way an absent server does. */
     private fun unreachable() = SubsonicClient(
         OkHttpClient.Builder().addInterceptor(Interceptor {
-            throw IOException("Failed to connect to /192.168.50.27:4533")
+            throw IOException("Failed to connect to /192.168.1.10:4533")
         }).build()
     )
 
