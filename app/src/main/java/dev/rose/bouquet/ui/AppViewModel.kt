@@ -26,6 +26,7 @@ import dev.rose.bouquet.player.DownloadStore
 import dev.rose.bouquet.player.PlaybackState
 import dev.rose.bouquet.player.PlayerConnection
 import dev.rose.bouquet.ui.screens.Layer
+import dev.rose.bouquet.youtube.YouTubeSession
 import dev.rose.bouquet.youtube.Interests
 import dev.rose.bouquet.youtube.deriveTopics
 import dev.rose.bouquet.youtube.keep
@@ -123,6 +124,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         // of the way at launch means the first tap on Watch is not the one that
         // pays for it.
         viewModelScope.launch(Dispatchers.IO) { YouTubeSource.start() }
+
+        // A stored session has to be put into effect, not merely remembered:
+        // the extractor reads it from one place, and without this the phone
+        // came back signed out after every restart with the cookie still on
+        // disk. Collected rather than read once, so signing in or out takes
+        // effect immediately.
+        viewModelScope.launch {
+            YouTubeSession.stored(app).collect { YouTubeSession.apply(it) }
+        }
     }
 
     override fun onCleared() {
@@ -227,6 +237,63 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         play(if (shuffle) songs.shuffled() else songs, 0)
+    }
+
+    // ── Signing in to YouTube ─────────────────────────────────────
+
+    /** The session in effect, as a `Cookie:` header. Empty means signed out. */
+    val youtubeSession: StateFlow<String> =
+        YouTubeSession.stored(app)
+            .stateIn(viewModelScope, SharingStarted.Eagerly, "")
+
+    /**
+     * Ask the paired Rose Bouquet server for its YouTube session.
+     *
+     * The desktop has a real one — it can read a browser's cookie jar, which a
+     * phone cannot — and this phone already authenticates to it.
+     */
+    fun signInFromServer() = viewModelScope.launch {
+        val server = activeServer.value
+        if (server == null) {
+            _status.value = "Add your Rose Bouquet server first, in Settings"
+            return@launch
+        }
+
+        _status.value = "Asking ${server.name}…"
+        val cookie = runCatching { client.youtubeSession(server) }.getOrNull()
+        _status.value = when {
+            cookie == null ->
+                "That server did not answer. Is it Rose Bouquet, and is it running?"
+            cookie.isBlank() ->
+                "Your desktop is not sharing its sign-in. Turn on \"Share my " +
+                    "YouTube sign-in\" in Settings \u2192 Serving over there."
+            !YouTubeSession.signedIn(cookie) ->
+                "Your desktop has a YouTube tab but is not signed in to it."
+            else -> {
+                YouTubeSession.remember(getApplication(), cookie)
+                "Signed in, using the session from ${server.name}."
+            }
+        }
+    }
+
+    /** The fallback: a `Cookie:` header pasted from a browser. */
+    fun signInWithCookie(cookie: String) = viewModelScope.launch {
+        val trimmed = cookie.trim()
+        _status.value = when {
+            trimmed.isBlank() -> "Nothing pasted."
+            !YouTubeSession.signedIn(trimmed) ->
+                "That does not look like a signed-in session — it has none of " +
+                    "the cookies a Google sign-in is made of."
+            else -> {
+                YouTubeSession.remember(getApplication(), trimmed)
+                "Signed in."
+            }
+        }
+    }
+
+    fun signOutOfYouTube() = viewModelScope.launch {
+        YouTubeSession.forget(getApplication())
+        _status.value = "Signed out of YouTube on this phone."
     }
 
     fun setLibraryOrder(order: LibraryOrder) =

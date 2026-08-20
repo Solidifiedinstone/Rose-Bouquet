@@ -2,6 +2,7 @@ package dev.rose.bouquet.data
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -110,6 +111,51 @@ class SubsonicClient(
     ) : Exception(message)
 
     // ── Making a request ──────────────────────────────────────────
+
+    /**
+     * Ask a Rose Bouquet server for its YouTube session.
+     *
+     * Rose's own endpoint, not Subsonic's, so any other server answers 404 and
+     * this comes back null — which is the right answer for Navidrome, and not
+     * an error worth showing anybody.
+     *
+     * Returns the session as a `Cookie:` header, an empty string when the
+     * desktop has one to give but sharing is switched off, and null when there
+     * is no Rose server at the other end.
+     */
+    suspend fun youtubeSession(server: Server): String? = withContext(Dispatchers.IO) {
+        val url = roseEndpoint(server, "youtube-session") ?: return@withContext null
+        val request = okhttp3.Request.Builder().url(url).build()
+        runCatching {
+            http.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (body.isBlank()) return@use null
+                val json = runCatching { JSONObject(body) }.getOrNull() ?: return@use null
+                if (!json.optBoolean("shared", false)) "" else json.optString("cookie", "")
+            }
+        }.getOrNull()
+    }
+
+    /** The same auth as everything else, on Rose's own `/api/` path. */
+    private fun roseEndpoint(server: Server, action: String): HttpUrl? {
+        val base = normalise(server.url) ?: return null
+        val builder = base.newBuilder()
+            .addPathSegment("api")
+            .addPathSegment(action)
+            .addQueryParameter("u", server.username)
+            .addQueryParameter("v", API_VERSION)
+            .addQueryParameter("c", CLIENT_NAME)
+            .addQueryParameter("f", "json")
+
+        if (server.plaintextPassword) {
+            builder.addQueryParameter("p", server.password)
+        } else {
+            val salt = Random.nextLong().toString(16)
+            builder.addQueryParameter("t", md5(server.password + salt))
+            builder.addQueryParameter("s", salt)
+        }
+        return builder.build()
+    }
 
     private fun endpoint(server: Server, method: String, params: Map<String, String>): HttpUrl {
         val base = normalise(server.url)

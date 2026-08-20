@@ -1,5 +1,6 @@
 package dev.rose.bouquet.youtube
 
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.schabi.newpipe.extractor.downloader.Downloader
@@ -36,6 +37,13 @@ class NewPipeDownloader(
             .url(request.url())
             .addHeader("User-Agent", USER_AGENT)
 
+        // Signed in, if a session has been brought over. Only to YouTube and
+        // Google: a session is not something to attach to every request an
+        // extractor happens to make, and the extractor makes them to image
+        // hosts and redirectors too.
+        session?.takeIf { it.isNotBlank() && wantsSession(request.url()) }
+            ?.let { builder.addHeader("Cookie", it) }
+
         request.headers().forEach { (name, values) ->
             builder.removeHeader(name)
             values.forEach { builder.addHeader(name, it) }
@@ -62,6 +70,24 @@ class NewPipeDownloader(
     }
 
     companion object {
+        /**
+         * The signed-in session, as a `Cookie:` header, or null for signed out.
+         *
+         * Held here rather than passed through every call because the
+         * extractor builds its own requests several layers down and there is
+         * nowhere to thread it through. Set from `YouTubeSession`.
+         */
+        @Volatile
+        @JvmStatic
+        var session: String? = null
+
+        /** Whether this URL is one of YouTube's, and so ours to sign. */
+        private fun wantsSession(url: String): Boolean {
+            val host = url.toHttpUrlOrNull()?.host ?: return false
+            return host == "youtube.com" || host.endsWith(".youtube.com") ||
+                host == "google.com" || host.endsWith(".google.com")
+        }
+
         private const val HTTP_TOO_MANY_REQUESTS = 429
 
         /**

@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -163,6 +164,9 @@ fun SettingsScreen(model: AppViewModel) {
         }
 
         // ── Playback ──────────────────────────────────────────────
+
+        item { SectionHeading("YouTube account") }
+        item { YouTubeAccount(model) }
 
         item { SectionHeading("Playback") }
         item {
@@ -345,6 +349,102 @@ private fun UpdateRow() {
         }
     }
 }
+
+/**
+ * Signing in to YouTube, the two ways a phone can.
+ *
+ * Google will not authenticate an app, and Android will not let one read a
+ * browser's cookie jar, so neither of the routes the desktop has is available
+ * here. What is left is bringing a session over — from your own desktop, which
+ * is one tap, or pasted, which works with no server at all.
+ */
+@Composable
+private fun YouTubeAccount(model: AppViewModel) {
+    val theme = LocalRoseTheme.current
+    val session by model.youtubeSession.collectAsStateWithLifecycle()
+    val server by model.activeServer.collectAsStateWithLifecycle()
+    var pasting by remember { mutableStateOf(false) }
+    var pasted by remember { mutableStateOf("") }
+
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+        Text(
+            if (session.isNotBlank()) "Signed in" else "Not signed in",
+            color = if (session.isNotBlank()) theme.success else theme.text,
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            if (session.isNotBlank()) {
+                "YouTube sees your account: your subscriptions, your history " +
+                    "and your recommendations."
+            } else {
+                "Google will not accept a password typed into an app, so there " +
+                    "is no login form here. Bring a session over instead."
+            },
+            color = theme.textDim,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Spacer(Modifier.height(10.dp))
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = { model.signInFromServer() }, enabled = server != null) {
+                Text(
+                    if (server != null) "Use my desktop's sign-in" else "No server yet",
+                    color = if (server != null) theme.accent else theme.textDim,
+                )
+            }
+            TextButton(onClick = { pasting = !pasting }) {
+                Text("Paste a cookie", color = theme.accent)
+            }
+            if (session.isNotBlank()) {
+                TextButton(onClick = { model.signOutOfYouTube() }) {
+                    Text("Sign out", color = theme.textDim)
+                }
+            }
+        }
+
+        if (server != null) {
+            Text(
+                "Your desktop can read a browser's sign-in; this phone cannot, " +
+                    "because Android keeps every app's data to itself. Turn on " +
+                    "\"Share my YouTube sign-in\" in Settings \u2192 Serving on the " +
+                    "desktop first.",
+                color = theme.textDim,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+
+        if (pasting) {
+            Spacer(Modifier.height(10.dp))
+            OutlinedTextField(
+                value = pasted,
+                onValueChange = { pasted = it },
+                label = { Text("Cookie header") },
+                placeholder = { Text("SID=…; HSID=…; SAPISID=…") },
+                singleLine = false,
+                maxLines = 4,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text(
+                "In a browser on a computer, open YouTube while signed in, then " +
+                    "developer tools \u2192 Network \u2192 any youtube.com request " +
+                    "\u2192 copy the Cookie request header.",
+                color = theme.textDim,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Row {
+                TextButton(onClick = {
+                    model.signInWithCookie(pasted)
+                    pasted = ""
+                    pasting = false
+                }) { Text("Sign in", color = theme.accent) }
+                TextButton(onClick = { pasting = false }) {
+                    Text("Cancel", color = theme.textDim)
+                }
+            }
+        }
+    }
+}
+
 
 @Composable
 private fun Toggle(title: String, detail: String, value: Boolean, onChange: (Boolean) -> Unit) {

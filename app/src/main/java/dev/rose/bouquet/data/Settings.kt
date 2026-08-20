@@ -17,7 +17,7 @@ import dev.rose.bouquet.ui.theme.SYSTEM_THEME
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
-private val Context.settingsDataStore: DataStore<Preferences> by preferencesDataStore("settings")
+internal val Context.settingsDataStore: DataStore<Preferences> by preferencesDataStore("settings")
 
 /**
  * Everything the user has chosen, in one place.
