@@ -39,7 +39,20 @@ for candidate in "${JAVA_HOME:-}" /usr/lib/jvm/java-21-openjdk /usr/lib/jvm/java
 done
 echo "   JAVA_HOME=${JAVA_HOME:-<none found>}"
 
-( cd android && ./gradlew --quiet testDebugUnitTest assembleRelease )
+# Gradle needs to know where the Android SDK is. `local.properties` carries
+# that on a machine somebody has set up by hand, and it is deliberately not in
+# the repository — it is a path that only exists here. ANDROID_HOME is the
+# portable answer, so a checkout on any other machine (or a build server) can
+# say where its SDK is without editing a file.
+if [[ ! -f android/local.properties && -z "${ANDROID_HOME:-}" && -z "${ANDROID_SDK_ROOT:-}" ]]; then
+    echo "   no Android SDK: set ANDROID_HOME, or put sdk.dir in android/local.properties" >&2
+    echo "   skipping the phone client" >&2
+    android_skipped=1
+fi
+
+if [[ -z "${android_skipped:-}" ]]; then
+    ( cd android && ./gradlew --quiet testDebugUnitTest assembleRelease )
+fi
 
 found="$(find android/app/build/outputs/apk/release -name '*.apk' 2>/dev/null | head -1)"
 if [[ -n "$found" ]]; then

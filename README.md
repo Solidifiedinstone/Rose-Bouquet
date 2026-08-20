@@ -41,6 +41,12 @@ NewPipeExtractor, and shares the desktop's ordering, its library screen and
 its theme system. `tools/release.sh <version>` builds both and tells you what
 to hand to `gh release create`.
 
+Building it needs a JDK **21** — Android Gradle cannot use a newer one — and
+an Android SDK. Point `ANDROID_HOME` at yours, or put `sdk.dir=…` in
+`android/local.properties`; that file is deliberately not in the repository,
+since it is a path that only exists on one machine. Without either, the
+release script builds the desktop and says it skipped the phone.
+
 ## Expect bugs
 
 This is early software and it will break on things I have not seen. It is
