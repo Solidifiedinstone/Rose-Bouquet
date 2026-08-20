@@ -1902,3 +1902,25 @@ def test_both_halves_update_from_the_same_releases():
     for source, name in ((desktop, "desktop"), (phone, "android")):
         assert "repos/Solidifiedinstone/Rose-Bouquet/releases" in source, name
         assert "Rose-Bouquet-Android" not in source, f"{name} still reads the old repository"
+
+
+def test_both_halves_carry_the_same_version():
+    """One release, one version number, or the number means nothing.
+
+    The desktop and the phone go out together. When they drifted — 0.2.0 and
+    0.2.1 — "which version are you on" stopped having a single answer, and an
+    updater comparing a tag against the wrong half would offer an update that
+    was already installed, or hide one that was not.
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    desktop = re.search(r'^version = "([^"]+)"',
+                        (root / "pyproject.toml").read_text(), re.M)
+    phone = re.search(r'versionName = "([^"]+)"',
+                      (root / "android/app/build.gradle.kts").read_text())
+
+    assert desktop and phone, "could not read both version numbers"
+    assert desktop.group(1) == phone.group(1), (
+        f"desktop is {desktop.group(1)} and the phone is {phone.group(1)}")
