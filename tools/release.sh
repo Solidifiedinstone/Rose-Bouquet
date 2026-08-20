@@ -22,8 +22,16 @@ out="$root/dist/$version"
 mkdir -p "$out"
 
 echo "── Desktop ──────────────────────────────────────────────"
-python -m pytest -q
-python -m build --outdir "$out"
+# The project's own virtualenv if there is one, so a release does not depend on
+# what happens to be installed system-wide.
+python="python3"
+if [[ -x "$root/.venv/bin/python" ]]; then
+    python="$root/.venv/bin/python"
+fi
+echo "   python=$python"
+
+"$python" -m pytest -q
+"$python" -m build --outdir "$out"
 echo "   wheel and sdist in $out"
 
 echo
