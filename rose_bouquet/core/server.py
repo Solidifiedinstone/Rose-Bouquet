@@ -24,6 +24,7 @@ was fine to begin with is a bad trade.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import logging
@@ -119,6 +120,36 @@ def check_token(password: str, token: str, salt: str) -> bool:
     return secrets.compare_digest(expected, (token or "").lower())
 
 
+def _who_has(port: int) -> str:
+    """Say what is holding a port, not merely that something is.
+
+    "[Errno 98] Address already in use" is true and useless. Nearly every
+    time, the answer is a second copy of this app — opened twice, or left
+    running from before — and knowing that is the difference between closing
+    a window and going hunting for a port number.
+
+    Asked rather than looked up: our own server answers the root path with
+    its name, so one request settles it without reading /proc, and without
+    caring which user started the other copy.
+    """
+    import json
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(  # noqa: S310 — a fixed localhost URL
+                f"http://127.0.0.1:{port}/", timeout=1.5) as answer:
+            served = json.load(answer)
+    except (OSError, ValueError, urllib.error.URLError):
+        served = None
+
+    if isinstance(served, dict) and served.get("server") == SERVER_NAME:
+        return (f"Another copy of Rose Bouquet is already serving on port {port}. "
+                "Close it, or give this one a different port in Settings.")
+    return (f"Port {port} is already in use by something else. "
+            "Choose a different one in Settings \u2192 Serving.")
+
+
 @dataclass
 class MusicServer:
     """A threaded HTTP server over a library and the running player."""
@@ -157,6 +188,8 @@ class MusicServer:
             self._server = ThreadingHTTPServer((self.config.host, self.config.port), handler)
         except OSError as exc:
             self._server = None
+            if exc.errno == errno.EADDRINUSE:
+                return False, _who_has(self.config.port)
             return False, f"Could not listen on port {self.config.port}: {exc}"
 
         self._server.daemon_threads = True

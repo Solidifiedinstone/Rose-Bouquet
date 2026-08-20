@@ -1924,3 +1924,52 @@ def test_both_halves_carry_the_same_version():
     assert desktop and phone, "could not read both version numbers"
     assert desktop.group(1) == phone.group(1), (
         f"desktop is {desktop.group(1)} and the phone is {phone.group(1)}")
+
+
+def test_a_busy_port_says_what_is_holding_it(tmp_path):
+    """"[Errno 98] Address already in use" is true and useless.
+
+    Nearly every time the answer is a second copy of this app — opened twice,
+    or left running from before — and knowing that is the difference between
+    closing a window and going hunting for a port number.
+    """
+    import socket
+
+    from rose_bouquet.core.server import MusicServer, ServerConfig
+
+    def free_port() -> int:
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            return probe.getsockname()[1]
+
+    port = free_port()
+    config = ServerConfig(enabled=True, port=port, host="127.0.0.1")
+
+    first = MusicServer(library=Library(), config=config)
+    ok, _message = first.start()
+    assert ok
+    try:
+        second = MusicServer(library=Library(), config=config)
+        ok, message = second.start()
+        assert not ok
+        assert "Another copy of Rose Bouquet" in message
+        assert str(port) in message
+    finally:
+        first.stop()
+
+    # And something that is not us gets a different answer, because "close the
+    # other copy" would be wrong advice.
+    port = free_port()
+    squatter = socket.socket()
+    squatter.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    squatter.bind(("127.0.0.1", port))
+    squatter.listen(1)
+    try:
+        served = MusicServer(library=Library(),
+                             config=ServerConfig(enabled=True, port=port,
+                                                 host="127.0.0.1"))
+        ok, message = served.start()
+        assert not ok
+        assert "in use by something else" in message
+    finally:
+        squatter.close()
